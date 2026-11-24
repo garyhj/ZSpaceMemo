@@ -5,15 +5,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
 /// Active interactive OAuth2 login transaction (valid for 180s).
+/// Holds `stdout` open so the child process does not hit a broken pipe when printing the final JSON.
 pub struct PendingOAuthLogin {
     pub url: String,
     pub expires_in: u64,
     stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
     child: Child,
 }
 
@@ -46,6 +48,11 @@ impl OfficialCliNotebookProvider {
         cmd.env("ZSPACE_CLI_HOME", &self.cli_home)
             .arg("--profile")
             .arg(&self.profile);
+        #[cfg(windows)]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
         cmd
     }
 
@@ -102,7 +109,7 @@ impl OfficialCliNotebookProvider {
     }
 
     /// Start official OAuth2 authorization flow (`login --no-open --auth-code-stdin`).
-    /// Keeps the CLI process alive waiting for the one-time auth code on stdin.
+    /// Keeps the CLI process and its stdout pipe alive waiting for the one-time auth code on stdin.
     pub async fn start_oauth_login(&self) -> AppResult<OAuthStartInfo> {
         let _ = std::fs::create_dir_all(&self.cli_home);
         #[cfg(unix)]
@@ -129,14 +136,23 @@ impl OfficialCliNotebookProvider {
             .stdin
             .take()
             .ok_or_else(|| AppError::Internal("无法获取授权进程 stdin".into()))?;
-        let stdout = child
+        let stdout_pipe = child
             .stdout
             .take()
             .ok_or_else(|| AppError::Internal("无法获取授权进程 stdout".into()))?;
 
-        let mut reader = BufReader::new(stdout).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            if let Ok(val) = serde_json::from_str::<Value>(&line) {
+        let mut reader = BufReader::new(stdout_pipe);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let n = reader
+                .read_line(&mut line)
+                .await
+                .map_err(|e| AppError::NasAuthFailed(format!("读取授权输出失败: {e}")))?;
+            if n == 0 {
+                break;
+            }
+            if let Ok(val) = serde_json::from_str::<Value>(line.trim()) {
                 if val.get("event").and_then(|v| v.as_str()) == Some("oauth_authorization") {
                     let url = val
                         .get("url")
@@ -151,6 +167,7 @@ impl OfficialCliNotebookProvider {
                         url: url.clone(),
                         expires_in,
                         stdin,
+                        stdout: reader,
                         child,
                     });
                     return Ok(OAuthStartInfo { url, expires_in });
@@ -190,15 +207,21 @@ impl OfficialCliNotebookProvider {
             .map_err(|e| AppError::NasAuthFailed(format!("刷新授权码缓冲失败: {e}")))?;
         drop(pending.stdin);
 
-        let output = pending
-            .child
-            .wait_with_output()
-            .await
+        // Drain stdout concurrently while waiting for process exit so the pipe never closes early.
+        let mut stdout_buf = Vec::new();
+        let (read_res, wait_res) = tokio::join!(
+            pending.stdout.read_to_end(&mut stdout_buf),
+            pending.child.wait_with_output()
+        );
+        let _ = read_res;
+        let output = wait_res
             .map_err(|e| AppError::NasAuthFailed(format!("等待授权结果失败: {e}")))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(AppError::NasAuthFailed(format!("授权失败: {stderr}")));
+            let stdout = String::from_utf8_lossy(&stdout_buf).trim().to_string();
+            let detail = if !stderr.is_empty() { stderr } else { stdout };
+            return Err(AppError::NasAuthFailed(format!("授权失败: {detail}")));
         }
 
         self.auth_status().await
