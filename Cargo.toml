@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/core"]
+exclude = ["src-tauri"]
 resolver = "2"
 
 [workspace.package]
