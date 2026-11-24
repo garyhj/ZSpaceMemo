@@ -251,6 +251,16 @@ fn toggle_floating_window(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mgr = app.autolaunch();
+    if enabled {
+        mgr.enable().map_err(|e| e.to_string())
+    } else {
+        mgr.disable().map_err(|e| e.to_string())
+    }
+}
+
 fn resolve_cli_path(app: &AppHandle) -> PathBuf {
     if let Ok(env_path) = std::env::var("ZSPACE_CLI_BIN") {
         return PathBuf::from(env_path);
