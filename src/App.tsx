@@ -27,6 +27,7 @@ import { MonthCalendarView } from "./components/MonthCalendarView";
 import { NotificationDrawer } from "./components/NotificationDrawer";
 import { QuickAddBar } from "./components/QuickAddBar";
 import { SettingsModal } from "./components/SettingsModal";
+import { TaskContextMenu, type ContextMenuState } from "./components/TaskContextMenu";
 import { TaskDetail } from "./components/TaskDetail";
 import { TaskListItem } from "./components/TaskListItem";
 import type {
@@ -35,6 +36,7 @@ import type {
   CalendarTaskItem,
   CreateTaskInput,
   NotificationRecord,
+  Priority,
   Task,
   TaskSort,
   TaskView,
@@ -115,9 +117,13 @@ function MainWindow() {
   const [calendarRefreshToken, setCalendarRefreshToken] = useState(0);
   const [completedTasks, setCompletedTasks] = useState<Task[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
+  const [dragOverList, setDragOverList] = useState<string | null>(null);
   const prefs = usePrefs();
 
   const lastFocusSyncRef = useRef<number>(0);
+  const quickAddRef = useRef<HTMLInputElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const selected = useMemo(
     () =>
@@ -604,6 +610,9 @@ function MainWindow() {
     setConflictMsg(null);
   };
   const toggleTask = (item: Task) => void handleToggle(item);
+  const openMenu = (task: Task, x: number, y: number, mode: "full" | "date" = "full") => {
+    setCtxMenu({ task, x, y, mode });
+  };
   const renderTask = (t: Task) => (
     <TaskListItem
       key={t.id}
@@ -611,8 +620,109 @@ function MainWindow() {
       selected={selectedId === t.id}
       onSelect={selectTask}
       onToggle={toggleTask}
+      onOpenMenu={openMenu}
     />
   );
+
+  // Ordered visible task list for ArrowUp / ArrowDown keyboard navigation
+  const visibleTaskOrder = useMemo(() => {
+    const base =
+      !activeList && !activeLabel && view === "today"
+        ? [...overdueToday, ...normalToday]
+        : !activeList && !activeLabel && view === "upcoming"
+        ? upcomingGroups.flatMap(([, g]) => g)
+        : displayedTasks;
+    return prefs.showCompletedGroup ? [...base, ...completedForView] : base;
+  }, [activeList, activeLabel, view, overdueToday, normalToday, upcomingGroups, displayedTasks, prefs.showCompletedGroup, completedForView]);
+
+  const setTaskDate = async (task: Task, date: string | null) => {
+    await handleUpdate(task.id, {
+      schedule: {
+        ...task.schedule,
+        all_day: date ? task.schedule.all_day || !task.schedule.due?.time : false,
+        due: date ? { date, time: task.schedule.all_day ? null : task.schedule.due?.time ?? null } : null,
+      },
+      etag: task.etag,
+    });
+    showToast(date ? `已调整到 ${dateLabel(date)}` : "已清除截止日期");
+  };
+
+  // Global keyboard shortcuts (Dida365-style)
+  useEffect(() => {
+    if (!auth?.logged_in) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const editing = Boolean(
+        target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable)
+      );
+      const mod = e.metaKey || e.ctrlKey;
+
+      if (mod && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setWorkspace("tasks");
+        searchRef.current?.focus();
+        searchRef.current?.select();
+        return;
+      }
+      if (mod && (e.key === "1" || e.key === "2")) {
+        e.preventDefault();
+        setWorkspace(e.key === "1" ? "tasks" : "calendar");
+        return;
+      }
+      if (e.key === "Escape") {
+        if (ctxMenu) { setCtxMenu(null); return; }
+        if (showSettings) { setShowSettings(false); return; }
+        if (showNotif) { setShowNotif(false); return; }
+        if (editing) { target?.blur(); return; }
+        if (query) { setQuery(""); return; }
+        if (selectedId !== null) setSelectedId(null);
+        return;
+      }
+      if (editing || showSettings || showNotif) return;
+
+      if (e.key === "/" ) {
+        e.preventDefault();
+        setWorkspace("tasks");
+        searchRef.current?.focus();
+      } else if (e.key.toLowerCase() === "n" && !mod) {
+        e.preventDefault();
+        setWorkspace("tasks");
+        requestAnimationFrame(() => quickAddRef.current?.focus());
+      } else if (e.key === "1" || e.key === "2" || e.key === "3" || e.key === "4") {
+        const map: Record<string, TaskView> = { "1": "today", "2": "upcoming", "3": "inbox", "4": "all" };
+        setWorkspace("tasks");
+        setActiveList(null);
+        setActiveLabel(null);
+        setView(map[e.key]);
+      } else if (workspace === "tasks" && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+        if (visibleTaskOrder.length === 0) return;
+        e.preventDefault();
+        const idx = visibleTaskOrder.findIndex((t) => t.id === selectedId);
+        const nextIdx =
+          idx < 0
+            ? 0
+            : e.key === "ArrowDown"
+            ? Math.min(visibleTaskOrder.length - 1, idx + 1)
+            : Math.max(0, idx - 1);
+        const nextId = visibleTaskOrder[nextIdx].id;
+        setSelectedId(nextId);
+        setConflictMsg(null);
+        requestAnimationFrame(() => {
+          document.querySelector(`[data-task-id="${nextId}"]`)?.scrollIntoView({ block: "nearest" });
+        });
+      } else if (selected && (e.key === " " || (mod && e.key === "Enter"))) {
+        e.preventDefault();
+        void handleToggle(selected);
+      } else if (selected && (e.key === "Delete" || e.key === "Backspace")) {
+        e.preventDefault();
+        if (window.confirm(`确定删除「${selected.title}」吗？`)) {
+          void handleDelete(selected);
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [auth?.logged_in, workspace, selectedId, selected, visibleTaskOrder, ctxMenu, showSettings, showNotif, query]);
   const groupHeader = (label: React.ReactNode, tone: "default" | "danger" = "default") => (
     <div
       className={`sticky top-0 z-10 bg-white/95 px-2.5 pb-1 pt-3 text-xs font-semibold backdrop-blur ${
@@ -709,22 +819,20 @@ function MainWindow() {
             onCreateTaskOnDate={handleCreate}
             onRescheduleItem={handleCalendarReschedule}
             onToggleItem={handleCalendarToggle}
+            onContextMenuTask={(taskId, x, y) => {
+              const t = allActive.find((x) => x.id === taskId) ?? completedTasks.find((x) => x.id === taskId);
+              if (t) openMenu(t, x, y, "full");
+            }}
             onSync={handleSync}
             busy={busy}
           />
           {selected && (
-            <section className="relative w-[390px] shrink-0 border-l border-slate-200 bg-white">
-              <button
-                type="button"
-                title="收起详情"
-                onClick={() => setSelectedId(null)}
-                className="absolute right-3 top-2 z-10 rounded-lg p-1 text-slate-400 hover:bg-slate-100"
-              >
-                <X className="h-4 w-4" />
-              </button>
+            <section className="w-[390px] shrink-0 border-l border-slate-200 bg-white">
               <TaskDetail
                 task={selected}
+                lists={lists}
                 defaultAllDayTime={settings?.default_all_day_reminder_time}
+                onClose={() => setSelectedId(null)}
                 onUpdate={handleUpdate}
                 onToggle={handleToggle}
                 onSkip={handleSkip}
@@ -764,13 +872,34 @@ function MainWindow() {
                   <button
                     key={item.key}
                     type="button"
+                    onDragOver={(e) => {
+                      if (item.key !== "inbox") return;
+                      e.preventDefault();
+                      if (dragOverList !== "__inbox__") setDragOverList("__inbox__");
+                    }}
+                    onDragLeave={() => {
+                      if (dragOverList === "__inbox__") setDragOverList(null);
+                    }}
+                    onDrop={(e) => {
+                      if (item.key !== "inbox") return;
+                      e.preventDefault();
+                      setDragOverList(null);
+                      const id = Number(e.dataTransfer.getData("text/x-zsm-task-id"));
+                      const t = allActive.find((x) => x.id === id);
+                      if (t && t.list) {
+                        void handleUpdate(t.id, { list: null, etag: t.etag });
+                        showToast(`已将「${t.title}」移出清单`);
+                      }
+                    }}
                     onClick={() => {
                       setActiveList(null);
                       setActiveLabel(null);
                       setView(item.key);
                     }}
                     className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm transition ${
-                      active
+                      item.key === "inbox" && dragOverList === "__inbox__"
+                        ? "bg-blue-100 ring-1 ring-blue-400"
+                        : active
                         ? "bg-blue-50 font-medium text-blue-700"
                         : "text-slate-700 hover:bg-slate-200/60"
                     }`}
@@ -839,13 +968,32 @@ function MainWindow() {
                     <button
                       key={l}
                       type="button"
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        if (dragOverList !== l) setDragOverList(l);
+                      }}
+                      onDragLeave={() => {
+                        if (dragOverList === l) setDragOverList(null);
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        setDragOverList(null);
+                        const id = Number(e.dataTransfer.getData("text/x-zsm-task-id"));
+                        const t = allActive.find((x) => x.id === id);
+                        if (t && t.list !== l) {
+                          void handleUpdate(t.id, { list: l, etag: t.etag });
+                          showToast(`已移动到清单「${l}」`);
+                        }
+                      }}
                       onClick={() => {
                         setActiveList(l);
                         setActiveLabel(null);
                         setView("all");
                       }}
                       className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-xs transition ${
-                        active
+                        dragOverList === l
+                          ? "bg-blue-100 ring-1 ring-blue-400"
+                          : active
                           ? "bg-blue-50 font-medium text-blue-700"
                           : "text-slate-600 hover:bg-slate-200/60"
                       }`}
@@ -912,10 +1060,16 @@ function MainWindow() {
                 <div className="ml-auto flex items-center gap-1.5 rounded-md bg-slate-100/80 px-2 py-1 focus-within:bg-white focus-within:ring-1 focus-within:ring-blue-400">
                   <Search className="h-3.5 w-3.5 text-slate-400" />
                   <input
+                    ref={searchRef}
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
-                    onKeyDown={(e) => e.key === "Escape" && setQuery("")}
-                    placeholder="搜索"
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") {
+                        setQuery("");
+                        searchRef.current?.blur();
+                      }
+                    }}
+                    placeholder="搜索 (Ctrl+K)"
                     className="w-32 bg-transparent text-xs outline-none placeholder:text-slate-400"
                   />
                   {query && (
@@ -936,7 +1090,7 @@ function MainWindow() {
                 </select>
               </div>
 
-              <QuickAddBar lists={lists} onCreate={handleCreate} />
+              <QuickAddBar inputRef={quickAddRef} lists={lists} onCreate={handleCreate} />
             </div>
 
             <div className="flex-1 overflow-y-auto px-2 pb-6">
@@ -1012,6 +1166,7 @@ function MainWindow() {
           <section className="w-[400px] shrink-0 bg-white">
             <TaskDetail
               task={selected}
+              lists={lists}
               defaultAllDayTime={settings?.default_all_day_reminder_time}
               onUpdate={handleUpdate}
               onToggle={handleToggle}
@@ -1065,6 +1220,31 @@ function MainWindow() {
             setSelectedId(id);
             setActiveList(null);
             setView("all");
+          }}
+        />
+      )}
+
+      {ctxMenu && (
+        <TaskContextMenu
+          menu={ctxMenu}
+          lists={lists}
+          onClose={() => setCtxMenu(null)}
+          onSetDate={(t, d) => void setTaskDate(t, d)}
+          onSetPriority={(t, p: Priority) => void handleUpdate(t.id, { priority: p, etag: t.etag })}
+          onTogglePin={(t) => void handleUpdate(t.id, { pinned: !t.pinned, etag: t.etag })}
+          onToggleDone={(t) => void handleToggle(t)}
+          onMoveToList={(t, l) => {
+            void handleUpdate(t.id, { list: l, etag: t.etag });
+            showToast(l ? `已移动到「${l}」` : "已移出清单");
+          }}
+          onCopyTitle={(t) => {
+            void navigator.clipboard?.writeText(t.title);
+            showToast("已复制任务标题");
+          }}
+          onDelete={(t) => {
+            if (window.confirm(`确定删除「${t.title}」吗？`)) {
+              void handleDelete(t);
+            }
           }}
         />
       )}

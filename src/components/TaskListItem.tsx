@@ -1,4 +1,4 @@
-import { Bell, Check, Pin, Repeat } from "lucide-react";
+import { Bell, Calendar, Check, MoreHorizontal, Pin, Repeat } from "lucide-react";
 import { memo, useState } from "react";
 import type { Task } from "../types";
 import { dueLabel, effectiveDue, isTaskOverdue, PRIORITY_META, todayStr } from "../utils/date";
@@ -10,12 +10,13 @@ interface Props {
   compact?: boolean;
   onSelect: (task: Task) => void;
   onToggle: (task: Task) => void;
+  onOpenMenu?: (task: Task, x: number, y: number, mode?: "full" | "date") => void;
 }
 
 /** Delay before a just-checked task leaves the list, so the user sees the tick + strike-through. */
 const DONE_ANIM_MS = 320;
 
-function TaskListItemImpl({ task, selected, compact, onSelect, onToggle }: Props) {
+function TaskListItemImpl({ task, selected, compact, onSelect, onToggle, onOpenMenu }: Props) {
   const prefs = usePrefs();
   const [completing, setCompleting] = useState(false);
   const done = task.status === "completed" || task.status === "ended";
@@ -35,15 +36,27 @@ function TaskListItemImpl({ task, selected, compact, onSelect, onToggle }: Props
     setCompleting(true);
     window.setTimeout(() => {
       onToggle(task);
-      // Repeating tasks stay in the list (cursor advances) – reset the visual state.
       setCompleting(false);
     }, DONE_ANIM_MS);
   }
 
   return (
     <div
+      data-task-id={task.id}
+      draggable={!compact}
+      onDragStart={(e) => {
+        if (compact) return;
+        e.dataTransfer.setData("text/x-zsm-task-id", String(task.id));
+        e.dataTransfer.effectAllowed = "move";
+      }}
       onClick={() => onSelect(task)}
-      className={`group flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 transition-colors ${
+      onContextMenu={(e) => {
+        if (!onOpenMenu) return;
+        e.preventDefault();
+        onSelect(task);
+        onOpenMenu(task, e.clientX, e.clientY, "full");
+      }}
+      className={`group relative flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 transition-colors ${
         compact ? "py-1.5" : "py-2"
       } ${selected ? "bg-blue-50" : "hover:bg-slate-50"} ${
         completing && !task.repeat ? "animate-task-done" : ""
@@ -98,7 +111,9 @@ function TaskListItemImpl({ task, selected, compact, onSelect, onToggle }: Props
 
       <div className="flex shrink-0 items-center gap-1.5 text-xs">
         {task.list && !compact && (
-          <span className="max-w-24 truncate text-[11px] text-slate-400">{task.list}</span>
+          <span className="max-w-24 truncate text-[11px] text-slate-400 group-hover:hidden">
+            {task.list}
+          </span>
         )}
         {task.repeat && <Repeat className="h-3 w-3 text-slate-400" />}
         {task.reminders.length > 0 && <Bell className="h-3 w-3 text-slate-400" />}
@@ -117,6 +132,35 @@ function TaskListItemImpl({ task, selected, compact, onSelect, onToggle }: Props
             {dueLabel(due.date)}
             {!due.all_day && due.time ? ` ${formatTime(due.time, prefs.timeFormat)}` : ""}
           </span>
+        )}
+
+        {onOpenMenu && !compact && (
+          <div className="hidden items-center gap-0.5 group-hover:flex">
+            <button
+              type="button"
+              title="快速改期"
+              onClick={(e) => {
+                e.stopPropagation();
+                const r = e.currentTarget.getBoundingClientRect();
+                onOpenMenu(task, r.left - 120, r.bottom + 4, "date");
+              }}
+              className="rounded p-1 text-slate-400 hover:bg-slate-200/70 hover:text-blue-600"
+            >
+              <Calendar className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              title="更多操作"
+              onClick={(e) => {
+                e.stopPropagation();
+                const r = e.currentTarget.getBoundingClientRect();
+                onOpenMenu(task, r.left - 180, r.bottom + 4, "full");
+              }}
+              className="rounded p-1 text-slate-400 hover:bg-slate-200/70 hover:text-slate-700"
+            >
+              <MoreHorizontal className="h-3.5 w-3.5" />
+            </button>
+          </div>
         )}
       </div>
     </div>

@@ -14,6 +14,7 @@ interface Props {
 
 export function SettingsModal({ auth, onClose, onLogout, onSettingsChanged }: Props) {
   const prefs = usePrefs();
+  const [tab, setTab] = useState<"general" | "shortcuts">("general");
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
@@ -70,12 +71,48 @@ export function SettingsModal({ auth, onClose, onLogout, onSettingsChanged }: Pr
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold">设置</h2>
+          <div className="flex items-center gap-3">
+            <h2 className="text-base font-semibold">设置</h2>
+            <Segmented
+              value={tab}
+              options={[
+                ["general", "常规"],
+                ["shortcuts", "快捷键"],
+              ]}
+              onChange={(v) => setTab(v as "general" | "shortcuts")}
+            />
+          </div>
           <button type="button" onClick={onClose} className="rounded-lg p-1 hover:bg-slate-100">
             <X className="h-4 w-4 text-slate-500" />
           </button>
         </div>
 
+        {tab === "shortcuts" ? (
+          <div className="space-y-1.5 text-xs">
+            {[
+              ["Ctrl / Cmd + Shift + M", "全局呼出 / 隐藏悬浮窗"],
+              ["Ctrl / Cmd + K 或 /", "聚焦搜索框"],
+              ["N", "快速新建任务"],
+              ["↑ / ↓", "上下切换选中任务"],
+              ["Space 或 Ctrl / Cmd + Enter", "完成 / 重新打开选中任务"],
+              ["Delete", "删除选中任务"],
+              ["1 / 2 / 3 / 4", "切换 今天 / 即将到来 / 收集箱 / 全部"],
+              ["Ctrl / Cmd + 1 / 2", "切换 任务视图 / 月视图"],
+              ["Esc", "关闭弹窗、菜单或取消选中"],
+            ].map(([k, desc]) => (
+              <div
+                key={k}
+                className="flex items-center justify-between rounded-lg px-2.5 py-2 odd:bg-slate-50"
+              >
+                <span className="text-slate-700">{desc}</span>
+                <kbd className="rounded border border-slate-200 bg-white px-2 py-0.5 font-mono text-[11px] text-slate-600 shadow-2xs">
+                  {k}
+                </kbd>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <>
         {/* NAS OAuth status */}
         <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs space-y-1.5">
           <div className="flex items-center justify-between">
@@ -209,6 +246,8 @@ export function SettingsModal({ auth, onClose, onLogout, onSettingsChanged }: Pr
         </div>
 
         {msg && <div className="text-xs text-blue-600">{msg}</div>}
+          </>
+        )}
       </div>
     </div>
   );

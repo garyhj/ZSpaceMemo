@@ -21,6 +21,7 @@ interface Props {
   onCreateTaskOnDate: (input: CreateTaskInput) => Promise<void>;
   onRescheduleItem: (item: CalendarTaskItem, targetDate: string) => Promise<void>;
   onToggleItem: (item: CalendarTaskItem) => Promise<void>;
+  onContextMenuTask?: (taskId: number, x: number, y: number) => void;
   onSync: () => Promise<void>;
   busy?: boolean;
 }
@@ -40,6 +41,7 @@ export function MonthCalendarView({
   onCreateTaskOnDate,
   onRescheduleItem,
   onToggleItem,
+  onContextMenuTask,
   onSync,
   busy,
 }: Props) {
@@ -344,6 +346,12 @@ export function MonthCalendarView({
                       draggable
                       onDragStart={(e) => handleDragStart(e, item)}
                       onClick={() => onSelectTask(item.task_id)}
+                      onContextMenu={(e) => {
+                        if (!onContextMenuTask) return;
+                        e.preventDefault();
+                        onSelectTask(item.task_id);
+                        onContextMenuTask(item.task_id, e.clientX, e.clientY);
+                      }}
                       className={`flex cursor-pointer items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] transition ${
                         item.done
                           ? "border-slate-200 bg-slate-50 text-slate-400 line-through"
