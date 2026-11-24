@@ -178,40 +178,29 @@ flowchart LR
 
 ## 4. 笔记正文存储格式（核心难点 1）
 
-### 4.1 正文三段结构（暂定，最终编码由 M0 验证决定）
+### 4.1 正文三段结构（M0 真机验证已定稿）
 
 ```html
 <h1>续费 eSIM</h1>
 <p>📅 截止 2026-11-26 周四 18:00</p>
 <p>🔁 每 6 个月 · ⏰ 提前 1 天、提前 1 小时 · 优先级：普通 · 清单：个人</p>
-<p>状态：待办 · 本次 2027-05-24 · 上次完成 2026-11-24</p>
+<p>状态：待办 · 本次 2026-11-26 · 上次完成 2026-05-26</p>
 <hr>
 <p>记录充值金额、运营商和<a href="https://...">续费链接</a>。</p>
 <hr>
-<p>⚙ ZSpace Memo 数据（由 ZSpace Memo 自动维护，请勿手动修改）</p>
-<pre>ZSM1:{"v":1,"rev":7,"status":"active","priority":"normal","list":"个人","schedule":{...},"reminders":[...],"repeat":{...},"series":{...},"sum":"9f2c..."}</pre>
+<p>⚙ ZSpace Memo 数据（请勿手动修改）</p>
+<p>ZSM1:{"v":1,"rev":7,"created_at":"2026-11-24T10:00:00+08:00","status":"active","priority":"normal","list":"个人","schedule":{...},"reminders":[...],"repeat":{...},"series":{...},"sum":"9f2c..."}</p>
 ```
 
-- 第一行保留 `<h1>{title}</h1>`；摘要行紧跟其后，使官方列表 `in_brief` 展示关键日期/重复信息。
-- 数据块放末尾，远离用户编辑备注的位置；编码按 M0 实测顺序择优：`<pre>` JSON → `<p>` JSON → `<p>` `ZSM1b:` base64url。
+- 第一行保留 `<h1>{title}</h1>`；摘要行紧跟其后，实测官方客户端保存后会自动将第一段作为列表预览 `in_brief`。
+- 数据块定稿为 `<p>ZSM1:{...}</p>`（M0 真机实测通过，解析器同时兼容 `<pre>ZSM1:` 和 `<p>ZSM1b:`）。
+- **HTML 实体归一化**：M0 实测官方客户端会将四字节 Emoji 转为数字实体（如 `&#128197;`），计算 `sum` 哈希和解析正文前必须先做 HTML 实体反转义。
+- **`created_at` 存入 `ZSM1`**：M0 实测原生接口 `created_at` 为 `0`，因此在 `ZSM1` 中记录任务创建时间；`updated_at` 使用原生 Unix 时间戳。
 - 不依赖 HTML 注释、`data-*`、`class`、`style` 或隐藏标签。
 
-### 4.2 【M0 验证】兼容性测试矩阵
+### 4.2 M0 真机兼容性验证结果
 
-使用官方 `zspace-cli file notes`（`location="2"`）在真实 NAS 上验证并记录到 `docs/COMPATIBILITY.md`：
-
-| # | 验证项 |
-|---|---|
-| T1 | CLI 新建笔记 → 官方客户端（Web / 桌面 / 手机）打开查看显示效果与 `in_brief` |
-| T2 | 官方客户端**只改备注**并保存 → CLI `info` 读回，检查数据块是否逐字节保留 |
-| T3 | 官方客户端改标题 → `title` 与 `<h1>` 是否同步 |
-| T4 | 官方客户端改摘要行 → 哈希检测与有限反向解析 |
-| T5 | 官方客户端误删数据块 → 恢复流程验证 |
-| T6 | 官方客户端在分类中新建普通笔记 → 识别为收集箱待办 |
-| T7 | 大正文（约 200 条历史）是否被截断 |
-| T8 | `list` 返回字段（`body`、更新时间、`pin`、`label`、`sortby`） |
-| T9 | `history` / `history_info` 能否取回旧版本完整正文（用于恢复） |
-| T10 | `label`（增删多标签）和 `trash`/`restore` 行为 |
+已完成真机验证，完整记录见 [`COMPATIBILITY.md`](COMPATIBILITY.md)。核心结论：`<p>ZSM1:{...}</p>` 经 Windows 官方客户端编辑保存后逐字节保留；200 条历史（15.5 KB）无截断；`list` 返回 `(id, updated_at, length)` 支持高效增量同步。
 
 ### 4.3 双向编辑与防丢机制
 
