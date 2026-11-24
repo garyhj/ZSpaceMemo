@@ -1,0 +1,1 @@
+# Official zspace-cli sidecar binaries are downloaded at build time (see .github/workflows/ci-release.yml).
