@@ -410,21 +410,15 @@ function render(){
 
 /* ============ 日期选择器（对应 DESIGN §9.6） ============ */
 function openDP(thisOnly){ const t=byId(S.sel); const s=itemOf(t).sched;
-  S.dp={tab:s.start&&s.end?'range':'date',month:(mainDate(s)||TODAY).slice(0,7),all_day:!!s.all_day,
-    due:s.due?{...s.due}:null,start:s.start?{...s.start}:null,end:s.end?{...s.end}:null,pick:0,thisOnly:!!(thisOnly&&t.repeat)}; render(); }
-function dpSet(d){ const p=S.dp;
-  if(p.tab==='date'){ p.due={date:d,time:p.all_day?null:(p.due?.time||'18:00')}; }
-  else { if(p.pick===0||!p.start){p.start={date:d,time:p.start?.time||(p.all_day?null:'09:00')};p.end=null;p.pick=1;}
-    else { if(d<p.start.date){p.end={date:p.start.date,time:p.start.time};p.start.date=d;} else p.end={date:d,time:p.end?.time||(p.all_day?null:'10:00')}; p.pick=0; } }
-  render(); }
-function dpQuick(d){ S.dp.tab='date'; if(d===null){S.dp.due=null;S.dp.start=null;S.dp.end=null;} else dpSet(d); render(); }
+  S.dp={month:(mainDate(s)||TODAY).slice(0,7),all_day:!!s.all_day,due:s.due?{...s.due}:null,thisOnly:!!(thisOnly&&t.repeat)}; render(); }
+function dpSet(d){ const p=S.dp; p.due={date:d,time:p.all_day?null:(p.due?.time||'18:00')}; render(); }
+function dpQuick(d){ if(d===null) S.dp.due=null; else dpSet(d); render(); }
 function dpOk(){ const t=byId(S.sel); const p=S.dp; snapshot();
-  const sch={all_day:p.all_day,start:p.start,end:p.tab==='range'?p.end:null,due:p.due};
-  if(p.all_day) for(const k of ['start','end','due']) if(sch[k]) sch[k].time=null;
-  if(p.thisOnly){ const k=currentKey(t); t.series.overrides[k]={schedule:{due:sch.due,start:sch.start}}; toast(`已修改本次（${dateLabel(k)}）；系列中的其他实例不变`,true); }
+  const sch={all_day:p.all_day,due:p.due?{...p.due,time:p.all_day?null:p.due.time}:null};
+  if(p.thisOnly){ const k=currentKey(t); t.series.overrides[k]={schedule:{due:sch.due}}; toast(`已修改本次（${dateLabel(k)}）；系列中的其他实例不变`,true); }
   else if(t.repeat){ const old=itemOf(t).sched; const off=sch.due&&old.due?diffDays(old.due.date,sch.due.date):0;
     if(off){ t.repeat.dtstart=addDays(t.repeat.dtstart,off); t.series.cursor=addDays(t.series.cursor,off); if(t.repeat.by_month_day&&t.repeat.by_month_day[0]!==-1) t.repeat.by_month_day=[parse(sch.due.date).getDate()]; }
-    t.schedule={...sch}; for(const k of ['start','end','due']) if(t.schedule[k]) t.schedule[k]={...t.schedule[k],date:addDays(t.schedule[k].date,diffDays(currentKey(t),t.repeat.dtstart))};
+    t.schedule={...sch}; if(t.schedule.due) t.schedule.due={...t.schedule.due,date:addDays(t.schedule.due.date,diffDays(currentKey(t),t.repeat.dtstart))};
     toast('已修改整个系列的时间',true); }
   else t.schedule=sch;
   S.dp=null; touch(t); }
@@ -433,9 +427,7 @@ function calendar(month,selFn){
   const [y,m]=month.split('-').map(Number); const first=new Date(y,m-1,1); const off=(first.getDay()+6)%7; const start=addDays(fmt(first),-off);
   const p=S.dp; let cells='';
   for(let i=0;i<42;i++){ const d=addDays(start,i); const dd=parse(d); const inM=dd.getMonth()===m-1;
-    let cls='cal-d'; if(d===TODAY) cls+=' today';
-    if(p.tab==='date'&&p.due?.date===d) cls+=' sel';
-    if(p.tab==='range'){ if(p.start?.date===d||p.end?.date===d) cls+=' sel'; else if(p.start&&p.end&&d>p.start.date&&d<p.end.date) cls+=' inr'; }
+    let cls='cal-d'; if(d===TODAY) cls+=' today'; if(p.due?.date===d) cls+=' sel';
     const wk=dd.getDay()===0||dd.getDay()===6;
     cells+=`<div class="${cls} ${inM?'':'opacity-30'}" onclick="${selFn}('${d}')"><span>${dd.getDate()}</span><span class="text-[9px] ${wk?'err':'muted'} leading-none" style="opacity:.6">${wk?'末':''}</span></div>`; }
   return `<div class="flex items-center justify-between mb-1"><button class="px-2 hov rounded" onclick="S.dp.month=addMonths(S.dp.month+'-01',-1).slice(0,7);render()">‹</button>
@@ -444,49 +436,40 @@ function calendar(month,selFn){
     <div class="grid grid-cols-7 gap-0.5">${cells}</div>
     <div class="text-[11px] muted mt-1">农历 / 节气 / “休·班”标记位置已预留（P2，由 /calendar/days 提供）</div>`;
 }
-function timeSel(obj,key){ if(!obj) return '<span class="muted text-xs">先选日期</span>';
-  return `<input type="time" step="900" class="field text-sm" value="${obj.time||''}" ${S.dp.all_day?'disabled':''} onchange="S.dp.${key}.time=this.value||null;render()">`; }
+function timeSel(obj){ if(!obj) return '<span class="muted text-xs">先选日期</span>';
+  return `<input type="time" step="900" class="field text-sm" value="${obj.time||''}" ${S.dp.all_day?'disabled':''} onchange="S.dp.due.time=this.value||null;render()">`; }
 function dpModal(){ const p=S.dp;
   const qs=[[TODAY,'今天'],[addDays(TODAY,1),'明天'],[addDays(TODAY,2),'后天'],[nextMonday(),'下周一']];
   return `<div class="card border bd rounded-xl shadow-2xl p-4" style="width:360px" onclick="event.stopPropagation()">
    ${p.thisOnly?'<div class="text-xs warn mb-2">仅修改本次实例（override），系列中的其他实例不变</div>':''}
-   <div class="flex gap-1 mb-3">${[['date','日期'],['range','时间段']].map(([k,l])=>`<button class="chip flex-1 justify-center py-1 ${p.tab===k?'on':''}" onclick="S.dp.tab='${k}';S.dp.pick=0;render()">${l}</button>`).join('')}</div>
    <div class="flex gap-1 mb-3 flex-wrap">${qs.map(([d,l])=>`<span class="chip" onclick="dpQuick('${d}')">${l}</span>`).join('')}<span class="chip" onclick="dpQuick(null)">清除</span></div>
    ${calendar(p.month,'dpSet')}
    <div class="mt-3 pt-3 border-t bd space-y-2 text-sm">
      <label class="flex items-center justify-between"><span>全天</span><input type="checkbox" ${p.all_day?'checked':''} onchange="S.dp.all_day=this.checked;render()"></label>
-     ${p.tab==='date'?`<div class="flex items-center justify-between"><span>截止 ${p.due?dateLabel(p.due.date):''}</span>${timeSel(p.due,'due')}</div>
-        <div class="flex items-center justify-between muted text-xs"><span>开始日期（可选）${p.start?': '+dateLabel(p.start.date):''}</span>
-        ${p.start?`<button class="pri-t" onclick="S.dp.start=null;render()">移除</button>`:`<button class="pri-t" onclick="S.dp.start={date:S.dp.due?.date||TODAY,time:null};render()">添加</button>`}</div>`
-      :`<div class="text-xs muted">${p.pick===1?'再点一个日期作为结束':'在日历上点选开始和结束（可跨天）'}</div>
-        <div class="flex items-center justify-between"><span>开始 ${p.start?dateLabel(p.start.date):'—'}</span>${timeSel(p.start,'start')}</div>
-        <div class="flex items-center justify-between"><span>结束 ${p.end?dateLabel(p.end.date):'—'}</span>${timeSel(p.end,'end')}</div>
-        <div class="flex items-center justify-between muted text-xs"><span>截止（可选，独立于时间段）${p.due?': '+dateLabel(p.due.date)+(p.due.time?' '+p.due.time:''):''}</span>${p.due?`<button class="pri-t" onclick="S.dp.due=null;render()">移除</button>`:''}</div>`}
+     <div class="flex items-center justify-between"><span>截止 ${p.due?dateLabel(p.due.date):''}</span>${timeSel(p.due)}</div>
      <div class="flex justify-between text-xs pt-1"><button class="pri-t" onclick="dpOk();openRM()">⏰ 设置提醒 ›</button><button class="pri-t" onclick="dpOk();openRP()">🔁 设置重复 ›</button></div>
    </div>
    <div class="flex justify-end gap-2 mt-4"><button class="chip px-4 py-1" onclick="S.dp=null;render()">取消</button><button class="chip on px-4 py-1" onclick="dpOk()">确定</button></div></div>`; }
 
 /* ============ 提醒编辑器（对应 DESIGN §3.3） ============ */
-function openRM(){ const t=byId(S.sel); S.rm={list:JSON.parse(JSON.stringify(t.reminders)),cn:1,cu:'h',anchor:'due'}; render(); }
-function rmToggle(r){ const L=S.rm.list; const key=JSON.stringify([r.anchor,r.offset_minutes,r.offset_days,r.day_time]);
-  const i=L.findIndex(x=>JSON.stringify([x.anchor,x.offset_minutes,x.offset_days,x.day_time])===key);
+function openRM(){ const t=byId(S.sel); S.rm={list:JSON.parse(JSON.stringify(t.reminders)),cn:1,cu:'h'}; render(); }
+function rmToggle(r){ const L=S.rm.list; const key=JSON.stringify([r.offset_minutes,r.offset_days,r.day_time]);
+  const i=L.findIndex(x=>JSON.stringify([x.offset_minutes,x.offset_days,x.day_time])===key);
   if(i>=0) L.splice(i,1); else L.push({id:'r'+Date.now()%1e5+L.length,type:'relative',...r}); render(); }
 function rmModal(){ const t=byId(S.sel); const s=itemOf(t).sched; const allDay=s.all_day||(s.due&&!s.due.time);
-  const has=r=>S.rm.list.some(x=>x.anchor===r.anchor&&x.offset_minutes===r.offset_minutes&&x.offset_days===r.offset_days&&x.day_time===r.day_time);
-  const presets=allDay?[{anchor:'due',offset_days:0,day_time:'09:00'},{anchor:'due',offset_days:-1,day_time:'09:00'},{anchor:'due',offset_days:-2,day_time:'09:00'},{anchor:'due',offset_days:-7,day_time:'09:00'}]
-    :[0,-5,-10,-15,-30,-60,-1440].map(m=>({anchor:S.rm.anchor,offset_minutes:m}));
-  const noAnchor=!(S.rm.anchor==='start'?s.start:s.due);
+  const has=r=>S.rm.list.some(x=>x.offset_minutes===r.offset_minutes&&x.offset_days===r.offset_days&&x.day_time===r.day_time);
+  const presets=allDay?[{offset_days:0,day_time:'09:00'},{offset_days:-1,day_time:'09:00'},{offset_days:-2,day_time:'09:00'},{offset_days:-7,day_time:'09:00'}]
+    :[0,-5,-10,-15,-30,-60,-1440].map(m=>({offset_minutes:m}));
   return `<div class="card border bd rounded-xl shadow-2xl p-4" style="width:380px" onclick="event.stopPropagation()">
    <b>提醒</b><div class="text-xs muted mb-3">提醒与截止时间独立；可以设置多个。由 NAS 后端调度，电脑关机也会按时推送到手机 PWA 或第三方渠道。</div>
-   ${allDay?'<div class="text-xs muted mb-2">全天任务：按"当天 / 提前 N 天"的固定时刻提醒（默认 09:00，可在设置中改）</div>'
-     :`<div class="flex gap-1 mb-2 text-xs items-center">相对于 ${[['due','截止'],['start','开始']].map(([k,l])=>`<span class="chip ${S.rm.anchor===k?'on':''}" onclick="S.rm.anchor='${k}';render()">${l}</span>`).join('')}</div>`}
-   ${noAnchor&&!allDay?`<div class="text-xs warn mb-2">该任务没有设置${S.rm.anchor==='start'?'开始':'截止'}时间，这一类提醒不会生效</div>`:''}
+   ${allDay?'<div class="text-xs muted mb-2">全天任务：按"当天 / 提前 N 天"的固定时刻提醒（默认 09:00，可在设置中改）</div>':''}
+   ${!s.due?`<div class="text-xs warn mb-2">该任务尚未设置截止日期，相对提醒不会生效</div>`:''}
    <div class="flex flex-wrap gap-1.5">${presets.map(r=>`<span class="chip ${has(r)?'on':''}" onclick='rmToggle(${JSON.stringify(r)})'>${remText(r)}</span>`).join('')}</div>
    ${allDay?'':`<div class="flex items-center gap-2 mt-3 text-sm">自定义：提前 <input type="number" min="1" class="field w-16" value="${S.rm.cn}" onchange="S.rm.cn=+this.value">
      <select class="field" onchange="S.rm.cu=this.value">${[['m','分钟'],['h','小时'],['d','天'],['w','周']].map(([k,l])=>`<option value="${k}" ${S.rm.cu===k?'selected':''}>${l}</option>`).join('')}</select>
-     <button class="chip" onclick="rmToggle({anchor:S.rm.anchor,offset_minutes:-S.rm.cn*{m:1,h:60,d:1440,w:10080}[S.rm.cu]})">添加</button></div>`}
+     <button class="chip" onclick="rmToggle({offset_minutes:-S.rm.cn*{m:1,h:60,d:1440,w:10080}[S.rm.cu]})">添加</button></div>`}
    <div class="mt-3 pt-3 border-t bd text-xs space-y-1"><div class="font-semibold">已设置（本次实例的触发时刻）</div>
-     ${S.rm.list.map(r=>`<div class="flex justify-between"><span>${remText(r)}</span><span class="muted">${fireTime(r,s)||'—（缺少锚点）'}</span><button class="err" onclick='rmToggle(${JSON.stringify({anchor:r.anchor,offset_minutes:r.offset_minutes,offset_days:r.offset_days,day_time:r.day_time})})'>✕</button></div>`).join('')||'<div class="muted">不提醒</div>'}
+     ${S.rm.list.map(r=>`<div class="flex justify-between"><span>${remText(r)}</span><span class="muted">${fireTime(r,s)||'—（缺少截止日期）'}</span><button class="err" onclick='rmToggle(${JSON.stringify({offset_minutes:r.offset_minutes,offset_days:r.offset_days,day_time:r.day_time})})'>✕</button></div>`).join('')||'<div class="muted">不提醒</div>'}
      <div class="muted pt-1">渠道：跟随全局设置（Web Push · 桌面 · 通知中心）</div></div>
    <div class="flex justify-end gap-2 mt-4"><button class="chip px-4 py-1" onclick="S.rm=null;render()">取消</button>
      <button class="chip on px-4 py-1" onclick="const t=byId(S.sel);snapshot();t.reminders=S.rm.list;S.rm=null;touch(t)">确定</button></div></div>`; }
