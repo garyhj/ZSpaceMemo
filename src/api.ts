@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AppSettings,
   AuthStatus,
+  CalendarTaskItem,
   CreateTaskInput,
   NotificationRecord,
   OAuthStartInfo,
@@ -28,9 +29,27 @@ export const api = {
   syncTasks: () => invoke<SyncSummary>("sync_tasks"),
   listTasks: (view: TaskView, keyword?: string, sort: TaskSort = "date") =>
     invoke<Task[]>("list_tasks", { view, keyword: keyword || null, sort }),
+  listCalendarItems: (from: string, to: string, includeCompleted = true) =>
+    invoke<CalendarTaskItem[]>("list_calendar_items", {
+      from,
+      to,
+      includeCompleted,
+    }),
   getTask: (id: number, refresh = false) => invoke<Task>("get_task", { id, refresh }),
   createTask: (input: CreateTaskInput) => invoke<Task>("create_task", { input }),
   updateTask: (id: number, patch: UpdateTaskInput) => invoke<Task>("update_task", { id, patch }),
+  overrideOccurrence: (
+    id: number,
+    occurrenceKey: string,
+    newDueDate: string,
+    newDueTime?: string | null
+  ) =>
+    invoke<Task>("override_occurrence", {
+      id,
+      occurrenceKey,
+      newDueDate,
+      newDueTime: newDueTime ?? null,
+    }),
   completeTask: (id: number, occurrenceKey?: string | null) =>
     invoke<Task>("complete_task", { id, occurrenceKey: occurrenceKey ?? null }),
   skipOccurrence: (id: number, occurrenceKey?: string | null) =>

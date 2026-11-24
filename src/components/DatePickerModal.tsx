@@ -2,6 +2,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useState } from "react";
 import type { Schedule } from "../types";
 import { addDays, addMonths, dateLabel, formatDate, nextMonday, parseDate, todayStr } from "../utils/date";
+import { getDayCalendarMeta } from "../utils/lunar";
 
 interface Props {
   schedule: Schedule;
@@ -49,7 +50,7 @@ export function DatePickerModal({
       date: d,
       day: dt.getDate(),
       inMonth: dt.getMonth() === m - 1,
-      weekend: dt.getDay() === 0 || dt.getDay() === 6,
+      meta: getDayCalendarMeta(d),
     };
   });
 
@@ -122,7 +123,7 @@ export function DatePickerModal({
                 key={c.date}
                 type="button"
                 onClick={() => setDueDate(c.date)}
-                className={`flex h-9 flex-col items-center justify-center rounded-lg text-xs transition ${
+                className={`relative flex h-10 flex-col items-center justify-center rounded-lg text-xs transition ${
                   isSel
                     ? "bg-blue-600 font-semibold text-white"
                     : isToday
@@ -130,17 +131,34 @@ export function DatePickerModal({
                     : "text-slate-700 hover:bg-slate-100"
                 } ${c.inMonth ? "" : "opacity-35"}`}
               >
-                <span>{c.day}</span>
-                <span className={`text-[9px] leading-none ${isSel ? "text-blue-100" : c.weekend ? "text-red-400" : "text-slate-300"}`}>
-                  {c.weekend ? "末" : ""}
+                {c.meta.holidayBadge && (
+                  <span
+                    className={`absolute right-0.5 top-0.5 text-[8px] font-medium leading-none ${
+                      isSel
+                        ? "text-blue-100"
+                        : c.meta.holidayBadge === "休"
+                        ? "text-emerald-600"
+                        : "text-amber-600"
+                    }`}
+                  >
+                    {c.meta.holidayBadge}
+                  </span>
+                )}
+                <span className="leading-tight">{c.day}</span>
+                <span
+                  className={`max-w-full truncate px-0.5 text-[9px] leading-none ${
+                    isSel
+                      ? "text-blue-100"
+                      : c.meta.isHighlight
+                      ? "text-blue-600"
+                      : "text-slate-400"
+                  }`}
+                >
+                  {c.meta.lunarText}
                 </span>
               </button>
             );
           })}
-        </div>
-
-        <div className="mt-1.5 text-[11px] text-slate-400">
-          农历 / 节气 / 休·班标记位置已预留（P2）
         </div>
 
         <div className="mt-3 space-y-2.5 border-t border-slate-100 pt-3 text-sm">

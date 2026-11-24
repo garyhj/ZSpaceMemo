@@ -101,6 +101,19 @@ export interface OccurrenceView {
   acted_at?: string | null;
 }
 
+export interface CalendarTaskItem {
+  task_id: number;
+  title: string;
+  date: string;
+  time?: string | null;
+  all_day: boolean;
+  priority: Priority;
+  list?: string | null;
+  done: boolean;
+  is_repeating: boolean;
+  occurrence_key?: string | null;
+}
+
 export interface AuthStatus {
   logged_in: boolean;
   nas_id?: string | null;

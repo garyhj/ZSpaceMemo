@@ -20,6 +20,9 @@ importers:
       lucide-react:
         specifier: ^0.469.0
         version: 0.469.0(react@19.3.1)
+      lunar-javascript:
+        specifier: ^1.7.8
+        version: 1.7.8
       react:
         specifier: ^19.0.0
         version: 19.3.1
@@ -830,6 +833,9 @@ packages:
     peerDependencies:
       react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
+  lunar-javascript@1.7.8:
+    resolution: {integrity: sha512-T79Lq2t5zjPu7nnkuUn3xFqIMIB5LCVSn6uJXQLvgWEqUGdE4KQXqQOVBaoYsVHY/8MIwFd7ol9dJ5bP2ItXUQ==}
+
   magic-string@1.4.5:
     resolution: {integrity: sha512-oLLC2+YvQUfAa+vxoufE/yc1icb87M9iXIRqAoR/2EhE/8cb3SF/+Gi0c2By1B+5Vz2e2vQtUvHiu1+63Znh+w==}
 
@@ -1544,6 +1550,8 @@ snapshots:
   lucide-react@0.469.0(react@19.3.1):
     dependencies:
       react: 19.3.1
+
+  lunar-javascript@1.7.8: {}
 
   magic-string@1.4.5:
     dependencies:

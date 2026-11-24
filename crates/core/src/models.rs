@@ -391,6 +391,25 @@ pub struct OccurrenceView {
     pub acted_at: Option<String>,
 }
 
+/// Flattened calendar cell item (either a single task or one expanded occurrence of a repeating series).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CalendarTaskItem {
+    pub task_id: i64,
+    pub title: String,
+    /// Actual displayed date (`YYYY-MM-DD`, after applying any per-occurrence override).
+    pub date: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time: Option<String>,
+    pub all_day: bool,
+    pub priority: Priority,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list: Option<String>,
+    pub done: bool,
+    pub is_repeating: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurrence_key: Option<String>,
+}
+
 /// Task view categories (DESIGN §7.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

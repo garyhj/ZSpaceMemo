@@ -9,8 +9,8 @@ use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use zspace_memo_core::models::{
-    CreateTaskInput, OccurrenceActionStatus, OccurrenceView, RepeatRule, Task, TaskSort, TaskView,
-    UpdateTaskInput,
+    CalendarTaskItem, CreateTaskInput, OccurrenceActionStatus, OccurrenceView, RepeatRule, Task,
+    TaskSort, TaskView, UpdateTaskInput,
 };
 use zspace_memo_core::provider::official_cli::{OAuthStartInfo, OfficialCliNotebookProvider};
 use zspace_memo_core::provider::{AuthStatus, NotebookProvider};
@@ -171,6 +171,34 @@ async fn end_series(state: State<'_, AppState>, id: i64) -> Result<Task, String>
 #[tauri::command]
 async fn delete_task(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     state.service.delete_task(id).await.map_err(map_err)
+}
+
+#[tauri::command]
+fn list_calendar_items(
+    state: State<'_, AppState>,
+    from: String,
+    to: String,
+    include_completed: bool,
+) -> Result<Vec<CalendarTaskItem>, String> {
+    state
+        .service
+        .list_calendar_items(&from, &to, include_completed)
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn override_occurrence(
+    state: State<'_, AppState>,
+    id: i64,
+    occurrence_key: String,
+    new_due_date: String,
+    new_due_time: Option<String>,
+) -> Result<Task, String> {
+    state
+        .service
+        .override_occurrence(id, &occurrence_key, &new_due_date, new_due_time.as_deref())
+        .await
+        .map_err(map_err)
 }
 
 #[tauri::command]
@@ -381,6 +409,8 @@ pub fn run() {
             reopen_task,
             end_series,
             delete_task,
+            list_calendar_items,
+            override_occurrence,
             get_occurrence_timeline,
             preview_repeat,
             list_notifications,

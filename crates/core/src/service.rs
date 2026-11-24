@@ -1,8 +1,9 @@
 use crate::codec::{decode_task_note, encode_task_note};
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    CreateTaskInput, HistorySummary, MetaState, OccurrenceActionStatus, OccurrenceHistoryEntry,
-    SeriesState, Task, TaskSort, TaskStatus, TaskView, UpdateTaskInput,
+    CalendarTaskItem, CreateTaskInput, DateTimePoint, HistorySummary, MetaState,
+    OccurrenceActionStatus, OccurrenceHistoryEntry, OccurrenceOverride, Schedule, SeriesState,
+    Task, TaskSort, TaskStatus, TaskView, UpdateTaskInput,
 };
 use crate::provider::NotebookProvider;
 use crate::recurrence::{
@@ -580,6 +581,158 @@ impl<P: NotebookProvider> TaskService<P> {
         Ok(())
     }
 
+    /// Override a single occurrence's due date/time without modifying the rest of the repeating series.
+    pub async fn override_occurrence(
+        &self,
+        id: i64,
+        occurrence_key: &str,
+        new_due_date: &str,
+        new_due_time: Option<&str>,
+    ) -> AppResult<Task> {
+        let _ = parse_date(new_due_date)?;
+        let mut task = self.get_task(id, true).await?;
+        if let Some(series) = &mut task.series {
+            let entry = series
+                .overrides
+                .entry(occurrence_key.to_string())
+                .or_insert_with(OccurrenceOverride::default);
+            let time = match new_due_time {
+                Some(t) => Some(t.to_string()),
+                None => task.schedule.due.as_ref().and_then(|d| d.time.clone()),
+            };
+            entry.schedule = Some(Schedule {
+                all_day: task.schedule.all_day && new_due_time.is_none(),
+                due: Some(DateTimePoint {
+                    date: new_due_date.to_string(),
+                    time: if task.schedule.all_day && new_due_time.is_none() {
+                        None
+                    } else {
+                        time
+                    },
+                }),
+                timezone: task.schedule.timezone.clone(),
+            });
+            return self.persist_task_update(task, None).await;
+        }
+        // Fallback for non-repeating task: update due date directly.
+        task.schedule.due = Some(DateTimePoint {
+            date: new_due_date.to_string(),
+            time: new_due_time
+                .map(|s| s.to_string())
+                .or_else(|| task.schedule.due.as_ref().and_then(|d| d.time.clone())),
+        });
+        self.persist_task_update(task, None).await
+    }
+
+    /// Expand all single tasks and repeating series occurrences falling within `[from, to]` (inclusive).
+    pub fn list_calendar_items(
+        &self,
+        from: &str,
+        to: &str,
+        include_completed: bool,
+    ) -> AppResult<Vec<CalendarTaskItem>> {
+        let from_date = parse_date(from)?;
+        let _ = parse_date(to)?;
+        let after_before_from = format_date(from_date - Duration::days(1));
+
+        let tasks = self.storage.list_cached_tasks()?;
+        let mut items = Vec::new();
+
+        for task in tasks {
+            if let (Some(rule), Some(series)) = (&task.repeat, &task.series) {
+                let mut keys = generate_occurrences(rule, 64, Some(&after_before_from))?;
+                // Also include any overridden or historical keys that land inside [from, to].
+                for (k, ov) in &series.overrides {
+                    if let Some(d) = ov.schedule.as_ref().and_then(|s| s.due.as_ref()) {
+                        if d.date.as_str() >= from && d.date.as_str() <= to && !keys.contains(k) {
+                            keys.push(k.clone());
+                        }
+                    }
+                }
+                for h in &series.history {
+                    if h.key.as_str() >= from && h.key.as_str() <= to && !keys.contains(&h.key) {
+                        keys.push(h.key.clone());
+                    }
+                }
+
+                for key in keys {
+                    if series.ended_at.is_some() && !series.history.iter().any(|h| h.key == key) {
+                        continue;
+                    }
+                    let sched = schedule_for_occurrence(&task.schedule, series, &key);
+                    let Some(due) = sched.due else { continue };
+                    if due.date.as_str() < from || due.date.as_str() > to {
+                        continue;
+                    }
+                    let hist = series.history.iter().find(|h| h.key == key);
+                    let done = hist.is_some();
+                    if done && !include_completed {
+                        continue;
+                    }
+                    items.push(CalendarTaskItem {
+                        task_id: task.id,
+                        title: series
+                            .overrides
+                            .get(&key)
+                            .and_then(|o| o.title.clone())
+                            .unwrap_or_else(|| task.title.clone()),
+                        date: due.date,
+                        time: due.time,
+                        all_day: sched.all_day,
+                        priority: series
+                            .overrides
+                            .get(&key)
+                            .and_then(|o| o.priority)
+                            .unwrap_or(task.priority),
+                        list: task.list.clone(),
+                        done,
+                        is_repeating: true,
+                        occurrence_key: Some(key),
+                    });
+                }
+            } else {
+                let done = task.status.is_done();
+                if done && !include_completed {
+                    continue;
+                }
+                if let Some(due) = &task.schedule.due {
+                    if due.date.as_str() >= from && due.date.as_str() <= to {
+                        items.push(CalendarTaskItem {
+                            task_id: task.id,
+                            title: task.title.clone(),
+                            date: due.date.clone(),
+                            time: if task.schedule.all_day {
+                                None
+                            } else {
+                                due.time.clone()
+                            },
+                            all_day: task.schedule.all_day,
+                            priority: task.priority,
+                            list: task.list.clone(),
+                            done,
+                            is_repeating: false,
+                            occurrence_key: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        items.sort_by(|a, b| {
+            a.date
+                .cmp(&b.date)
+                .then_with(|| a.done.cmp(&b.done))
+                .then_with(|| {
+                    a.time
+                        .as_deref()
+                        .unwrap_or("99:99")
+                        .cmp(b.time.as_deref().unwrap_or("99:99"))
+                })
+                .then_with(|| a.priority.sort_rank().cmp(&b.priority.sort_rank()))
+        });
+        Ok(items)
+    }
+
     fn today_in_tz(&self, tz_name: &str) -> String {
         let tz: Tz = tz_name.parse().unwrap_or(chrono_tz::Asia::Shanghai);
         format_date(Utc::now().with_timezone(&tz).date_naive())
@@ -981,5 +1134,67 @@ mod tests {
         assert_eq!(recovered.reminders.len(), 1);
         assert_eq!(recovered.repeat.as_ref().unwrap().interval, 6);
         assert_eq!(recovered.series.as_ref().unwrap().cursor, "2027-05-26");
+    }
+
+    #[tokio::test]
+    async fn calendar_expansion_and_single_occurrence_override() {
+        let (svc, _provider) = setup().await;
+
+        let weekly = svc
+            .create_task(CreateTaskInput {
+                title: "每周一例会".into(),
+                description: String::new(),
+                priority: Priority::Normal,
+                list: Some("工作".into()),
+                labels: vec![],
+                pinned: false,
+                schedule: Schedule {
+                    all_day: false,
+                    due: Some(due_point("2026-11-02", Some("10:00"))),
+                    timezone: "Asia/Shanghai".into(),
+                },
+                reminders: vec![],
+                repeat: Some(RepeatRule {
+                    freq: RepeatFreq::Weekly,
+                    interval: 1,
+                    calendar: Default::default(),
+                    by_weekday: Some(vec!["MO".into()]),
+                    by_set_pos: None,
+                    by_month_day: None,
+                    by_month: None,
+                    lunar: None,
+                    day_filter: None,
+                    on_invalid_date: Default::default(),
+                    basis: Default::default(),
+                    catch_up: Default::default(),
+                    end: Default::default(),
+                    dtstart: "2026-11-02".into(),
+                }),
+            })
+            .await
+            .unwrap();
+
+        let items = svc
+            .list_calendar_items("2026-11-01", "2026-11-30", true)
+            .unwrap();
+        let dates: Vec<&str> = items.iter().map(|i| i.date.as_str()).collect();
+        assert_eq!(
+            dates,
+            vec!["2026-11-02", "2026-11-09", "2026-11-16", "2026-11-23", "2026-11-30"]
+        );
+
+        // Drag-reschedule only the 2026-11-16 occurrence to 2026-11-17.
+        svc.override_occurrence(weekly.id, "2026-11-16", "2026-11-17", None)
+            .await
+            .unwrap();
+
+        let items_after = svc
+            .list_calendar_items("2026-11-01", "2026-11-30", true)
+            .unwrap();
+        let dates_after: Vec<&str> = items_after.iter().map(|i| i.date.as_str()).collect();
+        assert_eq!(
+            dates_after,
+            vec!["2026-11-02", "2026-11-09", "2026-11-17", "2026-11-23", "2026-11-30"]
+        );
     }
 }

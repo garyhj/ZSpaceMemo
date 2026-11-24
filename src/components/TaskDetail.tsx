@@ -5,8 +5,9 @@ import {
   Check,
   ChevronRight,
   Folder,
-  Hash,
+  ListChecks,
   Pin,
+  Plus,
   Repeat,
   Trash2,
 } from "lucide-react";
@@ -56,7 +57,8 @@ export function TaskDetail({
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [list, setList] = useState("");
-  const [labelsText, setLabelsText] = useState("");
+  const [checklistMode, setChecklistMode] = useState(false);
+  const [newCheckItem, setNewCheckItem] = useState("");
   const [timeline, setTimeline] = useState<OccurrenceView[]>([]);
   const [saving, setSaving] = useState<"idle" | "saving" | "saved">("idle");
   const [modal, setModal] = useState<"date" | "reminder" | "repeat" | null>(null);
@@ -67,7 +69,11 @@ export function TaskDetail({
     setTitle(task.title);
     setDescription(task.description);
     setList(task.list ?? "");
-    setLabelsText(task.labels.join(", "));
+    setChecklistMode(
+      task.description
+        .split("\n")
+        .some((l) => /^\s*-\s*\[[ xX]\]\s+/.test(l))
+    );
     setTab("detail");
     setPendingPatch(null);
 
@@ -363,48 +369,108 @@ export function TaskDetail({
               />
             </div>
 
-            <div className="flex items-center gap-3 py-2">
-              <Hash className="h-4 w-4 text-slate-400" />
-              <span className="w-12 text-xs text-slate-500">标签</span>
-              <input
-                value={labelsText}
-                onChange={(e) => setLabelsText(e.target.value)}
-                onBlur={() => {
-                  const parsed = labelsText
-                    .split(/[,，]/)
-                    .map((x) => x.trim())
-                    .filter(Boolean);
-                  if (JSON.stringify(parsed) !== JSON.stringify(task.labels)) {
-                    void savePatch({ labels: parsed });
-                  }
-                }}
-                placeholder="逗号分隔（如：续费, eSIM）"
-                className="flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400"
-              />
-            </div>
           </div>
 
-          {/* Description */}
+          {/* Description / Dida365-style lightweight Checklist */}
           <div>
-            <div className="mb-1 flex items-center justify-between text-xs text-slate-500">
-              <span>备注（支持多行、链接、基础 Markdown）</span>
-              {task.rich_body_protected && (
-                <span className="text-amber-600">包含官方富文本，已保护只读</span>
-              )}
+            <div className="mb-1.5 flex items-center justify-between text-xs text-slate-500">
+              <span>{checklistMode ? "检查清单（子步骤，保存在笔记正文中）" : "备注（支持多行、链接、基础 Markdown）"}</span>
+              <div className="flex items-center gap-2">
+                {task.rich_body_protected ? (
+                  <span className="text-amber-600">包含官方富文本，已保护只读</span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setChecklistMode((v) => !v)}
+                    className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] transition ${
+                      checklistMode
+                        ? "bg-blue-50 text-blue-600 font-medium"
+                        : "text-slate-500 hover:bg-slate-100"
+                    }`}
+                  >
+                    <ListChecks className="h-3.5 w-3.5" />
+                    {checklistMode ? "切回文本" : "检查清单"}
+                  </button>
+                )}
+              </div>
             </div>
-            <textarea
-              rows={5}
-              readOnly={task.rich_body_protected}
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              onBlur={() => {
-                if (!task.rich_body_protected && description !== task.description) {
-                  void savePatch({ description });
-                }
-              }}
-              placeholder="添加任务说明、链接或补充信息…"
-              className="w-full rounded-xl border border-slate-200 p-2.5 text-sm outline-none focus:border-blue-400 read-only:bg-slate-50"
-            />
+
+            {checklistMode && !task.rich_body_protected ? (
+              <div className="rounded-xl border border-slate-200 p-2.5 space-y-1.5">
+                {description
+                  .split("\n")
+                  .filter((l) => l.trim().length > 0)
+                  .map((line, idx, allLines) => {
+                    const checked = /^\s*-\s*\[[xX]\]\s+/.test(line);
+                    const text = line.replace(/^\s*-\s*\[[ xX]\]\s+/, "").replace(/^\s*-\s+/, "");
+                    return (
+                      <div key={idx} className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            const nextLines = [...allLines];
+                            nextLines[idx] = `${checked ? "- [ ]" : "- [x]"} ${text}`;
+                            const nextDesc = nextLines.join("\n");
+                            setDescription(nextDesc);
+                            void savePatch({ description: nextDesc });
+                          }}
+                          className="h-3.5 w-3.5 accent-blue-600"
+                        />
+                        <span className={`flex-1 ${checked ? "line-through text-slate-400" : "text-slate-800"}`}>
+                          {text}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const nextDesc = allLines.filter((_, i) => i !== idx).join("\n");
+                            setDescription(nextDesc);
+                            void savePatch({ description: nextDesc });
+                          }}
+                          className="text-xs text-slate-300 hover:text-red-500"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    );
+                  })}
+                <div className="flex items-center gap-1.5 pt-1">
+                  <Plus className="h-3.5 w-3.5 text-slate-400" />
+                  <input
+                    value={newCheckItem}
+                    onChange={(e) => setNewCheckItem(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && newCheckItem.trim()) {
+                        const existing = description
+                          .split("\n")
+                          .filter((l) => l.trim().length > 0);
+                        existing.push(`- [ ] ${newCheckItem.trim()}`);
+                        const nextDesc = existing.join("\n");
+                        setDescription(nextDesc);
+                        setNewCheckItem("");
+                        void savePatch({ description: nextDesc });
+                      }
+                    }}
+                    placeholder="添加检查项，回车保存"
+                    className="flex-1 bg-transparent text-xs outline-none placeholder:text-slate-400"
+                  />
+                </div>
+              </div>
+            ) : (
+              <textarea
+                rows={5}
+                readOnly={task.rich_body_protected}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                onBlur={() => {
+                  if (!task.rich_body_protected && description !== task.description) {
+                    void savePatch({ description });
+                  }
+                }}
+                placeholder="添加任务说明、链接或补充信息…"
+                className="w-full rounded-xl border border-slate-200 p-2.5 text-sm outline-none focus:border-blue-400 read-only:bg-slate-50"
+              />
+            )}
           </div>
 
           {/* Repeating series occurrence timeline */}
