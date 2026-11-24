@@ -94,3 +94,28 @@ jobs:
             src-tauri/target/**/release/bundle/dmg/*.dmg
             src-tauri/target/**/release/bundle/macos/*.app.tar.gz
           if-no-files-found: warn
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build-desktop
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish draft release for current version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v$(node -p "require('./package.json').version")"
+          REL_ID=$(gh api "repos/${GITHUB_REPOSITORY}/releases" --jq ".[] | select(.tag_name==\"${TAG}\") | .id" | head -n1)
+          if [ -z "$REL_ID" ]; then
+            echo "Draft release for ${TAG} not found" >&2
+            exit 1
+          fi
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${REL_ID}" \
+            -F draft=false \
+            -f make_latest=true \
+            -f target_commitish="${GITHUB_SHA}"
+          echo "Published ${TAG} (release id ${REL_ID})"
+
