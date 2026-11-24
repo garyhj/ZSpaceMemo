@@ -134,11 +134,32 @@ export function MonthCalendarView({
     try {
       const item = JSON.parse(raw) as CalendarTaskItem;
       if (item.date !== targetDate) {
+        // Optimistic move on frame 0
+        setItems((prev) =>
+          prev.map((x) =>
+            x.task_id === item.task_id &&
+            (x.occurrence_key ?? null) === (item.occurrence_key ?? null)
+              ? { ...x, date: targetDate }
+              : x
+          )
+        );
         void onRescheduleItem(item, targetDate);
       }
     } catch {
       // ignore invalid drag payload
     }
+  }
+
+  function handleOptimisticToggle(item: CalendarTaskItem) {
+    setItems((prev) =>
+      prev.map((x) =>
+        x.task_id === item.task_id &&
+        (x.occurrence_key ?? null) === (item.occurrence_key ?? null)
+          ? { ...x, done: !x.done }
+          : x
+      )
+    );
+    void onToggleItem(item);
   }
 
   return (
@@ -332,7 +353,7 @@ export function MonthCalendarView({
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          void onToggleItem(item);
+                          handleOptimisticToggle(item);
                         }}
                         className={`flex h-3 w-3 shrink-0 items-center justify-center rounded-full border ${
                           item.done

@@ -283,31 +283,83 @@ function MainWindow() {
     }
   }
 
+  function applyLocalTaskPatch(id: number, updater: (t: Task) => Task) {
+    setTasks((prev) => prev.map((t) => (t.id === id ? updater(t) : t)));
+    setAllActive((prev) => prev.map((t) => (t.id === id ? updater(t) : t)));
+  }
+
   async function handleCreate(input: CreateTaskInput) {
-    setBusy(true);
+    const withList: CreateTaskInput = {
+      ...input,
+      list: input.list ?? activeList ?? null,
+    };
+    const tempId = -Date.now();
+    const optimistic: Task = {
+      id: tempId,
+      title: withList.title,
+      description: withList.description ?? "",
+      rich_body_protected: false,
+      status: "pending",
+      priority: withList.priority ?? "normal",
+      list: withList.list ?? null,
+      labels: withList.labels ?? [],
+      pinned: withList.pinned ?? false,
+      schedule: withList.schedule ?? { all_day: false, due: null, timezone: "Asia/Shanghai" },
+      reminders: withList.reminders ?? [],
+      repeat: withList.repeat ?? null,
+      series: null,
+      completed_at: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      source: "zspace_notebook",
+      meta_state: "ok",
+      rev: 0,
+      etag: "",
+    };
+    setTasks((prev) => [optimistic, ...prev]);
+    setAllActive((prev) => [optimistic, ...prev]);
+    setSelectedId(tempId);
+
     try {
-      const withList: CreateTaskInput = {
-        ...input,
-        list: input.list ?? activeList ?? null,
-      };
       const created = await api.createTask(withList);
-      setSelectedId(created.id);
+      setSelectedId((cur) => (cur === tempId ? created.id : cur));
       await refreshAll();
       showToast(`已创建「${created.title}」`);
     } catch (e) {
+      setTasks((prev) => prev.filter((t) => t.id !== tempId));
+      setAllActive((prev) => prev.filter((t) => t.id !== tempId));
+      setSelectedId((cur) => (cur === tempId ? null : cur));
       showToast(`创建失败：${String(e)}`);
       throw e;
-    } finally {
-      setBusy(false);
     }
   }
 
   async function handleUpdate(id: number, patch: UpdateTaskInput) {
+    const prevTasks = tasks;
+    const prevActive = allActive;
+
+    applyLocalTaskPatch(id, (t) => ({
+      ...t,
+      title: patch.title ?? t.title,
+      description: patch.description ?? t.description,
+      status: patch.status ?? t.status,
+      priority: patch.priority ?? t.priority,
+      list: patch.list !== undefined ? patch.list : t.list,
+      labels: patch.labels ?? t.labels,
+      pinned: patch.pinned ?? t.pinned,
+      schedule: patch.schedule ?? t.schedule,
+      reminders: patch.reminders ?? t.reminders,
+      repeat: patch.repeat !== undefined ? patch.repeat : t.repeat,
+    }));
+
     try {
-      await api.updateTask(id, patch);
+      const saved = await api.updateTask(id, patch);
+      applyLocalTaskPatch(id, () => saved);
       setConflictMsg(null);
-      await refreshAll();
+      void refreshAll();
     } catch (e) {
+      setTasks(prevTasks);
+      setAllActive(prevActive);
       const msg = String(e);
       if (msg.includes("TASK_CONFLICT")) {
         setConflictMsg("该任务已在其他设备或极空间官方记事本中被修改，请选择覆盖或刷新。");
@@ -319,9 +371,22 @@ function MainWindow() {
   }
 
   async function handleToggle(task: Task) {
-    setBusy(true);
+    const prevTasks = tasks;
+    const prevActive = allActive;
+    const done = task.status === "completed" || task.status === "ended";
+
+    // Optimistically update UI immediately (0ms latency)
+    if (!task.repeat) {
+      const nextStatus = done ? "pending" : "completed";
+      if (!done && view !== "completed") {
+        setTasks((prev) => prev.filter((t) => t.id !== task.id));
+        setAllActive((prev) => prev.filter((t) => t.id !== task.id));
+      } else {
+        applyLocalTaskPatch(task.id, (t) => ({ ...t, status: nextStatus }));
+      }
+    }
+
     try {
-      const done = task.status === "completed" || task.status === "ended";
       if (done) {
         await api.reopenTask(task.id);
         await refreshAll();
@@ -348,14 +413,13 @@ function MainWindow() {
         }
       }
     } catch (e) {
+      setTasks(prevTasks);
+      setAllActive(prevActive);
       showToast(`操作失败：${String(e)}`);
-    } finally {
-      setBusy(false);
     }
   }
 
   async function handleSkip(task: Task, key?: string) {
-    setBusy(true);
     try {
       const actedKey = key ?? task.series?.cursor;
       const updated = await api.skipOccurrence(task.id, actedKey);
@@ -371,53 +435,48 @@ function MainWindow() {
       );
     } catch (e) {
       showToast(`跳过失败：${String(e)}`);
-    } finally {
-      setBusy(false);
     }
   }
 
   async function handleReopenOccurrence(task: Task, key: string) {
-    setBusy(true);
     try {
       await api.reopenTask(task.id, key);
       await refreshAll();
       showToast(`已撤销 ${dateLabel(key)} 的记录`);
     } catch (e) {
       showToast(`撤销失败：${String(e)}`);
-    } finally {
-      setBusy(false);
     }
   }
 
   async function handleEndSeries(task: Task) {
-    setBusy(true);
     try {
       await api.endSeries(task.id);
       await refreshAll();
       showToast(`已终止重复系列「${task.title}」`);
     } catch (e) {
       showToast(`终止失败：${String(e)}`);
-    } finally {
-      setBusy(false);
     }
   }
 
   async function handleDelete(task: Task) {
-    setBusy(true);
+    const prevTasks = tasks;
+    const prevActive = allActive;
+    setTasks((prev) => prev.filter((t) => t.id !== task.id));
+    setAllActive((prev) => prev.filter((t) => t.id !== task.id));
+    if (selectedId === task.id) setSelectedId(null);
+
     try {
       await api.deleteTask(task.id);
-      if (selectedId === task.id) setSelectedId(null);
-      await refreshAll();
+      void refreshAll();
       showToast(`已删除「${task.title}」（已移入极空间「最近删除」）`);
     } catch (e) {
+      setTasks(prevTasks);
+      setAllActive(prevActive);
       showToast(`删除失败：${String(e)}`);
-    } finally {
-      setBusy(false);
     }
   }
 
   async function handleCalendarReschedule(item: CalendarTaskItem, targetDate: string) {
-    setBusy(true);
     try {
       if (item.is_repeating && item.occurrence_key) {
         await api.overrideOccurrence(item.task_id, item.occurrence_key, targetDate, item.time);
@@ -436,13 +495,10 @@ function MainWindow() {
       await refreshAll();
     } catch (e) {
       showToast(`改期失败：${String(e)}`);
-    } finally {
-      setBusy(false);
     }
   }
 
   async function handleCalendarToggle(item: CalendarTaskItem) {
-    setBusy(true);
     try {
       if (item.done) {
         await api.reopenTask(item.task_id, item.occurrence_key);
@@ -452,8 +508,6 @@ function MainWindow() {
       await refreshAll();
     } catch (e) {
       showToast(`操作失败：${String(e)}`);
-    } finally {
-      setBusy(false);
     }
   }
 

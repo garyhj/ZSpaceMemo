@@ -22,6 +22,9 @@ export function QuickAddBar({ compact, inputRef, busy, onCreate }: Props) {
 
   async function submit() {
     if (!parsed.title || busy) return;
+    const prevRaw = raw;
+    const prevDate = defaultDate;
+    const prevPri = defaultPri;
     const input: CreateTaskInput = {
       title: parsed.title,
       priority: parsed.priority,
@@ -32,14 +35,17 @@ export function QuickAddBar({ compact, inputRef, busy, onCreate }: Props) {
         timezone: "Asia/Shanghai",
       },
     };
+    setRaw("");
+    setDefaultDate(null);
+    setDefaultPri("normal");
+    ref.current?.focus();
     try {
       await onCreate(input);
-      setRaw("");
-      setDefaultDate(null);
-      setDefaultPri("normal");
-      ref.current?.focus();
     } catch {
-      // Preserve input on failure per spec.
+      // Restore user input on failure per spec.
+      setRaw(prevRaw);
+      setDefaultDate(prevDate);
+      setDefaultPri(prevPri);
     }
   }
 

@@ -1,8 +1,9 @@
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Schedule } from "../types";
 import { addDays, addMonths, dateLabel, formatDate, nextMonday, parseDate, todayStr } from "../utils/date";
 import { getDayCalendarMeta } from "../utils/lunar";
+import { TimePicker } from "./TimePicker";
 
 interface Props {
   schedule: Schedule;
@@ -21,14 +22,23 @@ export function DatePickerModal({
 }: Props) {
   const today = todayStr();
   const [month, setMonth] = useState((schedule.due?.date ?? today).slice(0, 7));
-  const [allDay, setAllDay] = useState(schedule.all_day);
+  const [allDay, setAllDay] = useState(schedule.all_day || !schedule.due?.time);
   const [dueDate, setDueDate] = useState<string | null>(schedule.due?.date ?? null);
-  const [dueTime, setDueTime] = useState<string>(schedule.due?.time ?? "18:00");
+  const [dueTime, setDueTime] = useState<string | null>(schedule.due?.time ?? null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   function buildSchedule(): Schedule {
+    const isAllDay = allDay || !dueTime;
     return {
-      all_day: allDay,
-      due: dueDate ? { date: dueDate, time: allDay ? null : dueTime || null } : null,
+      all_day: isAllDay,
+      due: dueDate ? { date: dueDate, time: isAllDay ? null : dueTime } : null,
       timezone: schedule.timezone || "Asia/Shanghai",
     };
   }
@@ -162,12 +172,16 @@ export function DatePickerModal({
         </div>
 
         <div className="mt-3 space-y-2.5 border-t border-slate-100 pt-3 text-sm">
-          <label className="flex items-center justify-between">
+          <label className="flex items-center justify-between cursor-pointer">
             <span className="text-slate-700">全天</span>
             <input
               type="checkbox"
               checked={allDay}
-              onChange={(e) => setAllDay(e.target.checked)}
+              onChange={(e) => {
+                const checked = e.target.checked;
+                setAllDay(checked);
+                if (!checked && !dueTime) setDueTime("18:00");
+              }}
               className="h-4 w-4 accent-blue-600"
             />
           </label>
@@ -177,13 +191,15 @@ export function DatePickerModal({
               截止 {dueDate ? dateLabel(dueDate) : "未设置"}
             </span>
             {dueDate ? (
-              <input
-                type="time"
-                step={900}
+              <TimePicker
+                value={allDay ? null : dueTime}
                 disabled={allDay}
-                value={allDay ? "" : dueTime}
-                onChange={(e) => setDueTime(e.target.value)}
-                className="rounded-lg border border-slate-200 px-2 py-1 text-xs disabled:opacity-40"
+                allowClear
+                placeholder="全天"
+                onChange={(t) => {
+                  setDueTime(t);
+                  setAllDay(!t);
+                }}
               />
             ) : (
               <span className="text-xs text-slate-400">先选日期</span>

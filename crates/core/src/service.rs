@@ -316,18 +316,23 @@ impl<P: NotebookProvider> TaskService<P> {
             let _ = self.provider.pin_note(created_raw.id, true).await;
         }
 
-        // Read-back verification (DESIGN §4.3).
-        let verified = self.provider.get_note(created_raw.id).await?;
+        // Verify returned note directly when NAS returns full body (confirmed in M0);
+        // only fall back to an extra get_note if body is empty.
+        let verified = if created_raw.body.is_empty() {
+            self.provider.get_note(created_raw.id).await?
+        } else {
+            created_raw
+        };
         let decoded = decode_task_note(
             verified.id,
             &verified.title,
             &verified.body,
-            verified.pin_flag != 0,
+            task.pinned || verified.pin_flag != 0,
             verified.updated_at,
         );
         if !decoded.meta_present {
             return Err(AppError::MetaUnparseable(
-                "创建笔记后回读校验失败：元数据未正确保存".into(),
+                "创建笔记后校验失败：元数据未正确保存".into(),
             ));
         }
 
@@ -355,7 +360,7 @@ impl<P: NotebookProvider> TaskService<P> {
         Ok(decoded.task)
     }
 
-    /// Update a task with optimistic concurrency check (ETag) and read-back verification.
+    /// Update a task with optimistic concurrency check (ETag).
     pub async fn update_task(&self, id: i64, patch: UpdateTaskInput) -> AppResult<Task> {
         let latest_raw = self.provider.get_note(id).await?;
         let decoded = decode_task_note(
@@ -464,22 +469,17 @@ impl<P: NotebookProvider> TaskService<P> {
             self.provider.pin_note(task.id, p).await?;
         }
 
-        let verified = self.provider.get_note(task.id).await?;
-        let dec = decode_task_note(
-            verified.id,
-            &verified.title,
-            &verified.body,
-            verified.pin_flag != 0,
-            verified.updated_at,
-        );
+        let now = Utc::now();
+        task.etag = encoded.etag;
+        task.updated_at = Some(now.to_rfc3339());
         self.storage.upsert_cached_task(
-            &dec.task,
-            verified.updated_at,
-            verified.length,
-            dec.meta_present && !dec.meta_corrupted,
+            &task,
+            now.timestamp(),
+            encoded.body.len() as i64,
+            true,
         )?;
-        self.reconcile_reminders(&dec.task)?;
-        Ok(dec.task)
+        self.reconcile_reminders(&task)?;
+        Ok(task)
     }
 
     /// Idempotent complete/skip for a single task or a repeating occurrence.
@@ -489,7 +489,7 @@ impl<P: NotebookProvider> TaskService<P> {
         occurrence_key: Option<&str>,
         action: OccurrenceActionStatus,
     ) -> AppResult<Task> {
-        let mut task = self.get_task(id, true).await?;
+        let mut task = self.get_task(id, false).await?;
         let now = Utc::now();
         let now_iso = now.to_rfc3339();
         let today = self.today_in_tz(&task.schedule.timezone);
@@ -549,7 +549,7 @@ impl<P: NotebookProvider> TaskService<P> {
     }
 
     pub async fn reopen_task(&self, id: i64, occurrence_key: Option<&str>) -> AppResult<Task> {
-        let mut task = self.get_task(id, true).await?;
+        let mut task = self.get_task(id, false).await?;
         if let (Some(_rule), Some(series)) = (&task.repeat, &mut task.series) {
             if let Some(key) = occurrence_key {
                 series.history.retain(|h| h.key != key);
@@ -567,7 +567,7 @@ impl<P: NotebookProvider> TaskService<P> {
     }
 
     pub async fn end_series(&self, id: i64) -> AppResult<Task> {
-        let mut task = self.get_task(id, true).await?;
+        let mut task = self.get_task(id, false).await?;
         if let Some(series) = &mut task.series {
             series.ended_at = Some(Utc::now().to_rfc3339());
             task.status = TaskStatus::Ended;
@@ -590,7 +590,7 @@ impl<P: NotebookProvider> TaskService<P> {
         new_due_time: Option<&str>,
     ) -> AppResult<Task> {
         let _ = parse_date(new_due_date)?;
-        let mut task = self.get_task(id, true).await?;
+        let mut task = self.get_task(id, false).await?;
         if let Some(series) = &mut task.series {
             let entry = series
                 .overrides

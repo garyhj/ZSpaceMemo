@@ -2,6 +2,7 @@ import { LogOut, RefreshCw, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { AppSettings, AuthStatus } from "../types";
+import { TimePicker } from "./TimePicker";
 
 interface Props {
   auth: AuthStatus;
@@ -152,13 +153,12 @@ export function SettingsModal({ auth, onClose, onLogout, onSettingsChanged }: Pr
 
           <div className="flex items-center justify-between">
             <span className="text-slate-800">全天任务默认提醒时刻</span>
-            <input
-              type="time"
+            <TimePicker
               value={settings.default_all_day_reminder_time}
-              onChange={(e) =>
-                void save({ ...settings, default_all_day_reminder_time: e.target.value })
-              }
-              className="rounded-lg border border-slate-200 px-2 py-1 text-xs"
+              allowClear={false}
+              onChange={(t) => {
+                if (t) void save({ ...settings, default_all_day_reminder_time: t });
+              }}
             />
           </div>
 
