@@ -40,22 +40,20 @@ export function FloatingWindow() {
   }, []);
 
   async function handleCreate(input: CreateTaskInput) {
-    setBusy(true);
-    try {
-      await api.createTask(input);
-      await refresh();
-    } finally {
-      setBusy(false);
-    }
+    await api.createTask(input);
+    await refresh();
   }
 
   async function handleToggle(task: Task) {
-    setBusy(true);
+    const prev = tasks;
+    if (!task.repeat) {
+      setTasks((cur) => cur.filter((t) => t.id !== task.id));
+    }
     try {
       await api.completeTask(task.id);
       await refresh();
-    } finally {
-      setBusy(false);
+    } catch {
+      setTasks(prev);
     }
   }
 
@@ -76,10 +74,14 @@ export function FloatingWindow() {
           <button
             type="button"
             title="立即同步"
-            onClick={() => void api.syncTasks().then(refresh)}
+            onClick={() => {
+              if (busy) return;
+              setBusy(true);
+              void api.syncTasks().then(refresh).finally(() => setBusy(false));
+            }}
             className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
           >
-            <RefreshCw className="h-3.5 w-3.5" />
+            <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin text-blue-500" : ""}`} />
           </button>
           <button
             type="button"

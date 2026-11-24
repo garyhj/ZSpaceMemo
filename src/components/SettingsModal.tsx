@@ -2,6 +2,7 @@ import { LogOut, RefreshCw, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { AppSettings, AuthStatus } from "../types";
+import { setPrefs, usePrefs } from "../utils/prefs";
 import { TimePicker } from "./TimePicker";
 
 interface Props {
@@ -12,6 +13,7 @@ interface Props {
 }
 
 export function SettingsModal({ auth, onClose, onLogout, onSettingsChanged }: Props) {
+  const prefs = usePrefs();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
@@ -113,6 +115,33 @@ export function SettingsModal({ auth, onClose, onLogout, onSettingsChanged }: Pr
 
         {/* Preferences */}
         <div className="space-y-3 text-sm">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-slate-800">时间格式</div>
+              <div className="text-xs text-slate-400">仅影响本机显示，不改动极空间里的数据</div>
+            </div>
+            <Segmented
+              value={prefs.timeFormat}
+              options={[
+                ["24h", "24 小时 18:00"],
+                ["12h", "12 小时 下午 6:00"],
+              ]}
+              onChange={(v) => setPrefs({ timeFormat: v as "24h" | "12h" })}
+            />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <span className="text-slate-800">每周起始日</span>
+            <Segmented
+              value={prefs.weekStart}
+              options={[
+                ["mon", "周一"],
+                ["sun", "周日"],
+              ]}
+              onChange={(v) => setPrefs({ weekStart: v as "mon" | "sun" })}
+            />
+          </div>
+
           <label className="flex items-center justify-between">
             <div>
               <div className="text-slate-800">开机自启动</div>
@@ -181,6 +210,33 @@ export function SettingsModal({ auth, onClose, onLogout, onSettingsChanged }: Pr
 
         {msg && <div className="text-xs text-blue-600">{msg}</div>}
       </div>
+    </div>
+  );
+}
+
+function Segmented({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: [string, string][];
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="flex rounded-lg bg-slate-100 p-0.5 text-xs">
+      {options.map(([v, label]) => (
+        <button
+          key={v}
+          type="button"
+          onClick={() => onChange(v)}
+          className={`rounded-md px-2.5 py-1 transition ${
+            value === v ? "bg-white font-medium text-blue-600 shadow-xs" : "text-slate-500 hover:text-slate-700"
+          }`}
+        >
+          {label}
+        </button>
+      ))}
     </div>
   );
 }

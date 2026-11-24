@@ -23,6 +23,7 @@ import {
   PRIORITY_META,
   reminderLabel,
 } from "../utils/date";
+import { formatTime, usePrefs } from "../utils/prefs";
 import { DatePickerModal } from "./DatePickerModal";
 import { ReminderModal } from "./ReminderModal";
 import { RepeatModal } from "./RepeatModal";
@@ -54,6 +55,7 @@ export function TaskDetail({
   conflictMessage,
   onClearConflict,
 }: Props) {
+  const prefs = usePrefs();
   const [tab, setTab] = useState<"detail" | "note">("detail");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -202,7 +204,7 @@ export function TaskDetail({
             <h1 className="text-lg font-bold">{task.title}</h1>
             {due && (
               <p className="text-slate-700">
-                📅 截止 {due.date} {!due.all_day && due.time ? due.time : "（全天）"}
+                📅 截止 {due.date} {!due.all_day && due.time ? formatTime(due.time, prefs.timeFormat) : "（全天）"}
               </p>
             )}
             <p className="text-slate-700">
@@ -249,13 +251,14 @@ export function TaskDetail({
             <button
               type="button"
               onClick={() => void onToggle(task)}
-              className={`mt-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 ${
+              style={done ? undefined : { borderColor: pri.hex }}
+              className={`mt-1 flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-[5px] border-[1.5px] transition ${
                 done
-                  ? "border-emerald-600 bg-emerald-600 text-white"
-                  : `${pri.ringClass} hover:bg-slate-100`
+                  ? "border-slate-300 bg-slate-300 text-white"
+                  : "hover:bg-slate-100"
               }`}
             >
-              {done && <Check className="h-3.5 w-3.5 stroke-[3]" />}
+              {done && <Check className="h-3 w-3 stroke-[3]" />}
             </button>
             <input
               value={title}
@@ -308,7 +311,7 @@ export function TaskDetail({
                 }`}
               >
                 {due
-                  ? `${dateLabel(due.date)}${!due.all_day && due.time ? ` ${due.time}` : " · 全天"}`
+                  ? `${dateLabel(due.date)}${!due.all_day && due.time ? ` ${formatTime(due.time, prefs.timeFormat)}` : " · 全天"}`
                   : "设置截止日期与时间"}
               </span>
               <ChevronRight className="h-4 w-4 text-slate-300" />

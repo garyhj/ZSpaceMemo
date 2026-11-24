@@ -151,13 +151,38 @@ export function describeRepeatZh(r?: RepeatRule | null): string {
 
 export const PRIORITY_META: Record<
   Priority,
-  { label: string; symbol: string; colorClass: string; ringClass: string }
+  { label: string; symbol: string; colorClass: string; ringClass: string; hex: string }
 > = {
-  low: { label: "低", symbol: "↓", colorClass: "text-slate-400", ringClass: "border-slate-300" },
-  normal: { label: "普通", symbol: "", colorClass: "text-slate-600", ringClass: "border-slate-400" },
-  high: { label: "高", symbol: "!", colorClass: "text-amber-600", ringClass: "border-amber-500" },
-  urgent: { label: "紧急", symbol: "‼", colorClass: "text-red-600", ringClass: "border-red-500" },
+  low: { label: "低", symbol: "↓", colorClass: "text-blue-600", ringClass: "border-blue-600", hex: "#4772FA" },
+  normal: { label: "普通", symbol: "", colorClass: "text-slate-400", ringClass: "border-slate-300", hex: "#B8BCC4" },
+  high: { label: "高", symbol: "!", colorClass: "text-amber-500", ringClass: "border-amber-500", hex: "#F59F00" },
+  urgent: { label: "紧急", symbol: "‼", colorClass: "text-red-600", ringClass: "border-red-600", hex: "#E03131" },
 };
+
+/**
+ * Compact, human-friendly due label for list rows (Dida365 style):
+ * 今天 / 明天 / 昨天 / 周四（7 天内）/ 11月28日（今年）/ 2027/1/3（跨年）。
+ */
+export function dueLabel(date?: string | null): string {
+  if (!date) return "";
+  const t = todayStr();
+  const dd = diffDays(t, date);
+  if (dd === 0) return "今天";
+  if (dd === 1) return "明天";
+  if (dd === -1) return "昨天";
+  const d = parseDate(date);
+  if (dd > 1 && dd < 7) return `周${WD[d.getDay()]}`;
+  if (d.getFullYear() === new Date().getFullYear()) return `${d.getMonth() + 1}月${d.getDate()}日`;
+  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+export type QuickTokenKind = "date" | "time" | "pri" | "list";
+
+export interface QuickToken {
+  kind: QuickTokenKind;
+  start: number;
+  end: number;
+}
 
 export interface QuickParseResult {
   title: string;
@@ -165,45 +190,98 @@ export interface QuickParseResult {
   dueTime: string | null;
   priority: Priority;
   list: string | null;
+  /** Character ranges in `raw` that were recognized (for inline highlighting). */
+  tokens: QuickToken[];
+}
+
+const QUICK_RE =
+  /(?<date>大后天|今天|明天|后天|下周[一二三四五六日天]|周[一二三四五六日天])|(?<time>(?:上午|早上|中午|下午|晚上)?(?:[01]?\d|2[0-3])点(?:半|[0-5]?\d分?)?|(?<![\d:：])(?:[01]?\d|2[0-3])[:：][0-5]\d(?![\d:：]))|(?<pri>[!！](?:紧急|高|低|普通))|(?<list>#[^\s#]+)/g;
+
+const WD_IDX: Record<string, number> = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 日: 0, 天: 0 };
+
+function resolveDateWord(w: string): string {
+  const t = todayStr();
+  if (w === "今天") return t;
+  if (w === "明天") return addDays(t, 1);
+  if (w === "后天") return addDays(t, 2);
+  if (w === "大后天") return addDays(t, 3);
+  const target = WD_IDX[w.slice(-1)];
+  if (w.startsWith("下周")) {
+    // Monday-based "next week"
+    return addDays(nextMonday(), (target + 6) % 7);
+  }
+  const cur = parseDate(t).getDay();
+  return addDays(t, (target - cur + 7) % 7);
+}
+
+function resolveTimeWord(w: string): string | null {
+  const m1 = w.match(/^(?:[01]?\d|2[0-3])[:：]([0-5]\d)$/);
+  if (m1) {
+    const [h, mi] = w.split(/[:：]/);
+    return `${pad(Number(h))}:${mi}`;
+  }
+  const m2 = w.match(/^(上午|早上|中午|下午|晚上)?(\d{1,2})点(半|(\d{1,2})分?)?$/);
+  if (!m2) return null;
+  let h = Number(m2[2]);
+  const period = m2[1];
+  if ((period === "下午" || period === "晚上") && h < 12) h += 12;
+  if (period === "中午" && h < 5) h += 12;
+  const mi = m2[3] === "半" ? 30 : m2[4] ? Number(m2[4]) : 0;
+  if (h > 23 || mi > 59) return null;
+  return `${pad(h)}:${pad(mi)}`;
 }
 
 /** Lightweight natural-language parser for quick-add input. */
 export function quickParse(
   raw: string,
   defaultDate: string | null,
-  defaultPriority: Priority
+  defaultPriority: Priority,
+  defaultList: string | null = null
 ): QuickParseResult {
-  let title = raw;
   let dueDate = defaultDate;
   let dueTime: string | null = null;
   let priority = defaultPriority;
-  let list: string | null = null;
+  let list: string | null = defaultList;
+  const tokens: QuickToken[] = [];
+  const seen = new Set<QuickTokenKind>();
 
-  const t = todayStr();
-  const map: Record<string, string> = {
-    今天: t,
-    明天: addDays(t, 1),
-    后天: addDays(t, 2),
-    下周一: nextMonday(),
-  };
+  for (const m of raw.matchAll(QUICK_RE)) {
+    const g = m.groups ?? {};
+    const kind: QuickTokenKind | null = g.date
+      ? "date"
+      : g.time
+      ? "time"
+      : g.pri
+      ? "pri"
+      : g.list
+      ? "list"
+      : null;
+    if (!kind || seen.has(kind)) continue;
+    const text = m[0];
+    if (kind === "date") dueDate = resolveDateWord(text);
+    if (kind === "time") {
+      const tm = resolveTimeWord(text);
+      if (!tm) continue;
+      dueTime = tm;
+    }
+    if (kind === "pri") {
+      const p = text.slice(1);
+      priority = p === "紧急" ? "urgent" : p === "高" ? "high" : p === "低" ? "low" : "normal";
+    }
+    if (kind === "list") list = text.slice(1);
+    seen.add(kind);
+    tokens.push({ kind, start: m.index ?? 0, end: (m.index ?? 0) + text.length });
+  }
 
-  title = title.replace(/(今天|明天|后天|下周一)/g, (m) => {
-    dueDate = map[m];
-    return " ";
-  });
-  title = title.replace(/\b([01]?\d|2[0-3]):([0-5]\d)\b/, (_m, h, mi) => {
-    dueTime = `${pad(Number(h))}:${mi}`;
-    if (!dueDate) dueDate = t;
-    return " ";
-  });
-  title = title.replace(/!(紧急|高|低)/, (_m, p) => {
-    priority = p === "紧急" ? "urgent" : p === "高" ? "high" : "low";
-    return " ";
-  });
-  title = title.replace(/#(\S+)/, (_m, l) => {
-    list = l;
-    return " ";
-  });
+  if (dueTime && !dueDate) dueDate = todayStr();
+
+  let title = "";
+  let cursor = 0;
+  for (const tk of tokens) {
+    title += raw.slice(cursor, tk.start) + " ";
+    cursor = tk.end;
+  }
+  title += raw.slice(cursor);
 
   return {
     title: title.replace(/\s+/g, " ").trim(),
@@ -211,5 +289,6 @@ export function quickParse(
     dueTime,
     priority,
     list,
+    tokens,
   };
 }

@@ -1,5 +1,6 @@
 import { Clock, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { formatTime, usePrefs } from "../utils/prefs";
 
 interface Props {
   value: string | null; // "HH:MM" (24h) or null
@@ -9,21 +10,28 @@ interface Props {
   onChange: (next: string | null) => void;
 }
 
-const QUICK_TIMES: [string, string][] = [
-  ["09:00", "上午 09:00"],
-  ["12:00", "中午 12:00"],
-  ["14:00", "下午 14:00"],
-  ["18:00", "傍晚 18:00"],
-  ["21:00", "晚上 21:00"],
-];
+const QUICK_TIMES = ["09:00", "12:00", "14:00", "18:00", "21:00"];
 
 const HOURS = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"));
 const MINUTES = ["00", "05", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55"];
 
 /** Smartly normalize user-typed 24h time like "930" -> "09:30", "18" -> "18:00", "9:5" -> "09:05". */
 export function normalizeTimeInput(raw: string): string | null {
-  const s = raw.trim().replace("：", ":");
+  let s = raw.trim().replace("：", ":").toLowerCase();
   if (!s) return null;
+  let pm: boolean | null = null;
+  const pre = s.match(/^(上午|早上|凌晨|中午|下午|晚上)\s*/);
+  if (pre) {
+    pm = pre[1] === "下午" || pre[1] === "晚上" ? true : pre[1] === "中午" ? null : false;
+    if (pre[1] === "中午") pm = true;
+    s = s.slice(pre[0].length);
+  }
+  const suf = s.match(/\s*(am|pm)$/);
+  if (suf) {
+    pm = suf[1] === "pm";
+    s = s.slice(0, s.length - suf[0].length);
+  }
+  s = s.replace(/点半$/, ":30").replace(/点(\d{1,2})分?$/, ":$1").replace(/点$/, "");
   let h = 0;
   let m = 0;
   if (/^\d{1,2}$/.test(s)) {
@@ -40,6 +48,8 @@ export function normalizeTimeInput(raw: string): string | null {
   } else {
     return null;
   }
+  if (pm === true && h < 12) h += 12;
+  if (pm === false && h === 12) h = 0;
   if (h < 0 || h > 23 || m < 0 || m > 59) return null;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
@@ -48,10 +58,13 @@ export function TimePicker({
   value,
   disabled,
   allowClear = true,
-  placeholder = "设置时间 (24h)",
+  placeholder = "设置时间",
   onChange,
 }: Props) {
+  const prefs = usePrefs();
+  const is12 = prefs.timeFormat === "12h";
   const [open, setOpen] = useState(false);
+  const [focused, setFocused] = useState(false);
   const [text, setText] = useState(value ?? "");
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -102,11 +115,17 @@ export function TimePicker({
         <input
           type="text"
           disabled={disabled}
-          value={text}
+          value={focused || !is12 ? text : formatTime(value, "12h")}
           placeholder={placeholder}
-          onFocus={() => !disabled && setOpen(true)}
+          onFocus={() => {
+            setFocused(true);
+            if (!disabled) setOpen(true);
+          }}
           onChange={(e) => setText(e.target.value)}
-          onBlur={commitText}
+          onBlur={() => {
+            setFocused(false);
+            commitText();
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               commitText();
@@ -137,7 +156,7 @@ export function TimePicker({
       {open && !disabled && (
         <div className="absolute right-0 bottom-full z-50 mb-1.5 w-60 rounded-xl border border-slate-200 bg-white p-2.5 shadow-xl">
           <div className="mb-2 flex flex-wrap gap-1">
-            {QUICK_TIMES.map(([val, label]) => (
+            {QUICK_TIMES.map((val) => (
               <button
                 key={val}
                 type="button"
@@ -152,14 +171,14 @@ export function TimePicker({
                     : "bg-slate-100 text-slate-600 hover:bg-blue-50 hover:text-blue-700"
                 }`}
               >
-                {label}
+                {formatTime(val, prefs.timeFormat)}
               </button>
             ))}
           </div>
 
           <div className="grid grid-cols-2 gap-2 border-t border-slate-100 pt-2">
             <div>
-              <div className="mb-1 text-center text-[10px] text-slate-400">时 (24h)</div>
+              <div className="mb-1 text-center text-[10px] text-slate-400">时</div>
               <div className="max-h-36 overflow-y-auto space-y-0.5 pr-0.5">
                 {HOURS.map((h) => (
                   <button
@@ -176,7 +195,7 @@ export function TimePicker({
                         : "text-slate-700 hover:bg-slate-100"
                     }`}
                   >
-                    {h}
+                    {is12 ? formatTime(`${h}:00`, "12h").replace(":00", "") : h}
                   </button>
                 ))}
               </div>

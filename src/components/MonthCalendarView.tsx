@@ -11,6 +11,7 @@ import { api } from "../api";
 import type { CalendarTaskItem, CreateTaskInput, Priority } from "../types";
 import { addDays, addMonths, formatDate, parseDate, todayStr } from "../utils/date";
 import { getDayCalendarMeta } from "../utils/lunar";
+import { formatTime, gridOffset, usePrefs, weekdayHeaders } from "../utils/prefs";
 
 interface Props {
   lists: string[];
@@ -43,6 +44,7 @@ export function MonthCalendarView({
   busy,
 }: Props) {
   const today = todayStr();
+  const prefs = usePrefs();
   const [month, setMonth] = useState(today.slice(0, 7));
   const [items, setItems] = useState<CalendarTaskItem[]>([]);
   const [includeCompleted, setIncludeCompleted] = useState(true);
@@ -54,7 +56,7 @@ export function MonthCalendarView({
   const { cells, rangeFrom, rangeTo, year, monthNum } = useMemo(() => {
     const [y, m] = month.split("-").map(Number);
     const first = new Date(y, m - 1, 1);
-    const off = (first.getDay() + 6) % 7;
+    const off = gridOffset(first, prefs.weekStart);
     const start = addDays(formatDate(first), -off);
     const arr = Array.from({ length: 42 }, (_, i) => {
       const date = addDays(start, i);
@@ -74,7 +76,7 @@ export function MonthCalendarView({
       year: y,
       monthNum: m,
     };
-  }, [month]);
+  }, [month, prefs.weekStart]);
 
   useEffect(() => {
     let active = true;
@@ -224,20 +226,19 @@ export function MonthCalendarView({
           </label>
           <button
             type="button"
-            disabled={busy}
-            onClick={() => void onSync()}
+            onClick={() => !busy && void onSync()}
             className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1 text-slate-600 hover:bg-slate-50"
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} />
-            同步
+            <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin text-blue-500" : ""}`} />
+            {busy ? "同步中" : "同步"}
           </button>
         </div>
       </div>
 
       {/* Weekday Header */}
       <div className="grid grid-cols-7 border-b border-slate-200 bg-slate-50/70 text-center text-xs font-medium text-slate-500">
-        {["周一", "周二", "周三", "周四", "周五", "周六", "周日"].map((w, idx) => (
-          <div key={w} className={`py-1.5 ${idx >= 5 ? "text-slate-400" : ""}`}>
+        {weekdayHeaders(prefs.weekStart).map((w) => (
+          <div key={w} className={`py-1.5 ${w === "周六" || w === "周日" ? "text-slate-400" : ""}`}>
             {w}
           </div>
         ))}
@@ -364,7 +365,7 @@ export function MonthCalendarView({
                         {item.done && <Check className="h-2 w-2 stroke-[3]" />}
                       </button>
                       {item.time && (
-                        <span className="shrink-0 opacity-75 text-[10px]">{item.time}</span>
+                        <span className="shrink-0 opacity-75 text-[10px]">{formatTime(item.time, prefs.timeFormat)}</span>
                       )}
                       <span className="truncate flex-1">{item.title}</span>
                       {item.is_repeating && <Repeat className="h-2.5 w-2.5 shrink-0 opacity-70" />}

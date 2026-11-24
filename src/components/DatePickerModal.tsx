@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { Schedule } from "../types";
 import { addDays, addMonths, dateLabel, formatDate, nextMonday, parseDate, todayStr } from "../utils/date";
 import { getDayCalendarMeta } from "../utils/lunar";
+import { gridOffset, usePrefs, weekdayHeaders } from "../utils/prefs";
 import { TimePicker } from "./TimePicker";
 
 interface Props {
@@ -20,6 +21,7 @@ export function DatePickerModal({
   onSaveAndOpenRepeat,
   onClose,
 }: Props) {
+  const prefs = usePrefs();
   const today = todayStr();
   const [month, setMonth] = useState((schedule.due?.date ?? today).slice(0, 7));
   const [allDay, setAllDay] = useState(schedule.all_day || !schedule.due?.time);
@@ -48,10 +50,10 @@ export function DatePickerModal({
     if (d) setMonth(d.slice(0, 7));
   }
 
-  // Build 42-day calendar grid starting Monday.
+  // Build 42-day calendar grid honoring the week-start preference.
   const [y, m] = month.split("-").map(Number);
   const first = new Date(y, m - 1, 1);
-  const off = (first.getDay() + 6) % 7;
+  const off = gridOffset(first, prefs.weekStart);
   const gridStart = addDays(formatDate(first), -off);
   const cells = Array.from({ length: 42 }, (_, i) => {
     const d = addDays(gridStart, i);
@@ -119,7 +121,7 @@ export function DatePickerModal({
         </div>
 
         <div className="mb-1 grid grid-cols-7 text-center text-[11px] text-slate-400">
-          {["一", "二", "三", "四", "五", "六", "日"].map((w) => (
+          {weekdayHeaders(prefs.weekStart, "").map((w) => (
             <div key={w}>{w}</div>
           ))}
         </div>

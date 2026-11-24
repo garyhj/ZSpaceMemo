@@ -7,6 +7,7 @@ import {
   CalendarDays,
   CheckCircle2,
   CheckSquare,
+  ChevronRight,
   Inbox,
   Layers,
   PanelRightOpen,
@@ -39,7 +40,8 @@ import type {
   TaskView,
   UpdateTaskInput,
 } from "./types";
-import { dateLabel, effectiveDue, isTaskOverdue, todayStr } from "./utils/date";
+import { dateLabel, effectiveDue, formatDate, isTaskOverdue, todayStr } from "./utils/date";
+import { setPrefs, usePrefs } from "./utils/prefs";
 
 const VIEW_ITEMS: { key: TaskView; label: string; icon: React.ReactNode }[] = [
   { key: "today", label: "今天", icon: <Sun className="h-4 w-4" /> },
@@ -111,6 +113,9 @@ function MainWindow() {
   const [toast, setToast] = useState<ToastState | null>(null);
   const [conflictMsg, setConflictMsg] = useState<string | null>(null);
   const [calendarRefreshToken, setCalendarRefreshToken] = useState(0);
+  const [completedTasks, setCompletedTasks] = useState<Task[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const prefs = usePrefs();
 
   const lastFocusSyncRef = useRef<number>(0);
 
@@ -118,8 +123,9 @@ function MainWindow() {
     () =>
       tasks.find((t) => t.id === selectedId) ??
       allActive.find((t) => t.id === selectedId) ??
+      completedTasks.find((t) => t.id === selectedId) ??
       null,
-    [tasks, allActive, selectedId]
+    [tasks, allActive, completedTasks, selectedId]
   );
 
   const unreadCount = useMemo(
@@ -189,17 +195,21 @@ function MainWindow() {
 
   async function refreshAll(v = view, q = query, s = sort) {
     try {
-      const [list, active, notifs] = await Promise.all([
+      const [list, active, done, notifs] = await Promise.all([
         api.listTasks(v, q, s),
         api.listTasks("all", undefined, "date"),
+        api.listTasks("completed", q || undefined, "date"),
         api.listNotifications(50),
       ]);
       setTasks(list);
       setAllActive(active);
+      setCompletedTasks(done);
       setNotifications(notifs);
       setCalendarRefreshToken((n) => n + 1);
     } catch (e) {
       showToast(`刷新列表失败：${String(e)}`);
+    } finally {
+      setLoaded(true);
     }
   }
 
@@ -209,11 +219,19 @@ function MainWindow() {
     try {
       const cfg = await api.getSettings();
       setSettings(cfg);
+      await refreshAll();
+    } catch (e) {
+      showToast(`加载本地缓存失败：${String(e)}`);
+    }
+    setBusy(true);
+    try {
       await api.initializeCategory(true);
       await api.syncTasks();
       await refreshAll();
     } catch (e) {
-      showToast(`初始化失败：${String(e)}`);
+      showToast(`后台同步失败：${String(e)}`);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -373,16 +391,26 @@ function MainWindow() {
   async function handleToggle(task: Task) {
     const prevTasks = tasks;
     const prevActive = allActive;
+    const prevCompleted = completedTasks;
     const done = task.status === "completed" || task.status === "ended";
 
     // Optimistically update UI immediately (0ms latency)
     if (!task.repeat) {
-      const nextStatus = done ? "pending" : "completed";
       if (!done && view !== "completed") {
+        const now = new Date().toISOString();
         setTasks((prev) => prev.filter((t) => t.id !== task.id));
         setAllActive((prev) => prev.filter((t) => t.id !== task.id));
+        setCompletedTasks((prev) => [
+          { ...task, status: "completed", completed_at: now },
+          ...prev.filter((t) => t.id !== task.id),
+        ]);
+      } else if (done && view !== "completed") {
+        const reopened: Task = { ...task, status: "pending", completed_at: null };
+        setCompletedTasks((prev) => prev.filter((t) => t.id !== task.id));
+        setTasks((prev) => [reopened, ...prev.filter((t) => t.id !== task.id)]);
+        setAllActive((prev) => [reopened, ...prev.filter((t) => t.id !== task.id)]);
       } else {
-        applyLocalTaskPatch(task.id, (t) => ({ ...t, status: nextStatus }));
+        applyLocalTaskPatch(task.id, (t) => ({ ...t, status: done ? "pending" : "completed" }));
       }
     }
 
@@ -415,6 +443,7 @@ function MainWindow() {
     } catch (e) {
       setTasks(prevTasks);
       setAllActive(prevActive);
+      setCompletedTasks(prevCompleted);
       showToast(`操作失败：${String(e)}`);
     }
   }
@@ -546,6 +575,53 @@ function MainWindow() {
           }, {})
         ).sort(([a], [b]) => a.localeCompare(b))
       : [];
+
+  // Dida365-style collapsible "已完成" group at the bottom of the current view.
+  const todayKey = todayStr();
+  const completedDay = (t: Task) => (t.completed_at ? formatDate(new Date(t.completed_at)) : null);
+  const completedForView =
+    view === "completed"
+      ? []
+      : completedTasks
+          .filter((t) => {
+            if (t.repeat || t.status !== "completed") return false;
+            if (activeList) return t.list === activeList;
+            if (activeLabel) return t.labels.includes(activeLabel);
+            const due = t.schedule.due?.date ?? null;
+            if (view === "today") return due === todayKey || completedDay(t) === todayKey;
+            if (view === "inbox") return !due;
+            if (view === "all") {
+              const d = completedDay(t);
+              return d !== null && d >= formatDate(new Date(Date.now() - 7 * 86_400_000));
+            }
+            return false;
+          })
+          .sort((a, b) => (b.completed_at ?? "").localeCompare(a.completed_at ?? ""))
+          .slice(0, 50);
+
+  const selectTask = (item: Task) => {
+    setSelectedId(item.id);
+    setConflictMsg(null);
+  };
+  const toggleTask = (item: Task) => void handleToggle(item);
+  const renderTask = (t: Task) => (
+    <TaskListItem
+      key={t.id}
+      task={t}
+      selected={selectedId === t.id}
+      onSelect={selectTask}
+      onToggle={toggleTask}
+    />
+  );
+  const groupHeader = (label: React.ReactNode, tone: "default" | "danger" = "default") => (
+    <div
+      className={`sticky top-0 z-10 bg-white/95 px-2.5 pb-1 pt-3 text-xs font-semibold backdrop-blur ${
+        tone === "danger" ? "text-red-500" : "text-slate-500"
+      }`}
+    >
+      {label}
+    </div>
+  );
 
   return (
     <div className="flex h-screen bg-slate-50">
@@ -818,127 +894,116 @@ function MainWindow() {
           </aside>
 
           {/* Middle Task List */}
-          <main className="flex min-w-0 flex-1 flex-col border-r border-slate-200 bg-white">
-            <div className="border-b border-slate-200 p-3 space-y-2.5">
+          <main className="flex min-w-0 flex-1 flex-col border-r border-slate-200/80 bg-white">
+            <div className="space-y-2.5 px-4 pb-2 pt-3.5">
               <div className="flex items-center gap-2">
-                <h1 className="text-base font-semibold text-slate-900">
+                <h1 className="text-lg font-semibold tracking-tight text-slate-900">
                   {activeList ??
                     (activeLabel ? `#${activeLabel}` : VIEW_ITEMS.find((v) => v.key === view)?.label)}
                 </h1>
-                <div className="ml-auto flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1">
+                <button
+                  type="button"
+                  title={busy ? "正在同步…" : "立即与极空间同步"}
+                  onClick={() => !busy && void handleSync()}
+                  className="rounded-md p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin text-blue-500" : ""}`} />
+                </button>
+                <div className="ml-auto flex items-center gap-1.5 rounded-md bg-slate-100/80 px-2 py-1 focus-within:bg-white focus-within:ring-1 focus-within:ring-blue-400">
                   <Search className="h-3.5 w-3.5 text-slate-400" />
                   <input
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
-                    placeholder="搜索标题 / 备注 / 标签"
-                    className="w-36 bg-transparent text-xs outline-none"
+                    onKeyDown={(e) => e.key === "Escape" && setQuery("")}
+                    placeholder="搜索"
+                    className="w-32 bg-transparent text-xs outline-none placeholder:text-slate-400"
                   />
+                  {query && (
+                    <button type="button" onClick={() => setQuery("")} className="text-slate-400 hover:text-slate-600">
+                      <X className="h-3 w-3" />
+                    </button>
+                  )}
                 </div>
                 <select
                   value={sort}
+                  title="排序"
                   onChange={(e) => setSort(e.target.value as TaskSort)}
-                  className="rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600"
+                  className="rounded-md bg-transparent px-1.5 py-1 text-xs text-slate-500 outline-none hover:bg-slate-100"
                 >
-                  <option value="date">按截止日期</option>
+                  <option value="date">按日期</option>
                   <option value="priority">按优先级</option>
                   <option value="created">按创建时间</option>
                 </select>
-                <button
-                  type="button"
-                  disabled={busy}
-                  title="立即与极空间同步"
-                  onClick={() => void handleSync()}
-                  className="rounded-lg border border-slate-200 p-1.5 text-slate-500 hover:bg-slate-50 disabled:opacity-50"
-                >
-                  <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} />
-                </button>
               </div>
 
-              <QuickAddBar busy={busy} onCreate={handleCreate} />
+              <QuickAddBar lists={lists} onCreate={handleCreate} />
             </div>
 
-            <div className="flex-1 overflow-y-auto">
-              {!activeList && view === "today" ? (
+            <div className="flex-1 overflow-y-auto px-2 pb-6">
+              {!loaded ? (
+                <div className="space-y-3 px-2.5 pt-4">
+                  {[72, 55, 64, 40, 58].map((w, i) => (
+                    <div key={i} className="flex items-center gap-2.5">
+                      <div className="skeleton h-4 w-4" />
+                      <div className="skeleton h-3.5" style={{ width: `${w}%` }} />
+                    </div>
+                  ))}
+                </div>
+              ) : !activeList && !activeLabel && view === "today" ? (
                 <>
                   {overdueToday.length > 0 && (
                     <>
-                      <div className="bg-red-50/70 px-3 py-1.5 text-xs font-semibold text-red-600">
-                        已逾期 · {overdueToday.length}
-                      </div>
-                      {overdueToday.map((t) => (
-                        <TaskListItem
-                          key={t.id}
-                          task={t}
-                          selected={selectedId === t.id}
-                          onSelect={(item) => {
-                            setSelectedId(item.id);
-                            setConflictMsg(null);
-                          }}
-                          onToggle={(item) => void handleToggle(item)}
-                        />
-                      ))}
+                      {groupHeader(<>已过期 <span className="font-normal">{overdueToday.length}</span></>, "danger")}
+                      {overdueToday.map(renderTask)}
                     </>
                   )}
-                  <div className="bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-500">
-                    今天 · {dateLabel(todayStr())}
-                  </div>
-                  {normalToday.length === 0 ? (
-                    <div className="p-8 text-center text-sm text-slate-400">今天没有安排任务</div>
+                  {groupHeader(<>今天 <span className="font-normal text-slate-400">{normalToday.length}</span></>)}
+                  {normalToday.length === 0 && overdueToday.length === 0 ? (
+                    <EmptyState text={completedForView.length > 0 ? "今天的任务都完成了 🎉" : "今天没有安排任务"} />
                   ) : (
-                    normalToday.map((t) => (
-                      <TaskListItem
-                        key={t.id}
-                        task={t}
-                        selected={selectedId === t.id}
-                        onSelect={(item) => {
-                          setSelectedId(item.id);
-                          setConflictMsg(null);
-                        }}
-                        onToggle={(item) => void handleToggle(item)}
-                      />
-                    ))
+                    normalToday.map(renderTask)
                   )}
                 </>
-              ) : !activeList && view === "upcoming" ? (
+              ) : !activeList && !activeLabel && view === "upcoming" ? (
                 upcomingGroups.length === 0 ? (
-                  <div className="p-8 text-center text-sm text-slate-400">未来 7 天没有到期任务</div>
+                  <EmptyState text="接下来几天没有到期任务" />
                 ) : (
                   upcomingGroups.map(([date, group]) => (
                     <div key={date}>
-                      <div className="flex items-center gap-1.5 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-500">
-                        <Calendar className="h-3.5 w-3.5" />
-                        <span>{dateLabel(date)}</span>
-                      </div>
-                      {group.map((t) => (
-                        <TaskListItem
-                          key={t.id}
-                          task={t}
-                          selected={selectedId === t.id}
-                          onSelect={(item) => {
-                            setSelectedId(item.id);
-                            setConflictMsg(null);
-                          }}
-                          onToggle={(item) => void handleToggle(item)}
-                        />
-                      ))}
+                      {groupHeader(
+                        <span className="inline-flex items-center gap-1.5">
+                          <Calendar className="h-3.5 w-3.5" />
+                          {dateLabel(date)}
+                          <span className="font-normal text-slate-400">{group.length}</span>
+                        </span>
+                      )}
+                      {group.map(renderTask)}
                     </div>
                   ))
                 )
               ) : displayedTasks.length === 0 ? (
-                <div className="p-8 text-center text-sm text-slate-400">暂无任务</div>
+                <EmptyState text={completedForView.length > 0 ? "全部完成 🎉" : "暂无任务"} />
               ) : (
-                displayedTasks.map((t) => (
-                  <TaskListItem
-                    key={t.id}
-                    task={t}
-                    selected={selectedId === t.id}
-                    onSelect={(item) => {
-                      setSelectedId(item.id);
-                      setConflictMsg(null);
-                    }}
-                    onToggle={(item) => void handleToggle(item)}
-                  />
-                ))
+                <div className="pt-1">{displayedTasks.map(renderTask)}</div>
+              )}
+
+              {loaded && completedForView.length > 0 && (
+                <div className="mt-2">
+                  <button
+                    type="button"
+                    onClick={() => setPrefs({ showCompletedGroup: !prefs.showCompletedGroup })}
+                    className="flex w-full items-center gap-1 px-2.5 pb-1 pt-3 text-xs font-semibold text-slate-400 hover:text-slate-600"
+                  >
+                    <ChevronRight
+                      className={`h-3.5 w-3.5 transition-transform ${prefs.showCompletedGroup ? "rotate-90" : ""}`}
+                    />
+                    已完成
+                    <span className="font-normal">{completedForView.length}</span>
+                  </button>
+                  {prefs.showCompletedGroup && (
+                    <div className="animate-fade-in">{completedForView.map(renderTask)}</div>
+                  )}
+                </div>
               )}
             </div>
           </main>
@@ -1022,6 +1087,15 @@ function MainWindow() {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function EmptyState({ text }: { text: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-2 py-16 text-center text-sm text-slate-400">
+      <CheckCircle2 className="h-10 w-10 text-slate-200" strokeWidth={1.5} />
+      {text}
     </div>
   );
 }
