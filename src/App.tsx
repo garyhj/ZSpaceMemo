@@ -42,7 +42,7 @@ import type {
   TaskView,
   UpdateTaskInput,
 } from "./types";
-import { dateLabel, effectiveDue, formatDate, isTaskOverdue, todayStr } from "./utils/date";
+import { dateLabel, effectiveDue, formatDate, isTaskOverdue, listColorHex, todayStr } from "./utils/date";
 import { setPrefs, usePrefs } from "./utils/prefs";
 
 const VIEW_ITEMS: { key: TaskView; label: string; icon: React.ReactNode }[] = [
@@ -54,21 +54,6 @@ const VIEW_ITEMS: { key: TaskView; label: string; icon: React.ReactNode }[] = [
   { key: "all", label: "全部任务", icon: <Layers className="h-4 w-4" /> },
   { key: "completed", label: "已完成", icon: <CheckCircle2 className="h-4 w-4" /> },
 ];
-
-const LIST_DOT_COLORS = [
-  "bg-blue-500",
-  "bg-emerald-500",
-  "bg-amber-500",
-  "bg-violet-500",
-  "bg-rose-500",
-  "bg-cyan-500",
-];
-
-function listDotColor(name: string): string {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
-  return LIST_DOT_COLORS[h % LIST_DOT_COLORS.length];
-}
 
 interface ToastState {
   message: string;
@@ -823,6 +808,7 @@ function MainWindow() {
             onCreateTaskOnDate={handleCreate}
             onRescheduleItem={handleCalendarReschedule}
             onToggleItem={handleCalendarToggle}
+            onQuickUpdateTask={(id, patch) => handleUpdate(id, patch)}
             onContextMenuTask={(taskId, x, y) => {
               const t = allActive.find((x) => x.id === taskId) ?? completedTasks.find((x) => x.id === taskId);
               if (t) openMenu(t, x, y, "full");
@@ -1002,7 +988,10 @@ function MainWindow() {
                           : "text-slate-600 hover:bg-slate-200/60"
                       }`}
                     >
-                      <span className={`h-2 w-2 shrink-0 rounded-full ${listDotColor(l)}`} />
+                      <span
+                        className="h-2 w-2 shrink-0 rounded-full"
+                        style={{ backgroundColor: listColorHex(l) ?? "#4772FA" }}
+                      />
                       <span className="flex-1 truncate text-left">{l}</span>
                       {(listCounts[l] ?? 0) > 0 && (
                         <span className="text-[11px] text-slate-400">{listCounts[l]}</span>

@@ -159,6 +159,22 @@ export const PRIORITY_META: Record<
   urgent: { label: "紧急", symbol: "‼", colorClass: "text-red-600", ringClass: "border-red-600", hex: "#E03131" },
 };
 
+const LIST_PALETTE = [
+  "#4772FA",
+  "#10B981",
+  "#F59F00",
+  "#8B5CF6",
+  "#F43F5E",
+  "#06B6D4",
+];
+
+export function listColorHex(name?: string | null): string | null {
+  if (!name) return null;
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return LIST_PALETTE[h % LIST_PALETTE.length];
+}
+
 /**
  * Compact, human-friendly due label for list rows (Dida365 style):
  * 今天 / 明天 / 昨天 / 周四（7 天内）/ 11月28日（今年）/ 2027/1/3（跨年）。
