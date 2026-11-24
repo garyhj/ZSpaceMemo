@@ -550,18 +550,6 @@ function MainWindow() {
     }
   }
 
-  if (!authChecked) {
-    return (
-      <div className="flex h-screen items-center justify-center text-sm text-slate-400">
-        正在连接极空间…
-      </div>
-    );
-  }
-
-  if (!auth?.logged_in) {
-    return <AuthScreen onAuthenticated={bootstrap} />;
-  }
-
   const displayedTasks = activeList
     ? tasks.filter((t) => t.list === activeList)
     : activeLabel
@@ -727,6 +715,18 @@ function MainWindow() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [auth?.logged_in, workspace, selectedId, selected, visibleTaskOrder, ctxMenu, showSettings, showNotif, query]);
+  if (!authChecked) {
+    return (
+      <div className="flex h-screen items-center justify-center text-sm text-slate-400">
+        正在连接极空间…
+      </div>
+    );
+  }
+
+  if (!auth?.logged_in) {
+    return <AuthScreen onAuthenticated={bootstrap} />;
+  }
+
   const groupHeader = (label: React.ReactNode, tone: "default" | "danger" = "default") => (
     <div
       className={`sticky top-0 z-10 bg-white/95 px-2.5 pb-1 pt-3 text-xs font-semibold backdrop-blur ${
