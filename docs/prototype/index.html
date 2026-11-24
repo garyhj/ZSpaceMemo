@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ZSpace Memo 交互原型</title>
+<script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+<style>
+  body{margin:0;font-size:14px}
+  .app-bg{background:var(--background,#f5f6f8);color:var(--foreground,#1f2937)}
+  .card{background:var(--card,#ffffff)}
+  .side{background:var(--sidebar,#eef0f3)}
+  .bd{border-color:var(--border,#e2e5ea)}
+  .muted{color:var(--muted-foreground,#6b7280)}
+  .pri{background:var(--primary,#2563eb);color:var(--primary-foreground,#fff)}
+  .pri-t{color:var(--primary,#2563eb)}
+  .pri-b{border-color:var(--primary,#2563eb)}
+  .acc{background:var(--accent,rgba(37,99,235,.10))}
+  .hov:hover{background:var(--accent,rgba(37,99,235,.08))}
+  .err{color:var(--error,#dc2626)}
+  .warn{color:var(--warning,#d97706)}
+  .ok{color:var(--success,#16a34a)}
+  .chip{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:999px;border:1px solid var(--border,#e2e5ea);font-size:12px;cursor:pointer;white-space:nowrap}
+  .chip.on{background:var(--primary,#2563eb);color:var(--primary-foreground,#fff);border-color:transparent}
+  input,textarea,select{background:transparent;color:inherit;outline:none}
+  select option{color:#111}
+  .field{border:1px solid var(--border,#e2e5ea);border-radius:6px;padding:3px 6px}
+  .cb{width:18px;height:18px;border-radius:50%;border:2px solid var(--muted-foreground,#9ca3af);flex:none;display:flex;align-items:center;justify-content:center;font-size:11px;cursor:pointer}
+  .cb.done{background:var(--success,#16a34a);border-color:transparent;color:#fff}
+  .cb.p-urgent{border-color:var(--error,#dc2626)} .cb.p-high{border-color:var(--warning,#d97706)} .cb.p-low{border-color:var(--border,#cbd5e1)}
+  .note-box h1{font-size:20px;font-weight:700;margin:0 0 8px}
+  .note-box p{margin:4px 0} .note-box hr{margin:10px 0;border-color:var(--border,#e2e5ea)}
+  .note-box pre{white-space:pre-wrap;word-break:break-all;font-size:11px;padding:6px;border-radius:6px;background:var(--accent,rgba(0,0,0,.05))}
+  .note-box a{color:var(--link,#2563eb);text-decoration:underline}
+  .scroll{overflow-y:auto}
+  .cal-d{height:34px;display:flex;flex-direction:column;align-items:center;justify-content:center;border-radius:8px;cursor:pointer;font-size:13px}
+  .cal-d:hover{background:var(--accent,rgba(37,99,235,.08))}
+  .cal-d.sel{background:var(--primary,#2563eb);color:var(--primary-foreground,#fff)}
+  .cal-d.inr{background:var(--accent,rgba(37,99,235,.12))}
+  .cal-d.today{font-weight:700;color:var(--primary,#2563eb)}
+  .cal-d.sel.today{color:var(--primary-foreground,#fff)}
+</style>
+</head>
+<body class="app-bg">
+<div id="app" style="height:100vh" class="flex flex-col"></div>
+<div id="modal"></div>
+<div id="toast" class="fixed bottom-5 left-1/2 -translate-x-1/2 z-50"></div>
+
+<script>
+/* ============ 日期工具 ============ */
+const pad=n=>String(n).padStart(2,'0');
+const fmt=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+const parse=s=>{const[y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d)};
+const addDays=(s,n)=>{const d=parse(s);d.setDate(d.getDate()+n);return fmt(d)};
+const dim=(y,m)=>new Date(y,m+1,0).getDate();
+const addMonths=(s,n)=>{const d=parse(s);const m=d.getMonth()+n;const y=d.getFullYear()+Math.floor(m/12),mm=((m%12)+12)%12;return fmt(new Date(y,mm,Math.min(d.getDate(),dim(y,mm))))};
+const diffDays=(a,b)=>Math.round((parse(b)-parse(a))/864e5);
+const TODAY=fmt(new Date());
+const NOW=new Date();
+const WD=['日','一','二','三','四','五','六'];
+const WK=['SU','MO','TU','WE','TH','FR','SA'];
+const nextMonday=()=>{const d=parse(TODAY);const off=((8-d.getDay())%7)||7;return addDays(TODAY,off)};
+function dateLabel(s){
+  if(!s) return '';
+  const dd=diffDays(TODAY,s);
+  if(dd===0) return '今天'; if(dd===1) return '明天'; if(dd===2) return '后天'; if(dd===-1) return '昨天';
+  const d=parse(s); const y=d.getFullYear()!==parse(TODAY).getFullYear()?d.getFullYear()+'年':'';
+  return `${y}${d.getMonth()+1}月${d.getDate()}日 周${WD[d.getDay()]}`;
+}
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* ============ 重复引擎（原型版，对应 DESIGN §5） ============ */
+function occurrences(rule,limit=5,after=null){
+  const out=[];const start=rule.dtstart;const iv=rule.interval||1;let seq=0;const sd=parse(start);
+  const push=s=>{ if(s<start) return true; seq++;
+    if(rule.end?.type==='count'&&seq>rule.end.count) return false;
+    if(rule.end?.type==='until'&&s>rule.end.until) return false;
+    if(!after||s>after) out.push(s); return out.length<limit; };
+  for(let k=0;k<4000;k++){
+    let c=[];
+    if(rule.freq==='daily'){const s=addDays(start,k*iv);const w=parse(s).getDay();if(rule.day_filter==='mon_fri'&&(w===0||w===6))continue;c=[s];}
+    else if(rule.freq==='weekly'){const mon=addDays(start,-((sd.getDay()+6)%7)+k*7*iv);
+      const days=(rule.by_weekday?.length?rule.by_weekday:[WK[sd.getDay()]]).map(w=>(WK.indexOf(w)+6)%7).sort((a,b)=>a-b);c=days.map(o=>addDays(mon,o));}
+    else if(rule.freq==='monthly'){const m0=sd.getMonth()+k*iv;const y=sd.getFullYear()+Math.floor(m0/12),m=((m0%12)+12)%12;const n=dim(y,m);
+      if(rule.monthly_mode==='nth'){const wd=WK.indexOf(rule.by_weekday[0]);const ds=[];for(let d=1;d<=n;d++)if(new Date(y,m,d).getDay()===wd)ds.push(d);
+        const d=rule.by_set_pos>0?ds[rule.by_set_pos-1]:ds[ds.length+rule.by_set_pos];if(d)c=[fmt(new Date(y,m,d))];}
+      else{let day=rule.by_month_day?.[0]??sd.getDate();if(day===-1)day=n;else if(day>n){if(rule.on_invalid_date==='skip')continue;day=n;}c=[fmt(new Date(y,m,day))];}}
+    else if(rule.freq==='yearly'){const y=sd.getFullYear()+k*iv;const m=(rule.by_month?.[0]??sd.getMonth()+1)-1;let day=rule.by_month_day?.[0]??sd.getDate();const n=dim(y,m);
+      if(day>n){if(rule.on_invalid_date==='skip')continue;day=n;}c=[fmt(new Date(y,m,day))];}
+    for(const s of c){if(!push(s))return out;}
+  }
+  return out;
+}
+function currentKey(t){
+  if(!t.repeat||t.series.ended) return null;
+  let cur=t.series.cursor;
+  if(t.repeat.catch_up!=='each'){ // latest：过期未处理的自动变为"错过"，不写笔记
+    const seq=[cur,...occurrences(t.repeat,400,cur)].filter(x=>x<=TODAY);
+    if(seq.length) cur=seq[seq.length-1];
+  }
+  return cur;
+}
+function missedKeys(t){ if(!t.repeat) return []; const c=currentKey(t); if(!c||c===t.series.cursor) return [];
+  return [t.series.cursor,...occurrences(t.repeat,400,t.series.cursor)].filter(x=>x<c); }
+function describeRepeat(r){
+  if(!r) return '不重复';
+  const n=r.interval||1;let s='';
+  if(r.freq==='daily') s=r.day_filter==='mon_fri'?'工作日（周一至周五）':(n===1?'每天':`每 ${n} 天`);
+  if(r.freq==='weekly') s=(n===1?'每周':`每 ${n} 周`)+(r.by_weekday?.length?' '+r.by_weekday.map(w=>'周'+WD[WK.indexOf(w)]).join('、'):'');
+  if(r.freq==='monthly'){ s=n===1?'每月':`每 ${n} 个月`;
+    if(r.monthly_mode==='nth') s+=` 第${r.by_set_pos===-1?'最后一':r.by_set_pos}个周${WD[WK.indexOf(r.by_weekday[0])]}`;
+    else{const d=r.by_month_day?.[0]??parse(r.dtstart).getDate();s+=d===-1?' 最后一天':` ${d} 日`;} }
+  if(r.freq==='yearly'){const sd=parse(r.dtstart);s=(n===1?'每年':`每 ${n} 年`)+` ${(r.by_month?.[0]??sd.getMonth()+1)}月${r.by_month_day?.[0]??sd.getDate()}日`;}
+  if(r.end?.type==='count') s+=`，共 ${r.end.count} 次`; if(r.end?.type==='until') s+=`，至 ${r.end.until}`;
+  return s;
+}
+
+/* ============ 示例数据（相对今天生成） ============ */
+const esimDue=addDays(TODAY,2);
+let uid=100;
+const now=()=>new Date().toISOString().slice(0,16).replace('T',' ');
+let tasks=[
+ {id:12345,title:'续费 eSIM',description:'记录充值金额、运营商和[续费链接](https://example.com/esim)。\n上次：¥98 / 6个月',priority:'normal',list:'个人',labels:['续费','eSIM'],
+  schedule:{all_day:false,start:{date:addDays(esimDue,-2),time:null},end:null,due:{date:esimDue,time:'18:00'}},
+  reminders:[{id:'r1',type:'relative',anchor:'due',offset_minutes:-1440},{id:'r2',type:'relative',anchor:'due',offset_minutes:-60}],
+  repeat:{freq:'monthly',interval:6,by_month_day:[parse(esimDue).getDate()],on_invalid_date:'clamp',basis:'schedule',catch_up:'latest',end:{type:'never'},dtstart:addMonths(esimDue,-6)},
+  series:{cursor:esimDue,history:[{key:addMonths(esimDue,-6),status:'completed',at:addMonths(esimDue,-6)+' 20:13'}],overrides:{}},created_at:addMonths(esimDue,-7)+' 10:00',updated_at:addMonths(esimDue,-6)+' 20:13'},
+ {id:12346,title:'提交季度报告',description:'附上 Q3 数据表',priority:'high',list:'工作',labels:['报告'],
+  schedule:{all_day:false,start:null,end:null,due:{date:addDays(TODAY,-1),time:'17:00'}},reminders:[{id:'r1',type:'relative',anchor:'due',offset_minutes:-30}],repeat:null,status:'pending',created_at:addDays(TODAY,-6)+' 09:12',updated_at:addDays(TODAY,-2)+' 11:00'},
+ {id:12347,title:'检查工作邮件',description:'',priority:'normal',list:'工作',labels:[],
+  schedule:{all_day:false,start:null,end:null,due:{date:addDays(TODAY,-30),time:'09:30'}},reminders:[{id:'r1',type:'relative',anchor:'due',offset_minutes:0}],
+  repeat:{freq:'daily',interval:1,day_filter:'mon_fri',basis:'schedule',catch_up:'latest',end:{type:'never'},dtstart:addDays(TODAY,-30)},series:{cursor:addDays(TODAY,-3),history:[],overrides:{}},created_at:addDays(TODAY,-31)+' 08:00',updated_at:addDays(TODAY,-4)+' 09:40'},
+ {id:12348,title:'每周一整理工作',description:'- 回顾上周\n- 列出本周三件要事',priority:'normal',list:'工作',labels:['复盘'],
+  schedule:{all_day:false,start:null,end:null,due:{date:nextMonday(),time:'09:00'}},reminders:[{id:'r1',type:'relative',anchor:'due',offset_minutes:-10}],
+  repeat:{freq:'weekly',interval:1,by_weekday:['MO'],basis:'schedule',catch_up:'latest',end:{type:'never'},dtstart:nextMonday()},series:{cursor:nextMonday(),history:[],overrides:{}},created_at:addDays(TODAY,-10)+' 21:00',updated_at:addDays(TODAY,-10)+' 21:00'},
+ {id:12349,title:'和家人视频',description:'',priority:'normal',list:'生活',labels:[],
+  schedule:{all_day:false,start:{date:TODAY,time:'20:00'},end:{date:TODAY,time:'21:00'},due:null},reminders:[{id:'r1',type:'relative',anchor:'start',offset_minutes:-15}],repeat:null,status:'pending',created_at:addDays(TODAY,-1)+' 12:00',updated_at:addDays(TODAY,-1)+' 12:00'},
+ {id:12350,title:'预约体检',description:'公司福利，需在年底前完成',priority:'high',list:'生活',labels:['健康'],
+  schedule:{all_day:true,start:null,end:null,due:{date:addDays(TODAY,5),time:null}},reminders:[{id:'r1',type:'relative',anchor:'due',offset_days:-1,day_time:'09:00'}],repeat:null,status:'pending',created_at:addDays(TODAY,-3)+' 18:20',updated_at:addDays(TODAY,-3)+' 18:20'},
+ {id:12351,title:'记账（月末）',description:'',priority:'low',list:'个人',labels:['财务'],
+  schedule:{all_day:true,start:null,end:null,due:{date:fmt(new Date(parse(TODAY).getFullYear(),parse(TODAY).getMonth()+1,0)),time:null}},reminders:[],
+  repeat:{freq:'monthly',interval:1,by_month_day:[-1],on_invalid_date:'clamp',basis:'schedule',catch_up:'each',end:{type:'never'},dtstart:fmt(new Date(parse(TODAY).getFullYear(),parse(TODAY).getMonth()+1,0))},
+  series:{cursor:fmt(new Date(parse(TODAY).getFullYear(),parse(TODAY).getMonth()+1,0)),history:[],overrides:{}},created_at:addDays(TODAY,-20)+' 10:00',updated_at:addDays(TODAY,-20)+' 10:00'},
+ {id:12352,title:'买牙膏',description:'',priority:'normal',list:'',labels:[],schedule:{all_day:false,start:null,end:null,due:null},reminders:[],repeat:null,status:'pending',created_at:addDays(TODAY,0)+' 08:01',updated_at:addDays(TODAY,0)+' 08:01'},
+ {id:12353,title:'研究 tailscale serve 的 HTTPS 证书',description:'Web Push 需要 HTTPS',priority:'low',list:'个人',labels:['NAS'],schedule:{all_day:false,start:null,end:null,due:null},reminders:[],repeat:null,status:'pending',created_at:addDays(TODAY,-1)+' 22:30',updated_at:addDays(TODAY,-1)+' 22:30'},
+ {id:12354,title:'更新路由器固件',description:'',priority:'normal',list:'个人',labels:['NAS'],schedule:{all_day:false,start:null,end:null,due:{date:addDays(TODAY,-1),time:null}},reminders:[],repeat:null,status:'completed',completed_at:addDays(TODAY,-1)+' 21:05',created_at:addDays(TODAY,-4)+' 10:00',updated_at:addDays(TODAY,-1)+' 21:05'},
+ {id:12355,title:'妈妈生日',description:'提前订蛋糕（农历重复将在 P2 支持，此处示例为公历）',priority:'urgent',list:'生活',labels:['家人'],schedule:{all_day:true,start:null,end:null,due:{date:addDays(TODAY,12),time:null}},
+  reminders:[{id:'r1',type:'relative',anchor:'due',offset_days:-3,day_time:'09:00'},{id:'r2',type:'relative',anchor:'due',offset_days:0,day_time:'08:00'}],
+  repeat:{freq:'yearly',interval:1,on_invalid_date:'clamp',basis:'schedule',catch_up:'latest',end:{type:'never'},dtstart:addDays(TODAY,12)},series:{cursor:addDays(TODAY,12),history:[],overrides:{}},created_at:'2025-03-01 10:00',updated_at:'2025-03-01 10:00'},
+];
+
+/* ============ 状态 ============ */
+const S={view:'today',sel:12345,q:'',sort:'date',mode:'main',tab:'detail',qaDate:null,qaPri:'normal',saved:'已保存',conflict:false,dp:null,rp:null,rm:null};
+const VIEWS=[['inbox','📥','收集箱'],['today','☀️','今天'],['upcoming','📆','即将到来'],['overdue','⏰','已逾期'],['all','🗂','全部任务'],['completed','✅','已完成'],['repeating','🔁','重复任务']];
+const PRI={low:['低','↓','muted'],normal:['普通','',''],high:['高','!','warn'],urgent:['紧急','‼','err']};
+const PRI_ORDER={urgent:0,high:1,normal:2,low:3};
+
+/* ============ 实例 / 列表项 ============ */
+function shiftSched(t,key){ // 模板 schedule 平移到某个实例
+  const s=JSON.parse(JSON.stringify(t.schedule)); if(!t.repeat) return s;
+  const off=diffDays(t.repeat.dtstart,key);
+  for(const k of ['start','end','due']) if(s[k]) s[k].date=addDays(s[k].date,off);
+  const ov=t.series.overrides?.[key]; if(ov?.schedule) Object.assign(s,ov.schedule);
+  return s;
+}
+function itemOf(t,key){ key=key??currentKey(t); const sched=t.repeat?shiftSched(t,key):t.schedule; return {t,key,sched}; }
+const mainDate=s=>s.due?.date||s.start?.date||null;
+const isDone=t=>t.repeat?!!t.series.ended:t.status==='completed';
+function isOverdue(it){ if(isDone(it.t)) return false; const d=it.sched.due; if(!d) return false;
+  if(d.time) return new Date(d.date+'T'+d.time)<NOW; return d.date<TODAY; }
+function match(t){ if(!S.q) return true; const q=S.q.toLowerCase(); return [t.title,t.description,t.list,...t.labels].join(' ').toLowerCase().includes(q); }
+function itemsFor(view){
+  const act=tasks.filter(t=>!isDone(t)&&match(t)); let out=[];
+  if(view==='inbox') out=act.filter(t=>!t.repeat&&!mainDate(t.schedule)).map(t=>itemOf(t));
+  if(view==='today'){ out=act.map(t=>itemOf(t)).filter(it=>{const s=it.sched;const md=mainDate(s);if(!md)return false;
+      if(md===TODAY) return true; if(s.start&&s.due&&s.start.date<=TODAY&&s.due.date>=TODAY) return true; return isOverdue(it);}); }
+  if(view==='upcoming'){ const end=addDays(TODAY,7);
+    act.forEach(t=>{ let it=itemOf(t); if(t.repeat&&mainDate(it.sched)<=TODAY){const nx=occurrences(t.repeat,1,it.key)[0];if(nx)it=itemOf(t,nx);}
+      const md=mainDate(it.sched); if(md&&md>TODAY&&md<=end) out.push(it); }); }
+  if(view==='overdue') out=act.map(t=>itemOf(t)).filter(isOverdue);
+  if(view==='all') out=act.map(t=>itemOf(t));
+  if(view==='repeating') out=tasks.filter(t=>t.repeat&&match(t)).map(t=>itemOf(t));
+  if(view==='completed'){ tasks.filter(match).forEach(t=>{
+      if(!t.repeat&&t.status==='completed') out.push({t,key:null,sched:t.schedule,doneAt:t.completed_at});
+      if(t.repeat) t.series.history.filter(h=>h.status==='completed').forEach(h=>out.push({t,key:h.key,sched:shiftSched(t,h.key),doneAt:h.at,hist:true}));
+    }); return out.sort((a,b)=>(b.doneAt||'').localeCompare(a.doneAt||'')); }
+  return sortItems(out);
+}
+function sortItems(a){
+  const dk=it=>{const s=it.sched;const d=s.due||s.start;return d?(d.date+' '+(d.time||'99:99')):'9999';};
+  return a.sort((x,y)=> S.sort==='priority'?(PRI_ORDER[x.t.priority]-PRI_ORDER[y.t.priority])||dk(x).localeCompare(dk(y))
+    : S.sort==='created'?y.t.created_at.localeCompare(x.t.created_at) : dk(x).localeCompare(dk(y))||(PRI_ORDER[x.t.priority]-PRI_ORDER[y.t.priority]));
+}
+function schedText(s,short){
+  if(!s) return ''; const p=[];
+  if(s.start&&s.end){ const same=s.start.date===s.end.date;
+    return `${dateLabel(s.start.date)} ${s.start.time||''}–${same?'':dateLabel(s.end.date)+' '}${s.end.time||''}`.trim(); }
+  if(s.due) p.push(`${dateLabel(s.due.date)}${s.due.time?' '+s.due.time:''}${short?'':' 截止'}`);
+  if(s.start&&!short) p.push(`开始 ${dateLabel(s.start.date)}${s.start.time?' '+s.start.time:''}`);
+  if(!s.due&&s.start&&short) p.push(`${dateLabel(s.start.date)} 开始`);
+  return p.join(' · ');
+}
+function remText(r){
+  if(r.type==='absolute') return `于 ${r.at.replace('T',' ')}`;
+  const anchor=r.anchor==='start'?'开始':'截止';
+  if(r.offset_days!==undefined) return (r.offset_days===0?'当天':`提前 ${-r.offset_days} 天`)+` ${r.day_time}`;
+  const m=-r.offset_minutes; if(m===0) return `${anchor}时`;
+  const v=m%1440===0?`${m/1440} 天`:m%60===0?`${m/60} 小时`:`${m} 分钟`; return `${anchor === '截止'?'':'开始前 '}提前 ${v}`.replace('开始前 提前','开始前');
+}
+function fireTime(r,s){
+  const a=r.anchor==='start'?s.start:s.due; if(!a) return null;
+  if(r.offset_days!==undefined) return `${addDays(a.date,r.offset_days)} ${r.day_time}`;
+  const base=new Date(a.date+'T'+(a.time||'09:00')); base.setMinutes(base.getMinutes()+r.offset_minutes);
+  return `${fmt(base)} ${pad(base.getHours())}:${pad(base.getMinutes())}`;
+}
+
+/* ============ 极空间笔记正文生成（对应 DESIGN §4） ============ */
+function mdToHtml(md){ return (md||'').split('\n').filter(l=>l.trim()).map(l=>{
+  let h=esc(l).replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g,'<a href="$2">$1</a>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+  return l.startsWith('- ')?`<p>• ${h.slice(2)}</p>`:`<p>${h}</p>`; }).join('\n'); }
+function noteHtml(t){
+  const it=itemOf(t); const s=it.sched; const lines=[`<h1>${esc(t.title)}</h1>`];
+  const tl=schedText(s,false); if(tl) lines.push(`<p>📅 ${esc(tl)}</p>`);
+  const meta=[]; if(t.repeat) meta.push('🔁 '+describeRepeat(t.repeat)); if(t.reminders.length) meta.push('⏰ '+t.reminders.map(remText).join('、'));
+  meta.push('优先级：'+PRI[t.priority][0]); if(t.list) meta.push('清单：'+t.list); lines.push(`<p>${esc(meta.join(' · '))}</p>`);
+  let st='状态：'+(isDone(t)?(t.repeat?'已结束':'已完成'):'待办');
+  if(t.repeat){ st+=` · 本次 ${it.key}`; const last=t.series.history.find(h=>h.status==='completed'); if(last) st+=` · 上次完成 ${last.key}`; }
+  lines.push(`<p>${esc(st)}</p>`,'<hr>'); if(t.description) lines.push(mdToHtml(t.description));
+  const data={v:1,rev:7,status:t.repeat?(t.series.ended?'ended':'active'):t.status,priority:t.priority,list:t.list||null,schedule:{...t.schedule,timezone:'Asia/Shanghai'},reminders:t.reminders,repeat:t.repeat,series:t.series||null,sum:'9f2c41ab'};
+  lines.push('<hr>','<p>⚙ ZSpace Memo 数据（由 ZSpace Memo 自动维护，请勿手动修改）</p>',`<pre>ZSM1:${esc(JSON.stringify(data))}</pre>`);
+  return lines.join('\n');
+}
+
+/* ============ 操作 ============ */
+const byId=id=>tasks.find(t=>t.id===id);
+let undoSnap=null;
+function snapshot(){ undoSnap=JSON.stringify(tasks); }
+function toast(msg,undo){
+  document.getElementById('toast').innerHTML=`<div class="card bd border shadow-lg rounded-lg px-4 py-2 flex items-center gap-3 text-sm">${msg}${undo?'<button class="pri-t font-medium" onclick="doUndo()">撤销</button>':''}</div>`;
+  clearTimeout(window._tt); window._tt=setTimeout(()=>document.getElementById('toast').innerHTML='',4500);
+}
+function doUndo(){ if(undoSnap){tasks=JSON.parse(undoSnap);undoSnap=null;toast('已撤销');render();} }
+function touch(t){ t.updated_at=now(); S.saved='保存中…'; render(); setTimeout(()=>{S.saved='已保存 ✓';render();},450); }
+function toggle(id,key){
+  const t=byId(id); snapshot();
+  if(t.repeat){
+    const k=key||currentKey(t); if(t.series.history.some(h=>h.key===k)) return;
+    t.series.history.unshift({key:k,status:'completed',at:now()});
+    const nx=occurrences(t.repeat,1,k)[0];
+    if(nx){t.series.cursor=nx;toast(`「${esc(t.title)}」已完成本次 · 下次 ${dateLabel(nx)}`,true);} else {t.series.ended=true;toast('系列最后一次已完成，系列结束',true);}
+  } else { t.status=t.status==='completed'?'pending':'completed'; t.completed_at=t.status==='completed'?now():null; toast(t.status==='completed'?`已完成「${esc(t.title)}」`:'已重新打开',true); }
+  touch(t);
+}
+function skip(id){ const t=byId(id); snapshot(); const k=currentKey(t); t.series.history.unshift({key:k,status:'skipped',at:now()});
+  const nx=occurrences(t.repeat,1,k)[0]; if(nx) t.series.cursor=nx; else t.series.ended=true; toast(`已跳过 ${dateLabel(k)} · 下次 ${dateLabel(nx)}`,true); touch(t); }
+function undoHist(id,key){ const t=byId(id); snapshot(); t.series.history=t.series.history.filter(h=>h.key!==key); if(key<t.series.cursor) t.series.cursor=key; t.series.ended=false; toast('已撤销该实例的操作',true); touch(t); }
+function endSeries(id){ const t=byId(id); if(!confirm('终止整个重复系列？历史记录会保留，之后不再生成新的实例。'))return; snapshot(); t.series.ended=true; t.repeat.end={type:'until',until:t.series.history[0]?.key||t.repeat.dtstart}; toast('系列已终止',true); touch(t); }
+function del(id){ const t=byId(id); if(!confirm(`删除「${t.title}」？\n\n这会删除极空间原生笔记（先进入「最近删除」，再次删除即永久删除）。\n完成任务请勾选，不要用删除。`))return; snapshot(); tasks=tasks.filter(x=>x.id!==id); S.sel=null; toast('已删除（可在极空间「最近删除」中恢复）',true); render(); }
+function setField(id,f,v){ const t=byId(id); t[f]=v; touch(t); }
+function quickParse(raw){
+  let title=raw,date=S.qaDate,time=null,pri=S.qaPri,list='';
+  const rep=(re,fn)=>{title=title.replace(re,(...m)=>{fn(...m);return ' ';});};
+  rep(/(今天|明天|后天|下周一)/,m=>{date={今天:TODAY,明天:addDays(TODAY,1),后天:addDays(TODAY,2),下周一:nextMonday()}[m];});
+  rep(/\b([01]?\d|2[0-3]):([0-5]\d)\b/,(m,h,mi)=>{time=`${pad(h)}:${mi}`;});
+  rep(/!(紧急|高|低)/,(m,p)=>{pri={紧急:'urgent',高:'high',低:'low'}[p];});
+  rep(/#(\S+)/,(m,l)=>{list=l;});
+  return {title:title.replace(/\s+/g,' ').trim(),date,time,pri,list};
+}
+function quickAdd(e){
+  if(e.key!=='Enter') return; const el=e.target; const p=quickParse(el.value); if(!p.title) return;
+  const t={id:++uid*7,title:p.title,description:'',priority:p.pri,list:p.list,labels:[],schedule:{all_day:!p.time&&!!p.date,start:null,end:null,due:p.date?{date:p.date,time:p.time}:null},reminders:[],repeat:null,status:'pending',created_at:now(),updated_at:now()};
+  tasks.unshift(t); el.value=''; S.qaDate=null; S.qaPri='normal'; S.sel=t.id;
+  toast(`已创建「${esc(t.title)}」→ ${p.date?dateLabel(p.date):'收集箱'}（写入极空间笔记 #${t.id}）`); render();
+  setTimeout(()=>document.getElementById(S.mode==='float'?'qa2':'qa')?.focus(),0);
+}
+
+/* ============ 渲染：列表项 ============ */
+function row(it,compact){
+  const t=it.t,s=it.sched,done=it.hist||isDone(t),od=isOverdue(it);const pr=PRI[t.priority];
+  const st=schedText(s,true);
+  return `<div class="flex items-start gap-3 px-3 ${compact?'py-1.5':'py-2.5'} border-b bd cursor-pointer hov ${S.sel===t.id&&!compact?'acc':''}" onclick="selectTask(${t.id})">
+    <div class="cb mt-0.5 ${done?'done':'p-'+t.priority}" onclick="event.stopPropagation();${it.hist?`undoHist(${t.id},'${it.key}')`:`toggle(${t.id})`}" title="${t.repeat?'完成本次':'完成'}">${done?'✓':''}</div>
+    <div class="flex-1 min-w-0">
+      <div class="flex items-center gap-2"><span class="truncate ${done?'line-through muted':''}">${esc(t.title)}</span>
+        ${pr[1]?`<span class="${pr[2]} font-bold text-xs">${pr[1]}</span>`:''}</div>
+      ${compact?'':`<div class="text-xs muted flex gap-2 mt-0.5 flex-wrap">${t.list?`<span>${esc(t.list)}</span>`:''}${t.labels.map(l=>`<span>#${esc(l)}</span>`).join('')}
+        ${it.hist?`<span>完成于 ${it.doneAt} · 第 ${it.key} 期</span>`:''}${!t.repeat&&it.doneAt?`<span>完成于 ${it.doneAt}</span>`:''}</div>`}
+    </div>
+    <div class="flex items-center gap-1.5 text-xs shrink-0 ${od?'err font-medium':'muted'}">
+      ${t.repeat?'<span title="重复">🔁</span>':''}${t.reminders.length?'<span title="提醒">⏰</span>':''}<span>${esc(st)}</span></div>
+  </div>`;
+}
+function selectTask(id){ S.sel=id; S.tab='detail'; S.conflict=false; if(S.mode==='float'){S.mode='main';} render(); }
+
+/* ============ 渲染：详情 ============ */
+function detail(){
+  const t=byId(S.sel); if(!t) return `<div class="h-full flex items-center justify-center muted text-sm">选择一个任务查看详情</div>`;
+  const it=itemOf(t); const s=it.sched; const pr=PRI[t.priority];
+  const tabs=`<div class="flex gap-1 text-xs">${[['detail','任务详情'],['note','极空间笔记预览']].map(([k,l])=>`<button class="chip ${S.tab===k?'on':''}" onclick="S.tab='${k}';render()">${l}</button>`).join('')}</div>`;
+  const head=`<div class="flex items-center justify-between px-4 py-2 border-b bd">${tabs}<span class="text-xs ${S.saved.includes('✓')?'ok':'muted'}">${S.saved}</span></div>`;
+  if(S.tab==='note') return head+`<div class="p-4 scroll flex-1 space-y-3">
+     <div class="text-xs muted">下面是这条任务在<b>极空间官方记事本</b>里的样子：可读的摘要 + 备注 + 末尾的数据块。官方 App 列表的预览（in_brief）会显示摘要行。</div>
+     <div class="note-box card border bd rounded-lg p-4">${noteHtml(t)}</div>
+     <details class="text-xs"><summary class="cursor-pointer muted">查看原始 HTML（写入 NAS 的 body）</summary><pre class="mt-2 p-2 rounded acc whitespace-pre-wrap break-all">${esc(noteHtml(t))}</pre></details></div>`;
+
+  const conflict=S.conflict?`<div class="mx-4 mt-3 p-2 rounded-lg border text-xs warn" style="border-color:currentColor">⚠ 这条任务已在极空间中被修改（412 冲突）。
+     <div class="mt-1 flex gap-2"><button class="chip" onclick="S.conflict=false;render()">查看差异</button><button class="chip" onclick="S.conflict=false;toast('已用你的修改覆盖');render()">使用我的修改</button><button class="chip" onclick="S.conflict=false;toast('已载入极空间最新版本');render()">放弃我的修改</button></div></div>`:'';
+
+  const rowBtn=(icon,label,val,fn,ph)=>`<div class="flex items-start gap-3 py-2 border-b bd cursor-pointer hov -mx-2 px-2 rounded" onclick="${fn}">
+     <span class="w-5 text-center">${icon}</span><span class="w-14 muted text-xs mt-0.5">${label}</span><span class="flex-1 text-sm ${val?'':'muted'}">${val||ph}</span><span class="muted">›</span></div>`;
+
+  let series='';
+  if(t.repeat){
+    const cur=currentKey(t); const fut=cur?occurrences(t.repeat,3,cur):[]; const miss=missedKeys(t);
+    const hist=t.series.history.slice(0,4).reverse();
+    const line=(k,state,extra)=>{const sc=shiftSched(t,k);const c={completed:['✓','ok','已完成'],skipped:['↷','muted','已跳过'],missed:['✕','err','错过'],pending:['●','pri-t','待办（本次）'],future:['○','muted','未来']}[state];
+      return `<div class="flex items-center gap-2 py-1 text-xs"><span class="${c[1]} w-4 text-center">${c[0]}</span><span class="w-36">${dateLabel(k)} ${sc.due?.time||''}</span><span class="${c[1]} w-20">${c[2]}</span><span class="flex-1 muted truncate">${extra||''}</span></div>`;};
+    series=`<div class="mt-4"><div class="text-xs font-semibold mb-1 flex justify-between"><span>重复实例 · 一条笔记 #${t.id}</span><span class="muted font-normal">${describeRepeat(t.repeat)}</span></div>
+      <div class="card border bd rounded-lg px-3 py-1">
+       ${hist.map(h=>line(h.key,h.status,`${h.at} <button class="pri-t ml-1" onclick="undoHist(${t.id},'${h.key}')">撤销</button>`)).join('')}
+       ${miss.length?line(miss[miss.length-1],'missed',miss.length>1?`共错过 ${miss.length} 次（推算，不存储）`:'推算，不存储'):''}
+       ${cur?line(cur,'pending',`<button class="pri-t" onclick="toggle(${t.id})">完成本次</button> <button class="pri-t ml-1" onclick="skip(${t.id})">跳过</button> <button class="pri-t ml-1" onclick="openDP(true)">修改本次</button>`):'<div class="text-xs muted py-1">系列已结束</div>'}
+       ${fut.map(k=>line(k,'future','由规则推算')).join('')}
+      </div>
+      <div class="flex gap-3 mt-2 text-xs">${cur?`<button class="err" onclick="endSeries(${t.id})">终止系列</button>`:''}<span class="muted">逾期策略：${t.repeat.catch_up==='each'?'逐期补做':'跳到最近一期'}</span></div></div>`;
+  }
+  const done=isDone(t);
+  return head+conflict+`<div class="p-4 scroll flex-1">
+    <div class="flex items-start gap-3">
+      <div class="cb mt-1.5 ${done?'done':'p-'+t.priority}" onclick="toggle(${t.id})">${done?'✓':''}</div>
+      <input class="flex-1 text-lg font-semibold ${done?'line-through muted':''}" value="${esc(t.title)}" onchange="setField(${t.id},'title',this.value)">
+      <select class="field text-xs" onchange="setField(${t.id},'priority',this.value)">${Object.entries(PRI).map(([k,v])=>`<option value="${k}" ${t.priority===k?'selected':''}>${v[1]||'⚑'} ${v[0]}</option>`).join('')}</select>
+    </div>
+    ${t.repeat&&!done?`<div class="ml-8 mt-1 text-xs muted">当前实例：${dateLabel(it.key)}${isOverdue(it)?' <span class="err">已逾期</span>':''}</div>`:''}
+    <div class="mt-3">
+      ${rowBtn('📅','时间',schedText(s,false)+(s.all_day?' · 全天':''),'openDP()','设置日期 / 时间')}
+      ${rowBtn('⏰','提醒',t.reminders.map(r=>`<span class="chip mr-1 mb-1">${remText(r)}</span>`).join(''),'openRM()','不提醒')}
+      ${rowBtn('🔁','重复',t.repeat?describeRepeat(t.repeat):'','openRP()','不重复')}
+      <div class="flex items-center gap-3 py-2 border-b bd"><span class="w-5 text-center">🗂</span><span class="w-14 muted text-xs">清单</span>
+        <input class="flex-1 text-sm" placeholder="未分类" value="${esc(t.list)}" onchange="setField(${t.id},'list',this.value)"></div>
+      <div class="flex items-center gap-3 py-2 border-b bd"><span class="w-5 text-center">#</span><span class="w-14 muted text-xs">标签</span>
+        <input class="flex-1 text-sm" placeholder="用逗号分隔" value="${esc(t.labels.join(', '))}" onchange="setField(${t.id},'labels',this.value.split(/[,，]/).map(x=>x.trim()).filter(Boolean))"></div>
+    </div>
+    <div class="mt-3"><div class="text-xs muted mb-1">备注（支持多行、链接、基础 Markdown）</div>
+      <textarea class="w-full field text-sm" rows="4" placeholder="添加备注…" onchange="setField(${t.id},'description',this.value)">${esc(t.description)}</textarea></div>
+    ${t.reminders.length&&!done?`<div class="mt-2 text-xs muted">⏰ 本次将由 NAS 后端在 ${t.reminders.map(r=>fireTime(r,s)).filter(Boolean).join('、')} 推送提醒（与客户端是否打开无关）</div>`:''}
+    ${series}
+    <div class="mt-5 pt-3 border-t bd text-xs muted space-y-1">
+      <div>创建：${t.created_at} · 修改：${t.updated_at}${t.completed_at?` · 完成：${t.completed_at}`:''}</div>
+      <div class="flex gap-4 pt-1"><span>极空间笔记 #${t.id}</span><button class="pri-t" onclick="S.conflict=true;render()">模拟外部修改冲突</button><button class="err ml-auto" onclick="del(${t.id})">删除任务</button></div>
+    </div></div>`;
+}
+
+/* ============ 渲染：主界面 / 悬浮窗 ============ */
+function qaBar(id){
+  const dchips=[[null,'无日期'],[TODAY,'今天'],[addDays(TODAY,1),'明天'],[addDays(TODAY,2),'后天'],[nextMonday(),'下周一']];
+  return `<div class="card border bd rounded-lg p-2">
+    <input id="${id}" class="w-full px-1 py-1 text-sm" placeholder="＋ 添加任务，回车创建（试试：明天 18:00 续费 eSIM !高 #个人）" onkeydown="quickAdd(event)" oninput="qaPreview(this)">
+    <div id="${id}-pv" class="text-xs muted px-1 h-4"></div>
+    <div class="flex gap-1 flex-wrap mt-1 items-center"><span class="text-xs muted mr-1">📅</span>${dchips.map(([d,l])=>`<span class="chip ${S.qaDate===d?'on':''}" onclick="S.qaDate=${d?`'${d}'`:'null'};render();document.getElementById('${id}').focus()">${l}</span>`).join('')}
+      <span class="text-xs muted ml-2 mr-1">🚩</span>${Object.entries(PRI).map(([k,v])=>`<span class="chip ${S.qaPri===k?'on':''}" onclick="S.qaPri='${k}';render();document.getElementById('${id}').focus()">${v[0]}</span>`).join('')}</div></div>`;
+}
+function qaPreview(el){ const p=quickParse(el.value); const pv=document.getElementById(el.id+'-pv');
+  const bits=[]; if(p.date) bits.push('📅 '+dateLabel(p.date)+(p.time?' '+p.time:'')); if(p.pri!=='normal') bits.push('🚩 '+PRI[p.pri][0]); if(p.list) bits.push('🗂 '+p.list);
+  pv.textContent=el.value?(bits.length?'识别到：'+bits.join('  '):'→ 收集箱'):''; }
+
+function render(){
+  const top=`<div class="flex items-center gap-3 px-4 py-2 border-b bd card">
+    <b>ZSpace Memo</b><span class="text-xs muted">交互原型 · 数据为本地模拟</span>
+    <div class="ml-auto flex gap-1 text-xs">${[['main','🖥 主界面'],['float','🪟 桌面悬浮窗 / Homepage 嵌入']].map(([k,l])=>`<button class="chip ${S.mode===k?'on':''}" onclick="S.mode='${k}';render()">${l}</button>`).join('')}</div>
+    <span class="text-xs ok">● NAS 已连接</span></div>`;
+  if(S.mode==='float'){
+    const its=itemsFor('today'); const od=its.filter(isOverdue), td=its.filter(x=>!isOverdue(x));
+    document.getElementById('app').innerHTML=top+`<div class="flex-1 flex items-start justify-center gap-8 p-8 scroll">
+      <div class="card border bd rounded-xl shadow-xl flex flex-col" style="width:340px;height:520px">
+        <div class="flex items-center px-3 py-2 border-b bd text-sm"><b>☀️ 今天</b><span class="muted text-xs ml-2">${td.length} 项${od.length?` · <span class="err">${od.length} 项逾期</span>`:''}</span>
+          <span class="ml-auto muted text-xs">📌 置顶 · ⤢</span></div>
+        <div class="p-2">${qaBar('qa2')}</div>
+        <div class="flex-1 scroll">${od.length?`<div class="px-3 pt-2 text-xs err font-semibold">已逾期</div>${od.map(i=>row(i,true)).join('')}`:''}
+          <div class="px-3 pt-2 text-xs muted font-semibold">今天</div>${td.map(i=>row(i,true)).join('')||'<div class="p-3 text-xs muted">今天没有任务 🎉</div>'}</div>
+        <div class="px-3 py-2 border-t bd text-xs muted flex justify-between"><span>点任务 → 在主界面打开详情</span><button class="pri-t" onclick="S.mode='main';render()">打开主界面 ›</button></div>
+      </div>
+      <div class="text-xs muted max-w-xs space-y-2 pt-4"><p><b>第一层：快捷层</b>（Tauri 悬浮窗 320×480，可置顶、快捷键呼出并自动聚焦输入框；Homepage <code>/embed/today</code> 使用同一个组件）。</p>
+        <p>只做三件事：看今天和逾期、快速新增（日期 / 优先级快捷按钮）、勾选完成。提醒、重复、备注这些复杂配置都放在第二层，不堆在悬浮窗里。</p></div></div>`;
+  } else {
+    const counts=Object.fromEntries(VIEWS.map(([k])=>[k,itemsFor(k).length]));
+    const lists=[...new Set(tasks.map(t=>t.list).filter(Boolean))];
+    const side=`<div class="side border-r bd p-3 flex flex-col gap-0.5 shrink-0 scroll" style="width:210px">
+      ${VIEWS.map(([k,i,l])=>`<div class="flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer hov ${S.view===k?'acc font-medium':''}" onclick="S.view='${k}';render()"><span>${i}</span><span class="flex-1">${l}</span><span class="text-xs ${k==='overdue'&&counts[k]?'err':'muted'}">${counts[k]||''}</span></div>`).join('')}
+      <div class="text-xs muted mt-4 mb-1 px-2">清单</div>${lists.map(l=>`<div class="px-2 py-1 text-sm muted cursor-pointer hov rounded" onclick="S.q='${l}';S.view='all';render()">🗂 ${l}</div>`).join('')}
+      <div class="mt-auto text-xs muted px-2 pt-4">⚙ 设置 · 🔔 通知中心</div></div>`;
+    let items=itemsFor(S.view); let body='';
+    if(S.view==='today'){ const od=items.filter(isOverdue), td=items.filter(x=>!isOverdue(x));
+      body=(od.length?`<div class="px-3 py-1.5 text-xs err font-semibold acc">已逾期 · ${od.length}</div>${od.map(i=>row(i)).join('')}`:'')+`<div class="px-3 py-1.5 text-xs muted font-semibold">今天 · ${dateLabel(TODAY)}</div>`+(td.map(i=>row(i)).join('')||'<div class="p-4 text-sm muted">今天没有任务</div>'); }
+    else if(S.view==='upcoming'){ const g={}; items.forEach(i=>{const d=mainDate(i.sched);(g[d]=g[d]||[]).push(i);});
+      body=Object.keys(g).sort().map(d=>`<div class="px-3 py-1.5 text-xs muted font-semibold acc">${dateLabel(d)}</div>${g[d].map(i=>row(i)).join('')}`).join('')||'<div class="p-4 text-sm muted">未来 7 天没有安排</div>'; }
+    else if(S.view==='repeating'){ body=items.map(i=>row(i)+`<div class="px-11 pb-2 -mt-1 text-xs muted border-b bd">${describeRepeat(i.t.repeat)} · 已完成 ${i.t.series.history.filter(h=>h.status==='completed').length} 次${i.t.series.ended?' · 已结束':` · 本次 ${dateLabel(i.key)}`}</div>`).join(''); }
+    else body=items.map(i=>row(i)).join('')||'<div class="p-4 text-sm muted">没有任务</div>';
+    const vname=VIEWS.find(v=>v[0]===S.view)[2];
+    const list=`<div class="flex-1 flex flex-col min-w-0 border-r bd">
+      <div class="p-3 space-y-2 border-b bd"><div class="flex items-center gap-2"><b class="text-base">${vname}</b>
+        <input class="field text-xs ml-auto w-40" placeholder="🔍 搜索标题 / 备注 / 标签" value="${esc(S.q)}" oninput="S.q=this.value;render();const e=document.querySelector('[data-q]');e.focus();e.setSelectionRange(99,99)" data-q>
+        <select class="field text-xs" onchange="S.sort=this.value;render()">${[['date','按日期'],['priority','按优先级'],['created','按创建时间']].map(([k,l])=>`<option value="${k}" ${S.sort===k?'selected':''}>${l}</option>`).join('')}</select></div>
+        ${qaBar('qa')}</div>
+      <div class="flex-1 scroll card">${body}</div></div>`;
+    document.getElementById('app').innerHTML=top+`<div class="flex flex-1 min-h-0">${side}${list}<div class="card flex flex-col shrink-0 min-h-0" style="width:420px">${detail()}</div></div>`;
+  }
+  renderModal();
+}
+
+/* ============ 日期选择器（对应 DESIGN §9.6） ============ */
+function openDP(thisOnly){ const t=byId(S.sel); const s=itemOf(t).sched;
+  S.dp={tab:s.start&&s.end?'range':'date',month:(mainDate(s)||TODAY).slice(0,7),all_day:!!s.all_day,
+    due:s.due?{...s.due}:null,start:s.start?{...s.start}:null,end:s.end?{...s.end}:null,pick:0,thisOnly:!!(thisOnly&&t.repeat)}; render(); }
+function dpSet(d){ const p=S.dp;
+  if(p.tab==='date'){ p.due={date:d,time:p.all_day?null:(p.due?.time||'18:00')}; }
+  else { if(p.pick===0||!p.start){p.start={date:d,time:p.start?.time||(p.all_day?null:'09:00')};p.end=null;p.pick=1;}
+    else { if(d<p.start.date){p.end={date:p.start.date,time:p.start.time};p.start.date=d;} else p.end={date:d,time:p.end?.time||(p.all_day?null:'10:00')}; p.pick=0; } }
+  render(); }
+function dpQuick(d){ S.dp.tab='date'; if(d===null){S.dp.due=null;S.dp.start=null;S.dp.end=null;} else dpSet(d); render(); }
+function dpOk(){ const t=byId(S.sel); const p=S.dp; snapshot();
+  const sch={all_day:p.all_day,start:p.start,end:p.tab==='range'?p.end:null,due:p.due};
+  if(p.all_day) for(const k of ['start','end','due']) if(sch[k]) sch[k].time=null;
+  if(p.thisOnly){ const k=currentKey(t); t.series.overrides[k]={schedule:{due:sch.due,start:sch.start}}; toast(`已修改本次（${dateLabel(k)}）；系列中的其他实例不变`,true); }
+  else if(t.repeat){ const old=itemOf(t).sched; const off=sch.due&&old.due?diffDays(old.due.date,sch.due.date):0;
+    if(off){ t.repeat.dtstart=addDays(t.repeat.dtstart,off); t.series.cursor=addDays(t.series.cursor,off); if(t.repeat.by_month_day&&t.repeat.by_month_day[0]!==-1) t.repeat.by_month_day=[parse(sch.due.date).getDate()]; }
+    t.schedule={...sch}; for(const k of ['start','end','due']) if(t.schedule[k]) t.schedule[k]={...t.schedule[k],date:addDays(t.schedule[k].date,diffDays(currentKey(t),t.repeat.dtstart))};
+    toast('已修改整个系列的时间',true); }
+  else t.schedule=sch;
+  S.dp=null; touch(t); }
+
+function calendar(month,selFn){
+  const [y,m]=month.split('-').map(Number); const first=new Date(y,m-1,1); const off=(first.getDay()+6)%7; const start=addDays(fmt(first),-off);
+  const p=S.dp; let cells='';
+  for(let i=0;i<42;i++){ const d=addDays(start,i); const dd=parse(d); const inM=dd.getMonth()===m-1;
+    let cls='cal-d'; if(d===TODAY) cls+=' today';
+    if(p.tab==='date'&&p.due?.date===d) cls+=' sel';
+    if(p.tab==='range'){ if(p.start?.date===d||p.end?.date===d) cls+=' sel'; else if(p.start&&p.end&&d>p.start.date&&d<p.end.date) cls+=' inr'; }
+    const wk=dd.getDay()===0||dd.getDay()===6;
+    cells+=`<div class="${cls} ${inM?'':'opacity-30'}" onclick="${selFn}('${d}')"><span>${dd.getDate()}</span><span class="text-[9px] ${wk?'err':'muted'} leading-none" style="opacity:.6">${wk?'末':''}</span></div>`; }
+  return `<div class="flex items-center justify-between mb-1"><button class="px-2 hov rounded" onclick="S.dp.month=addMonths(S.dp.month+'-01',-1).slice(0,7);render()">‹</button>
+    <b class="text-sm">${y}年${m}月</b><button class="px-2 hov rounded" onclick="S.dp.month=addMonths(S.dp.month+'-01',1).slice(0,7);render()">›</button></div>
+    <div class="grid grid-cols-7 text-center text-xs muted mb-1">${['一','二','三','四','五','六','日'].map(x=>`<div>${x}</div>`).join('')}</div>
+    <div class="grid grid-cols-7 gap-0.5">${cells}</div>
+    <div class="text-[11px] muted mt-1">农历 / 节气 / “休·班”标记位置已预留（P2，由 /calendar/days 提供）</div>`;
+}
+function timeSel(obj,key){ if(!obj) return '<span class="muted text-xs">先选日期</span>';
+  return `<input type="time" step="900" class="field text-sm" value="${obj.time||''}" ${S.dp.all_day?'disabled':''} onchange="S.dp.${key}.time=this.value||null;render()">`; }
+function dpModal(){ const p=S.dp;
+  const qs=[[TODAY,'今天'],[addDays(TODAY,1),'明天'],[addDays(TODAY,2),'后天'],[nextMonday(),'下周一']];
+  return `<div class="card border bd rounded-xl shadow-2xl p-4" style="width:360px" onclick="event.stopPropagation()">
+   ${p.thisOnly?'<div class="text-xs warn mb-2">仅修改本次实例（override），系列中的其他实例不变</div>':''}
+   <div class="flex gap-1 mb-3">${[['date','日期'],['range','时间段']].map(([k,l])=>`<button class="chip flex-1 justify-center py-1 ${p.tab===k?'on':''}" onclick="S.dp.tab='${k}';S.dp.pick=0;render()">${l}</button>`).join('')}</div>
+   <div class="flex gap-1 mb-3 flex-wrap">${qs.map(([d,l])=>`<span class="chip" onclick="dpQuick('${d}')">${l}</span>`).join('')}<span class="chip" onclick="dpQuick(null)">清除</span></div>
+   ${calendar(p.month,'dpSet')}
+   <div class="mt-3 pt-3 border-t bd space-y-2 text-sm">
+     <label class="flex items-center justify-between"><span>全天</span><input type="checkbox" ${p.all_day?'checked':''} onchange="S.dp.all_day=this.checked;render()"></label>
+     ${p.tab==='date'?`<div class="flex items-center justify-between"><span>截止 ${p.due?dateLabel(p.due.date):''}</span>${timeSel(p.due,'due')}</div>
+        <div class="flex items-center justify-between muted text-xs"><span>开始日期（可选）${p.start?': '+dateLabel(p.start.date):''}</span>
+        ${p.start?`<button class="pri-t" onclick="S.dp.start=null;render()">移除</button>`:`<button class="pri-t" onclick="S.dp.start={date:S.dp.due?.date||TODAY,time:null};render()">添加</button>`}</div>`
+      :`<div class="text-xs muted">${p.pick===1?'再点一个日期作为结束':'在日历上点选开始和结束（可跨天）'}</div>
+        <div class="flex items-center justify-between"><span>开始 ${p.start?dateLabel(p.start.date):'—'}</span>${timeSel(p.start,'start')}</div>
+        <div class="flex items-center justify-between"><span>结束 ${p.end?dateLabel(p.end.date):'—'}</span>${timeSel(p.end,'end')}</div>
+        <div class="flex items-center justify-between muted text-xs"><span>截止（可选，独立于时间段）${p.due?': '+dateLabel(p.due.date)+(p.due.time?' '+p.due.time:''):''}</span>${p.due?`<button class="pri-t" onclick="S.dp.due=null;render()">移除</button>`:''}</div>`}
+     <div class="flex justify-between text-xs pt-1"><button class="pri-t" onclick="dpOk();openRM()">⏰ 设置提醒 ›</button><button class="pri-t" onclick="dpOk();openRP()">🔁 设置重复 ›</button></div>
+   </div>
+   <div class="flex justify-end gap-2 mt-4"><button class="chip px-4 py-1" onclick="S.dp=null;render()">取消</button><button class="chip on px-4 py-1" onclick="dpOk()">确定</button></div></div>`; }
+
+/* ============ 提醒编辑器（对应 DESIGN §3.3） ============ */
+function openRM(){ const t=byId(S.sel); S.rm={list:JSON.parse(JSON.stringify(t.reminders)),cn:1,cu:'h',anchor:'due'}; render(); }
+function rmToggle(r){ const L=S.rm.list; const key=JSON.stringify([r.anchor,r.offset_minutes,r.offset_days,r.day_time]);
+  const i=L.findIndex(x=>JSON.stringify([x.anchor,x.offset_minutes,x.offset_days,x.day_time])===key);
+  if(i>=0) L.splice(i,1); else L.push({id:'r'+Date.now()%1e5+L.length,type:'relative',...r}); render(); }
+function rmModal(){ const t=byId(S.sel); const s=itemOf(t).sched; const allDay=s.all_day||(s.due&&!s.due.time);
+  const has=r=>S.rm.list.some(x=>x.anchor===r.anchor&&x.offset_minutes===r.offset_minutes&&x.offset_days===r.offset_days&&x.day_time===r.day_time);
+  const presets=allDay?[{anchor:'due',offset_days:0,day_time:'09:00'},{anchor:'due',offset_days:-1,day_time:'09:00'},{anchor:'due',offset_days:-2,day_time:'09:00'},{anchor:'due',offset_days:-7,day_time:'09:00'}]
+    :[0,-5,-10,-15,-30,-60,-1440].map(m=>({anchor:S.rm.anchor,offset_minutes:m}));
+  const noAnchor=!(S.rm.anchor==='start'?s.start:s.due);
+  return `<div class="card border bd rounded-xl shadow-2xl p-4" style="width:380px" onclick="event.stopPropagation()">
+   <b>提醒</b><div class="text-xs muted mb-3">提醒与截止时间独立；可以设置多个。由 NAS 后端调度，电脑关机也会按时推送到手机 PWA 或第三方渠道。</div>
+   ${allDay?'<div class="text-xs muted mb-2">全天任务：按"当天 / 提前 N 天"的固定时刻提醒（默认 09:00，可在设置中改）</div>'
+     :`<div class="flex gap-1 mb-2 text-xs items-center">相对于 ${[['due','截止'],['start','开始']].map(([k,l])=>`<span class="chip ${S.rm.anchor===k?'on':''}" onclick="S.rm.anchor='${k}';render()">${l}</span>`).join('')}</div>`}
+   ${noAnchor&&!allDay?`<div class="text-xs warn mb-2">该任务没有设置${S.rm.anchor==='start'?'开始':'截止'}时间，这一类提醒不会生效</div>`:''}
+   <div class="flex flex-wrap gap-1.5">${presets.map(r=>`<span class="chip ${has(r)?'on':''}" onclick='rmToggle(${JSON.stringify(r)})'>${remText(r)}</span>`).join('')}</div>
+   ${allDay?'':`<div class="flex items-center gap-2 mt-3 text-sm">自定义：提前 <input type="number" min="1" class="field w-16" value="${S.rm.cn}" onchange="S.rm.cn=+this.value">
+     <select class="field" onchange="S.rm.cu=this.value">${[['m','分钟'],['h','小时'],['d','天'],['w','周']].map(([k,l])=>`<option value="${k}" ${S.rm.cu===k?'selected':''}>${l}</option>`).join('')}</select>
+     <button class="chip" onclick="rmToggle({anchor:S.rm.anchor,offset_minutes:-S.rm.cn*{m:1,h:60,d:1440,w:10080}[S.rm.cu]})">添加</button></div>`}
+   <div class="mt-3 pt-3 border-t bd text-xs space-y-1"><div class="font-semibold">已设置（本次实例的触发时刻）</div>
+     ${S.rm.list.map(r=>`<div class="flex justify-between"><span>${remText(r)}</span><span class="muted">${fireTime(r,s)||'—（缺少锚点）'}</span><button class="err" onclick='rmToggle(${JSON.stringify({anchor:r.anchor,offset_minutes:r.offset_minutes,offset_days:r.offset_days,day_time:r.day_time})})'>✕</button></div>`).join('')||'<div class="muted">不提醒</div>'}
+     <div class="muted pt-1">渠道：跟随全局设置（Web Push · 桌面 · 通知中心）</div></div>
+   <div class="flex justify-end gap-2 mt-4"><button class="chip px-4 py-1" onclick="S.rm=null;render()">取消</button>
+     <button class="chip on px-4 py-1" onclick="const t=byId(S.sel);snapshot();t.reminders=S.rm.list;S.rm=null;touch(t)">确定</button></div></div>`; }
+
+/* ============ 重复编辑器（对应 DESIGN §5 / §9.7） ============ */
+function openRP(){ const t=byId(S.sel); const base=mainDate(itemOf(t).sched)||TODAY; const d=parse(base);
+  S.rp={rule:t.repeat?JSON.parse(JSON.stringify(t.repeat)):null,base,scope:'all',custom:false};
+  S.rp.presets={none:null,daily:{freq:'daily',interval:1},weekly:{freq:'weekly',interval:1,by_weekday:[WK[d.getDay()]]},monthly:{freq:'monthly',interval:1,by_month_day:[d.getDate()]},
+    yearly:{freq:'yearly',interval:1,by_month:[d.getMonth()+1],by_month_day:[d.getDate()]},workday:{freq:'daily',interval:1,day_filter:'mon_fri'},half:{freq:'monthly',interval:6,by_month_day:[d.getDate()]}};
+  render(); }
+function rpPreset(k){ const p=S.rp.presets[k]; S.rp.rule=p?{on_invalid_date:'clamp',basis:'schedule',catch_up:'latest',end:{type:'never'},...JSON.parse(JSON.stringify(p)),dtstart:S.rp.base}:null; S.rp.custom=k==='custom'; if(k==='custom'&&!S.rp.rule) rpPreset('monthly'),S.rp.custom=true; render(); }
+function rpSet(path,val){ const r=S.rp.rule; const ks=path.split('.'); let o=r; for(let i=0;i<ks.length-1;i++){o[ks[i]]=o[ks[i]]||{};o=o[ks[i]];} o[ks.at(-1)]=val;
+  if(path==='freq'){ const d=parse(S.rp.base); delete r.by_weekday; delete r.by_month_day; delete r.by_month; delete r.monthly_mode; delete r.by_set_pos; delete r.day_filter;
+    if(val==='weekly') r.by_weekday=[WK[d.getDay()]]; if(val==='monthly') r.by_month_day=[d.getDate()]; if(val==='yearly'){r.by_month=[d.getMonth()+1];r.by_month_day=[d.getDate()];} }
+  render(); }
+function rpModal(){ const rp=S.rp,r=rp.rule; const t=byId(S.sel);
+  const pl=[['none','不重复'],['daily','每天'],['weekly','每周'],['monthly','每月'],['yearly','每年'],['workday','工作日'],['half','每半年'],['custom','自定义…']];
+  const pv=r?occurrences(r,5,addDays(t.repeat?currentKey(t):rp.base,-1)):[];
+  const R=(name,val,cur,label,fn)=>`<label class="flex items-center gap-1"><input type="radio" name="${name}" ${cur?'checked':''} onchange="${fn}">${label}</label>`;
+  let custom='';
+  if(r&&(rp.custom||t.repeat)){
+    custom=`<div class="mt-3 pt-3 border-t bd space-y-2 text-sm">
+     <div class="flex items-center gap-2">每 <input type="number" min="1" class="field w-14" value="${r.interval||1}" onchange="rpSet('interval',+this.value)">
+       <select class="field" onchange="rpSet('freq',this.value)">${[['daily','天'],['weekly','周'],['monthly','个月'],['yearly','年']].map(([k,l])=>`<option value="${k}" ${r.freq===k?'selected':''}>${l}</option>`).join('')}</select>
+       ${r.freq==='daily'?`<label class="text-xs flex items-center gap-1 ml-2"><input type="checkbox" ${r.day_filter==='mon_fri'?'checked':''} onchange="rpSet('day_filter',this.checked?'mon_fri':null)">仅工作日</label>`:''}</div>
+     ${r.freq==='weekly'?`<div class="flex gap-1">${['MO','TU','WE','TH','FR','SA','SU'].map(w=>`<span class="chip ${r.by_weekday?.includes(w)?'on':''}" onclick="(()=>{const a=S.rp.rule.by_weekday||[];const i=a.indexOf('${w}');i>=0?a.length>1&&a.splice(i,1):a.push('${w}');rpSet('by_weekday',a)})()">${WD[WK.indexOf(w)]}</span>`).join('')}</div>`:''}
+     ${r.freq==='monthly'?`<div class="space-y-1 text-xs">
+        ${R('mm',0,r.monthly_mode!=='nth'&&r.by_month_day?.[0]!==-1,`每月 <input type="number" min="1" max="31" class="field w-12 mx-1" value="${r.by_month_day?.[0]>0?r.by_month_day[0]:parse(rp.base).getDate()}" onchange="rpSet('by_month_day',[+this.value])"> 日`,"rpSet('monthly_mode','day');rpSet('by_month_day',[parse(S.rp.base).getDate()])")}
+        ${R('mm',1,r.monthly_mode!=='nth'&&r.by_month_day?.[0]===-1,'每月最后一天',"rpSet('monthly_mode','day');rpSet('by_month_day',[-1])")}
+        ${R('mm',2,r.monthly_mode==='nth',`每月第 <select class="field mx-1" onchange="rpSet('by_set_pos',+this.value)">${[[1,'1'],[2,'2'],[3,'3'],[4,'4'],[-1,'最后一']].map(([v,l])=>`<option value="${v}" ${r.by_set_pos===v?'selected':''}>${l}</option>`).join('')}</select> 个
+           <select class="field mx-1" onchange="rpSet('by_weekday',[this.value])">${['MO','TU','WE','TH','FR','SA','SU'].map(w=>`<option value="${w}" ${r.by_weekday?.[0]===w?'selected':''}>周${WD[WK.indexOf(w)]}</option>`).join('')}</select>`,
+           "rpSet('monthly_mode','nth');S.rp.rule.by_set_pos=S.rp.rule.by_set_pos||1;rpSet('by_weekday',S.rp.rule.by_weekday||['MO'])")}</div>`:''}
+     ${r.freq==='yearly'?`<div class="flex items-center gap-1 text-xs"><input type="number" min="1" max="12" class="field w-12" value="${r.by_month?.[0]}" onchange="rpSet('by_month',[+this.value])">月
+        <input type="number" min="1" max="31" class="field w-12" value="${r.by_month_day?.[0]}" onchange="rpSet('by_month_day',[+this.value])">日
+        <label class="ml-3 muted flex items-center gap-1"><input type="checkbox" disabled>农历（P2）</label></div>`:''}
+     ${['monthly','yearly'].includes(r.freq)?`<div class="flex gap-3 text-xs items-center"><span class="muted w-24">不存在的日期</span>${R('inv',0,r.on_invalid_date!=='skip','顺延到月末',"rpSet('on_invalid_date','clamp')")}${R('inv',1,r.on_invalid_date==='skip','跳过',"rpSet('on_invalid_date','skip')")}</div>`:''}
+     <div class="flex gap-3 text-xs items-center"><span class="muted w-24">计算方式</span>${R('bs',0,r.basis!=='completion','按计划日期',"rpSet('basis','schedule')")}${R('bs',1,r.basis==='completion','按完成日期',"rpSet('basis','completion')")}</div>
+     <div class="flex gap-3 text-xs items-center"><span class="muted w-24">逾期后</span>${R('cu',0,r.catch_up!=='each','跳到最近一期',"rpSet('catch_up','latest')")}${R('cu',1,r.catch_up==='each','逐期补做',"rpSet('catch_up','each')")}</div>
+     <div class="flex gap-3 text-xs items-center flex-wrap"><span class="muted w-24">结束</span>
+       ${R('end',0,(r.end?.type||'never')==='never','永不',"rpSet('end',{type:'never'})")}
+       ${R('end',1,r.end?.type==='until',`于 <input type="date" class="field ml-1" value="${r.end?.until||addMonths(rp.base,12)}" onchange="rpSet('end',{type:'until',until:this.value})">`,`rpSet('end',{type:'until',until:'${addMonths(rp.base,12)}'})`)}
+       ${R('end',2,r.end?.type==='count',`共 <input type="number" min="1" class="field w-12 mx-1" value="${r.end?.count||10}" onchange="rpSet('end',{type:'count',count:+this.value})"> 次`,"rpSet('end',{type:'count',count:10})")}</div></div>`;
+  }
+  return `<div class="card border bd rounded-xl shadow-2xl p-4 scroll" style="width:440px;max-height:90vh" onclick="event.stopPropagation()">
+    <b>重复</b><span class="text-xs muted ml-2">一个系列 = 一条极空间笔记，每次完成单独记录</span>
+    <div class="flex flex-wrap gap-1.5 mt-3">${pl.map(([k,l])=>{const on=k==='none'?!r:k==='custom'?rp.custom:(!rp.custom&&r&&JSON.stringify(S.rp.presets[k])===JSON.stringify(Object.fromEntries(Object.entries(r).filter(([x])=>['freq','interval','by_weekday','by_month_day','by_month','day_filter'].includes(x)))));
+      return `<span class="chip ${on?'on':''}" onclick="rpPreset('${k}')">${l}</span>`;}).join('')}</div>
+    ${custom}
+    <div class="mt-3 p-2 rounded-lg acc text-xs"><div class="font-semibold mb-1">${r?describeRepeat(r):'不重复'}</div>${r?'接下来 5 次：'+pv.map(d=>dateLabel(d)).join(' → '):'该任务只执行一次'}</div>
+    ${t.repeat?`<div class="mt-3 text-xs flex gap-3 items-center"><span class="muted">修改范围</span>${R('sc',0,rp.scope==='this','仅本次',"S.rp.scope='this'")}${R('sc',1,rp.scope==='future','本次及以后',"S.rp.scope='future'")}${R('sc',2,rp.scope==='all','整个系列',"S.rp.scope='all'")}</div>`:''}
+    <div class="flex justify-end gap-2 mt-4"><button class="chip px-4 py-1" onclick="S.rp=null;render()">取消</button><button class="chip on px-4 py-1" onclick="rpOk()">确定</button></div></div>`; }
+function rpOk(){ const t=byId(S.sel); const r=S.rp.rule; snapshot();
+  if(!r){ t.repeat=null; t.series=undefined; t.status='pending'; }
+  else if(!t.repeat){ const key=occurrences({...r,dtstart:S.rp.base},1,addDays(S.rp.base,-1))[0]||S.rp.base; r.dtstart=key;
+    const s=t.schedule; if(!s.due&&!s.start) s.due={date:key,time:null},s.all_day=true; else { const off=diffDays(mainDate(s),key); for(const k of ['start','end','due']) if(s[k]) s[k].date=addDays(s[k].date,off); }
+    t.repeat=r; t.series={cursor:key,history:[],overrides:{}}; }
+  else { const scope=S.rp.scope; if(scope!=='all') r.dtstart=currentKey(t); t.repeat=r;
+    const nx=occurrences(r,1,addDays(currentKey(t)||TODAY,-1))[0]; if(nx) t.series.cursor=nx; }
+  toast(r?`重复：${describeRepeat(r)}`:'已取消重复',true); S.rp=null; touch(t); }
+
+/* ============ 弹层 ============ */
+function renderModal(){ const m=document.getElementById('modal'); const c=S.dp?dpModal():S.rm?rmModal():S.rp?rpModal():'';
+  m.innerHTML=c?`<div class="fixed inset-0 z-40 flex items-center justify-center" style="background:rgba(0,0,0,.35)" onclick="S.dp=S.rm=S.rp=null;render()">${c}</div>`:''; }
+
+render();
+</script>
+</body>
+</html>
