@@ -251,6 +251,9 @@ function MainWindow() {
     const unSynced = listen("tasks:synced", () => {
       void refreshAll();
     });
+    const unChanged = listen<string>("tasks:changed", (ev) => {
+      if (ev.payload !== "main") void refreshAll();
+    });
     const unFired = listen("reminder:fired", () => {
       void api.listNotifications(50).then(setNotifications);
     });
@@ -263,6 +266,7 @@ function MainWindow() {
 
     return () => {
       void unSynced.then((f) => f());
+      void unChanged.then((f) => f());
       void unFired.then((f) => f());
       void unSelect.then((f) => f());
     };

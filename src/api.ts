@@ -76,5 +76,8 @@ export const api = {
 
   openMainWindow: (taskId?: number) => invoke<void>("open_main_window", { taskId: taskId ?? null }),
   toggleFloatingWindow: () => invoke<void>("toggle_floating_window"),
+  dockFloatingWindow: (edge?: "left" | "right" | "top") =>
+    invoke<void>("dock_floating_window", { edge: edge ?? null }),
+  undockFloatingWindow: () => invoke<void>("undock_floating_window"),
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
 };
