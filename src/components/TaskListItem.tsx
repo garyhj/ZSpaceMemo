@@ -54,9 +54,17 @@ export function TaskListItem({ task, selected, compact, onSelect, onToggle }: Pr
           )}
         </div>
 
-        {!compact && (task.list || task.meta_state === "recovered") && (
-          <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+        {!compact && (task.list || task.labels.length > 0 || task.meta_state === "recovered") && (
+          <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400">
             {task.list && <span className="text-slate-500">{task.list}</span>}
+            {task.labels.map((l) => (
+              <span
+                key={l}
+                className="rounded bg-slate-100 px-1.5 py-0.2 text-[10px] text-slate-500"
+              >
+                #{l}
+              </span>
+            ))}
             {task.meta_state === "recovered" && (
               <span className="text-amber-600">已自动恢复元数据</span>
             )}

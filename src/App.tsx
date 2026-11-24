@@ -94,6 +94,7 @@ function MainWindow() {
   const [workspace, setWorkspace] = useState<"tasks" | "calendar">("tasks");
   const [view, setView] = useState<TaskView>("today");
   const [activeList, setActiveList] = useState<string | null>(null);
+  const [activeLabel, setActiveLabel] = useState<string | null>(null);
   const [customLists, setCustomLists] = useState<string[]>([]);
   const [addingList, setAddingList] = useState(false);
   const [newListName, setNewListName] = useState("");
@@ -166,6 +167,16 @@ function MainWindow() {
       if (t.list) m[t.list] = (m[t.list] ?? 0) + 1;
     }
     return m;
+  }, [allActive]);
+
+  const { allLabels, labelCounts } = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const t of allActive) {
+      for (const lb of t.labels) {
+        counts[lb] = (counts[lb] ?? 0) + 1;
+      }
+    }
+    return { allLabels: Object.keys(counts).sort(), labelCounts: counts };
   }, [allActive]);
 
   function showToast(message: string, onUndo?: () => Promise<void>) {
@@ -458,16 +469,21 @@ function MainWindow() {
     return <AuthScreen onAuthenticated={bootstrap} />;
   }
 
-  const displayedTasks = activeList ? tasks.filter((t) => t.list === activeList) : tasks;
+  const displayedTasks = activeList
+    ? tasks.filter((t) => t.list === activeList)
+    : activeLabel
+    ? tasks.filter((t) => t.labels.includes(activeLabel))
+    : tasks;
+  const noSubFilter = !activeList && !activeLabel;
   const overdueToday =
-    !activeList && view === "today" ? displayedTasks.filter(isTaskOverdue) : [];
+    noSubFilter && view === "today" ? displayedTasks.filter(isTaskOverdue) : [];
   const normalToday =
-    !activeList && view === "today"
+    noSubFilter && view === "today"
       ? displayedTasks.filter((t) => !isTaskOverdue(t))
       : displayedTasks;
 
   const upcomingGroups =
-    !activeList && view === "upcoming"
+    noSubFilter && view === "upcoming"
       ? Object.entries(
           displayedTasks.reduce<Record<string, Task[]>>((acc, t) => {
             const d = effectiveDue(t)?.date ?? "未安排";
@@ -601,7 +617,7 @@ function MainWindow() {
           <aside className="flex w-52 shrink-0 flex-col border-r border-slate-200 bg-slate-50/80 p-2.5 overflow-y-auto">
             <div className="space-y-0.5">
               {VIEW_ITEMS.map((item) => {
-                const active = !activeList && view === item.key;
+                const active = noSubFilter && view === item.key;
                 const count =
                   item.key === "today"
                     ? viewCounts.today
@@ -620,6 +636,7 @@ function MainWindow() {
                     type="button"
                     onClick={() => {
                       setActiveList(null);
+                      setActiveLabel(null);
                       setView(item.key);
                     }}
                     className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm transition ${
@@ -669,6 +686,7 @@ function MainWindow() {
                       const n = newListName.trim();
                       setCustomLists((prev) => (prev.includes(n) ? prev : [...prev, n]));
                       setActiveList(n);
+                      setActiveLabel(null);
                       setView("all");
                       setNewListName("");
                       setAddingList(false);
@@ -693,6 +711,7 @@ function MainWindow() {
                       type="button"
                       onClick={() => {
                         setActiveList(l);
+                        setActiveLabel(null);
                         setView("all");
                       }}
                       className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-xs transition ${
@@ -711,6 +730,37 @@ function MainWindow() {
                 })}
               </div>
             </div>
+
+            {allLabels.length > 0 && (
+              <div className="mt-5">
+                <div className="mb-1 px-2.5 text-[11px] font-medium text-slate-400">标签</div>
+                <div className="space-y-0.5">
+                  {allLabels.map((lb) => {
+                    const active = activeLabel === lb;
+                    return (
+                      <button
+                        key={lb}
+                        type="button"
+                        onClick={() => {
+                          setActiveLabel(lb);
+                          setActiveList(null);
+                          setView("all");
+                        }}
+                        className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs transition ${
+                          active
+                            ? "bg-blue-50 font-medium text-blue-700"
+                            : "text-slate-600 hover:bg-slate-200/60"
+                        }`}
+                      >
+                        <span className="text-slate-400">#</span>
+                        <span className="flex-1 truncate text-left">{lb}</span>
+                        <span className="text-[11px] text-slate-400">{labelCounts[lb]}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </aside>
 
           {/* Middle Task List */}
@@ -718,15 +768,16 @@ function MainWindow() {
             <div className="border-b border-slate-200 p-3 space-y-2.5">
               <div className="flex items-center gap-2">
                 <h1 className="text-base font-semibold text-slate-900">
-                  {activeList ?? VIEW_ITEMS.find((v) => v.key === view)?.label}
+                  {activeList ??
+                    (activeLabel ? `#${activeLabel}` : VIEW_ITEMS.find((v) => v.key === view)?.label)}
                 </h1>
                 <div className="ml-auto flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1">
                   <Search className="h-3.5 w-3.5 text-slate-400" />
                   <input
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
-                    placeholder="搜索标题 / 备注"
-                    className="w-32 bg-transparent text-xs outline-none"
+                    placeholder="搜索标题 / 备注 / 标签"
+                    className="w-36 bg-transparent text-xs outline-none"
                   />
                 </div>
                 <select

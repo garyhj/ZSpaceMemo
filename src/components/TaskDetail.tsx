@@ -5,6 +5,7 @@ import {
   Check,
   ChevronRight,
   Folder,
+  Hash,
   ListChecks,
   Pin,
   Plus,
@@ -57,6 +58,7 @@ export function TaskDetail({
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [list, setList] = useState("");
+  const [labelsText, setLabelsText] = useState("");
   const [checklistMode, setChecklistMode] = useState(false);
   const [newCheckItem, setNewCheckItem] = useState("");
   const [timeline, setTimeline] = useState<OccurrenceView[]>([]);
@@ -69,6 +71,7 @@ export function TaskDetail({
     setTitle(task.title);
     setDescription(task.description);
     setList(task.list ?? "");
+    setLabelsText(task.labels.join(", "));
     setChecklistMode(
       task.description
         .split("\n")
@@ -369,6 +372,25 @@ export function TaskDetail({
               />
             </div>
 
+            <div className="flex items-center gap-3 py-2">
+              <Hash className="h-4 w-4 text-slate-400" />
+              <span className="w-12 text-xs text-slate-500">标签</span>
+              <input
+                value={labelsText}
+                onChange={(e) => setLabelsText(e.target.value)}
+                onBlur={() => {
+                  const parsed = labelsText
+                    .split(/[,，]/)
+                    .map((x) => x.trim())
+                    .filter(Boolean);
+                  if (JSON.stringify(parsed) !== JSON.stringify(task.labels)) {
+                    void savePatch({ labels: parsed });
+                  }
+                }}
+                placeholder="逗号分隔（如：续费, eSIM）"
+                className="flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400"
+              />
+            </div>
           </div>
 
           {/* Description / Dida365-style lightweight Checklist */}
