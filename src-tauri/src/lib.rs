@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
-use tauri_plugin_autostart::MacosLauncher;
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use zspace_memo_core::models::{
     CreateTaskInput, OccurrenceActionStatus, OccurrenceView, RepeatRule, Task, TaskSort, TaskView,
@@ -378,6 +378,7 @@ pub fn run() {
             snooze_reminder,
             open_main_window,
             toggle_floating_window,
+            set_autostart,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ZSpace Memo");
