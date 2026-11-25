@@ -38,6 +38,7 @@ export function FloatingWindow() {
   const [dockPeeked, setDockPeeked] = useState(false);
   const [collapsed, setCollapsed] = useState<Partial<Record<GroupKey, boolean>>>({});
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
+  const [inputFocused, setInputFocused] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const dockStateRef = useRef<{ edge: DockEdge; peeked: boolean }>({ edge: null, peeked: false });
@@ -49,6 +50,13 @@ export function FloatingWindow() {
 
   dockStateRef.current = { edge: dockEdge, peeked: dockPeeked };
   ctxOpenRef.current = Boolean(ctxMenu);
+  inputFocusedRef.current = inputFocused;
+
+  useEffect(() => {
+    if (dockEdge && dockPeeked) {
+      void api.setFloatingPeekHold(Boolean(ctxMenu) || inputFocused).catch(() => {});
+    }
+  }, [dockEdge, dockPeeked, ctxMenu, inputFocused]);
 
   function clearPeekTimer() {
     if (peekTimerRef.current !== null) {
@@ -261,10 +269,13 @@ export function FloatingWindow() {
             if (hoveringRef.current && dockStateRef.current.edge && !dockStateRef.current.peeked) {
               void api.peekFloatingWindow();
             }
-          }, 140);
+          }, 180);
         }}
         onMouseLeave={() => {
           hoveringRef.current = false;
+          clearPeekTimer();
+        }}
+        onMouseDown={() => {
           clearPeekTimer();
         }}
         onClick={() => {
@@ -405,7 +416,7 @@ export function FloatingWindow() {
       <div
         className="border-b border-slate-100 p-2"
         onFocusCapture={() => {
-          inputFocusedRef.current = true;
+          setInputFocused(true);
           clearCollapseTimer();
         }}
         onBlurCapture={() => {
@@ -414,7 +425,7 @@ export function FloatingWindow() {
             const stillInsideInput = Boolean(
               active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")
             );
-            inputFocusedRef.current = stillInsideInput;
+            setInputFocused(stillInsideInput);
             if (!stillInsideInput) scheduleCollapseIfPeeked();
           }, 30);
         }}

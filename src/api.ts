@@ -134,6 +134,7 @@ export const api = {
     invoke<void>("dock_floating_window", { edge: edge ?? null }),
   peekFloatingWindow: () => invoke<void>("peek_floating_window"),
   collapsePeekFloatingWindow: () => invoke<void>("collapse_peek_floating_window"),
+  setFloatingPeekHold: (hold: boolean) => invoke<void>("set_floating_peek_hold", { hold }),
   undockFloatingWindow: () => invoke<void>("undock_floating_window"),
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
 };

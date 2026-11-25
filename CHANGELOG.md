@@ -2,6 +2,11 @@
 
 All notable changes to **ZSpace Kit（极空工具箱）** (repository `ZSpaceMemo`) are documented in this file.
 
+## [0.3.3] - 2026-11-25
+
+### Fixed
+- **彻底修复悬浮待办窗鼠标移开未自动折叠的问题**：Windows WebView2 下非焦点透明无边框窗口容易丢失 DOM `mouseleave` 事件。现改为在 Rust 后端启用系统级全局鼠标坐标轮询（`win.cursor_position()` + 失焦检测），只要鼠标移出悬浮窗范围即在 ~240ms 内稳定自动折叠回边缘书签；同时新增 `onMouseDown` 保护，避免点击书签时被悬停计时器抢先展开。
+
 ## [0.3.2] - 2026-11-25
 
 ### Improved & Fixed

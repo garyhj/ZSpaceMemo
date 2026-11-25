@@ -46,6 +46,8 @@ struct FloatingDockPayload {
 struct FloatingDockState {
     docked: Option<DockEdge>,
     peeked: bool,
+    peek_hold: bool,
+    peek_seq: u64,
     tab_pos: Option<PhysicalPosition<i32>>,
     saved_pos: Option<PhysicalPosition<i32>>,
     saved_size: Option<PhysicalSize<u32>>,
@@ -164,6 +166,8 @@ fn dock_floating(app: &AppHandle, edge_hint: Option<DockEdge>) {
         }
         dock.docked = Some(edge);
         dock.peeked = false;
+        dock.peek_hold = false;
+        dock.peek_seq += 1;
         dock.tab_pos = Some(PhysicalPosition::new(nx, ny));
         dock.ignore_moves_until_ms = now_ms() + 800;
     }
@@ -181,12 +185,72 @@ fn dock_floating(app: &AppHandle, edge_hint: Option<DockEdge>) {
     );
 }
 
+fn start_peek_cursor_monitor(app: AppHandle, seq: u64) {
+    tauri::async_runtime::spawn(async move {
+        // Allow OS window resize/reposition to settle before polling cursor exit.
+        tokio::time::sleep(Duration::from_millis(320)).await;
+        let mut outside_streak = 0u8;
+
+        loop {
+            tokio::time::sleep(Duration::from_millis(120)).await;
+
+            let (active, hold) = {
+                let state = app.state::<AppState>();
+                let dock = state.dock.lock().unwrap();
+                (
+                    dock.docked.is_some() && dock.peeked && dock.peek_seq == seq,
+                    dock.peek_hold,
+                )
+            };
+            if !active {
+                break;
+            }
+
+            let Some(win) = app.get_webview_window("floating") else {
+                break;
+            };
+            if !win.is_visible().unwrap_or(false) {
+                break;
+            }
+
+            let is_focused = win.is_focused().unwrap_or(false);
+            if hold && is_focused {
+                outside_streak = 0;
+                continue;
+            }
+
+            let (Ok(cursor), Ok(pos), Ok(size)) =
+                (win.cursor_position(), win.outer_position(), win.outer_size())
+            else {
+                continue;
+            };
+            let scale = win.scale_factor().unwrap_or(1.0);
+            let margin = (8.0 * scale).round();
+
+            let inside = cursor.x >= (pos.x as f64 - margin)
+                && cursor.x <= (pos.x as f64 + size.width as f64 + margin)
+                && cursor.y >= (pos.y as f64 - margin)
+                && cursor.y <= (pos.y as f64 + size.height as f64 + margin);
+
+            if inside {
+                outside_streak = 0;
+            } else {
+                outside_streak = outside_streak.saturating_add(1);
+                if outside_streak >= 2 {
+                    collapse_peek_floating(&app);
+                    break;
+                }
+            }
+        }
+    });
+}
+
 fn peek_floating(app: &AppHandle) {
     let Some(win) = app.get_webview_window("floating") else {
         return;
     };
     let cur_pos = win.outer_position().ok();
-    let (edge, tab_pos, saved_size) = {
+    let (edge, tab_pos, saved_size, seq) = {
         let state = app.state::<AppState>();
         let mut dock = state.dock.lock().unwrap();
         let Some(edge) = dock.docked else {
@@ -199,8 +263,10 @@ fn peek_floating(app: &AppHandle) {
             dock.tab_pos = cur_pos;
         }
         dock.peeked = true;
+        dock.peek_hold = false;
+        dock.peek_seq += 1;
         dock.ignore_moves_until_ms = now_ms() + 800;
-        (edge, dock.tab_pos.or(cur_pos), dock.saved_size)
+        (edge, dock.tab_pos.or(cur_pos), dock.saved_size, dock.peek_seq)
     };
 
     let (wa_left, wa_top, wa_right, wa_bottom, scale) =
@@ -242,6 +308,7 @@ fn peek_floating(app: &AppHandle) {
             peeked: true,
         },
     );
+    start_peek_cursor_monitor(app.clone(), seq);
 }
 
 fn collapse_peek_floating(app: &AppHandle) {
@@ -258,6 +325,8 @@ fn collapse_peek_floating(app: &AppHandle) {
             return;
         }
         dock.peeked = false;
+        dock.peek_hold = false;
+        dock.peek_seq += 1;
         dock.ignore_moves_until_ms = now_ms() + 800;
         (edge, dock.tab_pos)
     };
@@ -312,6 +381,8 @@ fn undock_floating(app: &AppHandle) {
         let mut dock = state.dock.lock().unwrap();
         let edge = dock.docked.take();
         dock.peeked = false;
+        dock.peek_hold = false;
+        dock.peek_seq += 1;
         let tab_pos = dock.tab_pos.take();
         dock.ignore_moves_until_ms = now_ms() + 1000;
         (edge, tab_pos, dock.saved_pos, dock.saved_size)
@@ -979,6 +1050,14 @@ fn collapse_peek_floating_window(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn set_floating_peek_hold(app: AppHandle, hold: bool) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let mut dock = state.dock.lock().unwrap();
+    dock.peek_hold = hold;
+    Ok(())
+}
+
+#[tauri::command]
 fn undock_floating_window(app: AppHandle) -> Result<(), String> {
     undock_floating(&app);
     Ok(())
@@ -1174,6 +1253,8 @@ pub fn run() {
                         if broke {
                             dock.docked = None;
                             dock.peeked = false;
+                            dock.peek_hold = false;
+                            dock.peek_seq += 1;
                             dock.tab_pos = None;
                         }
                         dock.move_seq += 1;
@@ -1234,6 +1315,11 @@ pub fn run() {
                     });
                 }
             }
+            WindowEvent::Focused(false) if window.label() == "floating" => {
+                let state = window.app_handle().state::<AppState>();
+                let mut dock = state.dock.lock().unwrap();
+                dock.peek_hold = false;
+            }
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
@@ -1292,6 +1378,7 @@ pub fn run() {
             dock_floating_window,
             peek_floating_window,
             collapse_peek_floating_window,
+            set_floating_peek_hold,
             undock_floating_window,
             set_autostart,
         ])
