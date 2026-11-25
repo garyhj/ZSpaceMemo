@@ -149,20 +149,15 @@ export function FloatingWindow() {
     <div className="flex h-screen w-screen flex-col overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-xl">
       <header className="flex items-center justify-between border-b border-slate-200 px-3 py-2 select-none">
         <div
-          data-tauri-drag-region
-          title="拖动窗口到屏幕左 / 右 / 上边缘可自动收起为书签"
-          className="flex flex-1 cursor-grab items-center gap-2 active:cursor-grabbing"
+          data-tauri-drag-region="deep"
+          title="按住拖动位置；拖到屏幕左 / 右 / 上边缘可自动收起为书签"
+          className="flex flex-1 cursor-grab items-center gap-2 py-0.5 active:cursor-grabbing"
         >
-          <span data-tauri-drag-region className="text-sm font-semibold">
-            ☀️ 今天
-          </span>
-          <span data-tauri-drag-region className="text-xs text-slate-400">
+          <span className="text-sm font-semibold">☀️ 今天</span>
+          <span className="text-xs text-slate-400">
             {today.length} 项
             {overdue.length > 0 && (
-              <span data-tauri-drag-region className="text-red-500">
-                {" "}
-                · {overdue.length} 项逾期
-              </span>
+              <span className="text-red-500"> · {overdue.length} 项逾期</span>
             )}
           </span>
         </div>
@@ -247,8 +242,10 @@ export function FloatingWindow() {
         )}
       </div>
 
-      <footer className="flex items-center justify-between border-t border-slate-100 px-3 py-1.5 text-[11px] text-slate-400">
-        <span>拖到屏幕边可收起为书签</span>
+      <footer className="flex items-center justify-between border-t border-slate-100 px-3 py-1.5 text-[11px] text-slate-400 select-none">
+        <span data-tauri-drag-region="deep" className="flex-1 cursor-grab active:cursor-grabbing">
+          拖到屏幕边可收起为书签
+        </span>
         <button
           type="button"
           onClick={() => void api.openMainWindow()}
