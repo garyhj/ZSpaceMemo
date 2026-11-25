@@ -5,14 +5,16 @@ use tauri_plugin_notification::NotificationExt;
 use tracing::{info, warn};
 use zspace_memo_core::provider::official_cli::OfficialCliNotebookProvider;
 use zspace_memo_core::service::TaskService;
+use zspace_memo_core::sticky::StickyService;
 
 /// Background Tokio loop:
-/// - Syncs from NAS on startup and every `sync_interval_secs` (default 5m)
+/// - Syncs tasks & sticky notes from NAS on startup and every `sync_interval_secs` (default 5m)
 /// - Checks due reminder jobs every 15s (including missed-while-powered-off catch-up)
-/// - Emits OS native notifications + frontend events
+/// - Fires OS native notifications (with optional sound & visible error logs)
 pub fn spawn_background_scheduler(
     app: AppHandle,
     service: Arc<TaskService<OfficialCliNotebookProvider>>,
+    sticky: Arc<StickyService<OfficialCliNotebookProvider>>,
 ) {
     tauri::async_runtime::spawn(async move {
         let mut sync_elapsed = 9999u64; // Trigger immediate sync on boot.
@@ -20,10 +22,8 @@ pub fn spawn_background_scheduler(
 
         loop {
             ticker.tick().await;
-            let interval = service
-                .get_settings()
-                .map(|s| s.sync_interval_secs.max(30))
-                .unwrap_or(300);
+            let cfg = service.get_settings().unwrap_or_default();
+            let interval = cfg.sync_interval_secs.max(30);
 
             if sync_elapsed >= interval {
                 sync_elapsed = 0;
@@ -33,12 +33,20 @@ pub fn spawn_background_scheduler(
                             total = summary.total_notes,
                             fetched = summary.fetched_details,
                             recovered = summary.recovered_count,
-                            "background sync ok"
+                            "background task sync ok"
                         );
                         let _ = app.emit("tasks:synced", &summary);
                     }
                     Err(e) => {
-                        warn!(error = %e, "background sync skipped/failed");
+                        warn!(error = %e, "background task sync skipped/failed");
+                    }
+                }
+                match sticky.sync().await {
+                    Ok(fetched) => {
+                        let _ = app.emit("sticky:synced", fetched);
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "background sticky sync skipped/failed");
                     }
                 }
             } else {
@@ -48,12 +56,17 @@ pub fn spawn_background_scheduler(
             match service.process_due_reminders().await {
                 Ok(fired) => {
                     for notif in fired {
-                        let _ = app
+                        let mut builder = app
                             .notification()
                             .builder()
                             .title(&notif.title)
-                            .body(&notif.body)
-                            .show();
+                            .body(&notif.body);
+                        if cfg.notification_sound {
+                            builder = builder.sound("Default");
+                        }
+                        if let Err(e) = builder.show() {
+                            warn!(error = %e, title = %notif.title, "OS notification show failed");
+                        }
                         let _ = app.emit("reminder:fired", &notif);
                     }
                 }

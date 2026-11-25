@@ -58,13 +58,13 @@ export function AuthScreen({ onAuthenticated }: Props) {
             <ShieldCheck className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-lg font-semibold">ZSpace Memo</h1>
-            <p className="text-xs text-slate-500">基于极空间原生记事本的桌面任务管理</p>
+            <h1 className="text-lg font-semibold">ZSpace Kit · 极空工具箱</h1>
+            <p className="text-xs text-slate-500">基于极空间原生能力的桌面外置工具箱（待办 · 日历 · 便签）</p>
           </div>
         </div>
 
         <p className="text-sm text-slate-600 leading-relaxed">
-          使用极空间官方 OAuth2 授权登录，全程不接触、不保存 NAS 账号密码；所有任务以可读笔记形式保存在你的极空间原生记事本中。
+          使用极空间官方 OAuth2 授权登录，全程不接触、不保存 NAS 账号密码；待办与便签均直接保存在你的极空间原生记事本中，多端自动同步。
         </p>
 
         {!oauth ? (

@@ -18,6 +18,22 @@ pub struct AppSettings {
     pub show_overdue_in_today: bool,
     pub close_to_tray: bool,
     pub autostart: bool,
+    #[serde(default = "default_true")]
+    pub default_auto_remind: bool,
+    #[serde(default = "default_true")]
+    pub notification_sound: bool,
+    #[serde(default = "default_sticky_cat")]
+    pub sticky_category_name: String,
+    #[serde(default)]
+    pub sticky_category_id: Option<i64>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_sticky_cat() -> String {
+    "ZSpace Sticky".into()
 }
 
 impl Default for AppSettings {
@@ -32,6 +48,10 @@ impl Default for AppSettings {
             show_overdue_in_today: true,
             close_to_tray: true,
             autostart: true,
+            default_auto_remind: true,
+            notification_sound: true,
+            sticky_category_name: default_sticky_cat(),
+            sticky_category_id: None,
         }
     }
 }
@@ -137,6 +157,12 @@ impl LocalStorage {
                 fired_at_utc TEXT NOT NULL,
                 late INTEGER NOT NULL DEFAULT 0,
                 read INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS sticky_index (
+                id INTEGER PRIMARY KEY,
+                updated_at_unix INTEGER NOT NULL,
+                length INTEGER NOT NULL,
+                note_json TEXT NOT NULL
             );
             "#,
         )?;
@@ -440,6 +466,48 @@ impl LocalStorage {
     pub fn mark_notification_read(&self, id: i64) -> AppResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("UPDATE notifications SET read = 1 WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn get_sticky(&self, id: i64) -> AppResult<Option<(i64, i64, String)>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT updated_at_unix, length, note_json FROM sticky_index WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    pub fn list_stickies(&self) -> AppResult<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT note_json FROM sticky_index")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn upsert_sticky(&self, id: i64, updated_at_unix: i64, length: i64, note_json: &str) -> AppResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO sticky_index(id, updated_at_unix, length, note_json)
+             VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET
+               updated_at_unix = excluded.updated_at_unix,
+               length = excluded.length,
+               note_json = excluded.note_json",
+            params![id, updated_at_unix, length, note_json],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_sticky(&self, id: i64) -> AppResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM sticky_index WHERE id = ?1", params![id])?;
         Ok(())
     }
 }

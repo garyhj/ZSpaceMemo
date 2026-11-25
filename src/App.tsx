@@ -1,12 +1,9 @@
 import { listen } from "@tauri-apps/api/event";
 import {
   AlertCircle,
-  Bell,
   Calendar,
   CalendarClock,
-  CalendarDays,
   CheckCircle2,
-  CheckSquare,
   ChevronRight,
   Inbox,
   Layers,
@@ -24,18 +21,19 @@ import { api } from "./api";
 import { AuthScreen } from "./components/AuthScreen";
 import { FloatingWindow } from "./components/FloatingWindow";
 import { MonthCalendarView } from "./components/MonthCalendarView";
-import { NotificationDrawer } from "./components/NotificationDrawer";
 import { QuickAddBar } from "./components/QuickAddBar";
 import { SettingsModal } from "./components/SettingsModal";
 import { TaskContextMenu, type ContextMenuState } from "./components/TaskContextMenu";
 import { TaskDetail } from "./components/TaskDetail";
 import { TaskListItem } from "./components/TaskListItem";
+import { TOOLBOX_MODULES, type WorkspaceId } from "./modules/registry";
+import { StickyBoard } from "./modules/sticky/StickyBoard";
+import { StickyFloatingCard } from "./modules/sticky/StickyFloatingCard";
 import type {
   AppSettings,
   AuthStatus,
   CalendarTaskItem,
   CreateTaskInput,
-  NotificationRecord,
   Priority,
   Task,
   TaskSort,
@@ -62,13 +60,15 @@ interface ToastState {
 }
 
 export default function App() {
-  const isFloating = useMemo(
-    () => new URLSearchParams(window.location.search).get("mode") === "floating",
-    []
-  );
+  const params = useMemo(() => new URLSearchParams(window.location.search), []);
+  const mode = params.get("mode");
 
-  if (isFloating) {
+  if (mode === "floating") {
     return <FloatingWindow />;
+  }
+  if (mode === "sticky") {
+    const id = Number(params.get("id") || "0");
+    if (id > 0) return <StickyFloatingCard noteId={id} />;
   }
 
   return <MainWindow />;
@@ -80,7 +80,7 @@ function MainWindow() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
 
   // Dida365 top-level workspace switcher: Tasks vs Month Calendar
-  const [workspace, setWorkspace] = useState<"tasks" | "calendar">("tasks");
+  const [workspace, setWorkspace] = useState<WorkspaceId>("tasks");
   const [view, setView] = useState<TaskView>("today");
   const [activeList, setActiveList] = useState<string | null>(null);
   const [activeLabel, setActiveLabel] = useState<string | null>(null);
@@ -93,9 +93,7 @@ function MainWindow() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [allActive, setAllActive] = useState<Task[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
   const [showSettings, setShowSettings] = useState(false);
-  const [showNotif, setShowNotif] = useState(false);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<ToastState | null>(null);
   const [conflictMsg, setConflictMsg] = useState<string | null>(null);
@@ -117,11 +115,6 @@ function MainWindow() {
       completedTasks.find((t) => t.id === selectedId) ??
       null,
     [tasks, allActive, completedTasks, selectedId]
-  );
-
-  const unreadCount = useMemo(
-    () => notifications.filter((n) => !n.read).length,
-    [notifications]
   );
 
   const lists = useMemo(() => {
@@ -186,16 +179,14 @@ function MainWindow() {
 
   async function refreshAll(v = view, q = query, s = sort) {
     try {
-      const [list, active, done, notifs] = await Promise.all([
+      const [list, active, done] = await Promise.all([
         api.listTasks(v, q, s),
         api.listTasks("all", undefined, "date"),
         api.listTasks("completed", q || undefined, "date"),
-        api.listNotifications(50),
       ]);
       setTasks(list);
       setAllActive(active);
       setCompletedTasks(done);
-      setNotifications(notifs);
       setCalendarRefreshToken((n) => n + 1);
     } catch (e) {
       showToast(`刷新列表失败：${String(e)}`);
@@ -219,6 +210,7 @@ function MainWindow() {
       await api.initializeCategory(true);
       await api.syncTasks();
       await refreshAll();
+      void api.initStickyCategory(true).then(() => api.syncStickyNotes()).catch(() => {});
     } catch (e) {
       showToast(`后台同步失败：${String(e)}`);
     } finally {
@@ -239,9 +231,6 @@ function MainWindow() {
     const unChanged = listen<string>("tasks:changed", (ev) => {
       if (ev.payload !== "main") void refreshAll();
     });
-    const unFired = listen("reminder:fired", () => {
-      void api.listNotifications(50).then(setNotifications);
-    });
     const unSelect = listen<number>("task:select", (ev) => {
       setWorkspace("tasks");
       setSelectedId(ev.payload);
@@ -252,7 +241,6 @@ function MainWindow() {
     return () => {
       void unSynced.then((f) => f());
       void unChanged.then((f) => f());
-      void unFired.then((f) => f());
       void unSelect.then((f) => f());
     };
   }, []);
@@ -302,8 +290,27 @@ function MainWindow() {
   }
 
   async function handleCreate(input: CreateTaskInput) {
+    let autoReminders = input.reminders;
+    if (
+      input.schedule?.due &&
+      (!autoReminders || autoReminders.length === 0) &&
+      settings?.default_auto_remind !== false
+    ) {
+      const isTimed = !input.schedule.all_day && Boolean(input.schedule.due.time);
+      autoReminders = [
+        isTimed
+          ? { type: "relative", id: "auto_due", offset_minutes: 0 }
+          : {
+              type: "relative",
+              id: "auto_day",
+              offset_days: 0,
+              day_time: settings?.default_all_day_reminder_time ?? "09:00",
+            },
+      ];
+    }
     const withList: CreateTaskInput = {
       ...input,
+      reminders: autoReminders,
       list: input.list ?? activeList ?? null,
     };
     const tempId = -Date.now();
@@ -641,21 +648,20 @@ function MainWindow() {
         searchRef.current?.select();
         return;
       }
-      if (mod && (e.key === "1" || e.key === "2")) {
+      if (mod && (e.key === "1" || e.key === "2" || e.key === "3")) {
         e.preventDefault();
-        setWorkspace(e.key === "1" ? "tasks" : "calendar");
+        setWorkspace(e.key === "1" ? "tasks" : e.key === "2" ? "calendar" : "sticky");
         return;
       }
       if (e.key === "Escape") {
         if (ctxMenu) { setCtxMenu(null); return; }
         if (showSettings) { setShowSettings(false); return; }
-        if (showNotif) { setShowNotif(false); return; }
         if (editing) { target?.blur(); return; }
         if (query) { setQuery(""); return; }
         if (selectedId !== null) setSelectedId(null);
         return;
       }
-      if (editing || showSettings || showNotif) return;
+      if (editing || showSettings) return;
 
       if (e.key === "/" ) {
         e.preventDefault();
@@ -699,7 +705,7 @@ function MainWindow() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [auth?.logged_in, workspace, selectedId, selected, visibleTaskOrder, ctxMenu, showSettings, showNotif, query]);
+  }, [auth?.logged_in, workspace, selectedId, selected, visibleTaskOrder, ctxMenu, showSettings, query]);
   if (!authChecked) {
     return (
       <div className="flex h-screen items-center justify-center text-sm text-slate-400">
@@ -724,63 +730,39 @@ function MainWindow() {
 
   return (
     <div className="flex h-screen bg-slate-50">
-      {/* Dida365-style Leftmost Slim Navigation Rail */}
-      <nav className="flex w-13 shrink-0 flex-col items-center border-r border-slate-200 bg-slate-100 py-3 gap-2">
+      {/* ZSpace Kit Modular Toolbox Navigation Rail */}
+      <nav className="flex w-14 shrink-0 flex-col items-center border-r border-slate-200 bg-slate-100 py-3 gap-2">
         <div
-          title={`极空间已连接 (${auth.nas_id ?? ""})`}
-          className="mb-2 flex h-8 w-8 items-center justify-center rounded-xl bg-blue-600 text-xs font-bold text-white shadow-xs"
+          title={`ZSpace Kit · 极空工具箱 (${auth.nas_id ?? ""})`}
+          className="mb-2 flex h-8 w-8 items-center justify-center rounded-xl bg-blue-600 text-[11px] font-bold tracking-tight text-white shadow-xs"
         >
-          Z
+          ZK
         </div>
 
-        <button
-          type="button"
-          title="任务"
-          onClick={() => setWorkspace("tasks")}
-          className={`flex h-9 w-9 items-center justify-center rounded-xl transition ${
-            workspace === "tasks"
-              ? "bg-white text-blue-600 shadow-xs"
-              : "text-slate-500 hover:bg-slate-200/70"
-          }`}
-        >
-          <CheckSquare className="h-5 w-5" />
-        </button>
-
-        <button
-          type="button"
-          title="月视图"
-          onClick={() => setWorkspace("calendar")}
-          className={`flex h-9 w-9 items-center justify-center rounded-xl transition ${
-            workspace === "calendar"
-              ? "bg-white text-blue-600 shadow-xs"
-              : "text-slate-500 hover:bg-slate-200/70"
-          }`}
-        >
-          <CalendarDays className="h-5 w-5" />
-        </button>
+        {TOOLBOX_MODULES.map((mod) => (
+          <button
+            key={mod.id}
+            type="button"
+            title={`${mod.label}（${mod.shortcut}）· ${mod.description}`}
+            onClick={() => setWorkspace(mod.id)}
+            className={`flex h-10 w-10 flex-col items-center justify-center rounded-xl transition ${
+              workspace === mod.id
+                ? "bg-white text-blue-600 shadow-xs"
+                : "text-slate-500 hover:bg-slate-200/70"
+            }`}
+          >
+            {mod.icon}
+          </button>
+        ))}
 
         <div className="mt-auto flex flex-col items-center gap-2">
           <button
             type="button"
-            title="快捷悬浮窗（Ctrl/Cmd+Shift+M）"
+            title="待办悬浮窗（Ctrl/Cmd+Shift+M）"
             onClick={() => void api.toggleFloatingWindow()}
             className="flex h-9 w-9 items-center justify-center rounded-xl text-slate-500 hover:bg-slate-200/70"
           >
             <PanelRightOpen className="h-4.5 w-4.5" />
-          </button>
-
-          <button
-            type="button"
-            title="通知中心"
-            onClick={() => setShowNotif(true)}
-            className="relative flex h-9 w-9 items-center justify-center rounded-xl text-slate-500 hover:bg-slate-200/70"
-          >
-            <Bell className="h-4.5 w-4.5" />
-            {unreadCount > 0 && (
-              <span className="absolute right-1 top-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-red-500 px-1 text-[9px] font-semibold text-white">
-                {unreadCount}
-              </span>
-            )}
           </button>
 
           <button
@@ -794,8 +776,13 @@ function MainWindow() {
         </div>
       </nav>
 
-      {/* Main Content Area: Tasks vs Month Calendar */}
-      {workspace === "calendar" ? (
+      {/* Main Content Area: Toolbox Modules */}
+      {workspace === "sticky" ? (
+        <StickyBoard
+          onConvertToTodo={handleCreate}
+          onToast={(m) => showToast(m)}
+        />
+      ) : workspace === "calendar" ? (
         <div className="flex min-w-0 flex-1">
           <MonthCalendarView
             lists={lists}
@@ -1190,29 +1177,6 @@ function MainWindow() {
           onSettingsChanged={(cfg) => {
             setSettings(cfg);
             void refreshAll();
-          }}
-        />
-      )}
-
-      {showNotif && (
-        <NotificationDrawer
-          notifications={notifications}
-          onClose={() => setShowNotif(false)}
-          onMarkRead={async (id) => {
-            await api.markNotificationRead(id);
-            setNotifications(await api.listNotifications(50));
-          }}
-          onSnooze={async (n, mins) => {
-            await api.snoozeReminder(n.task_id, n.occurrence_key, mins, n.title, n.body);
-            await api.markNotificationRead(n.id);
-            setNotifications(await api.listNotifications(50));
-            showToast(`已推迟 ${mins} 分钟后再次提醒`);
-          }}
-          onOpenTask={(id) => {
-            setWorkspace("tasks");
-            setSelectedId(id);
-            setActiveList(null);
-            setView("all");
           }}
         />
       )}

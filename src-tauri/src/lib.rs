@@ -5,13 +5,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State,
-    WebviewWindow, WindowEvent,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+use tauri_plugin_notification::{NotificationExt, PermissionState};
 use zspace_memo_core::models::{
     CalendarTaskItem, CreateTaskInput, OccurrenceActionStatus, OccurrenceView, RepeatRule, Task,
     TaskSort, TaskView, UpdateTaskInput,
@@ -22,6 +23,7 @@ use zspace_memo_core::recurrence::{
     build_occurrence_timeline, describe_rule_zh, generate_occurrences,
 };
 use zspace_memo_core::service::{SyncSummary, TaskService};
+use zspace_memo_core::sticky::{CreateStickyInput, StickyNote, StickyService, UpdateStickyInput};
 use zspace_memo_core::storage::{AppSettings, LocalStorage, NotificationRecord};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -44,6 +46,7 @@ struct FloatingDockState {
 struct AppState {
     provider: Arc<OfficialCliNotebookProvider>,
     service: Arc<TaskService<OfficialCliNotebookProvider>>,
+    sticky: Arc<StickyService<OfficialCliNotebookProvider>>,
     dock: Mutex<FloatingDockState>,
 }
 
@@ -66,6 +69,18 @@ fn map_err(e: zspace_memo_core::error::AppError) -> String {
 
 fn emit_changed(app: &AppHandle, source_window: &WebviewWindow) {
     let _ = app.emit("tasks:changed", source_window.label());
+}
+
+fn emit_sticky_changed(app: &AppHandle, source_window: &WebviewWindow) {
+    let _ = app.emit("sticky:changed", source_window.label());
+}
+
+fn permission_label(st: PermissionState) -> &'static str {
+    match st {
+        PermissionState::Granted => "granted",
+        PermissionState::Denied => "denied",
+        PermissionState::Prompt | PermissionState::PromptWithRationale => "prompt",
+    }
 }
 
 fn monitor_work_area(win: &WebviewWindow) -> Option<(i32, i32, i32, i32, f64)> {
@@ -93,7 +108,9 @@ fn dock_floating(app: &AppHandle, edge_hint: Option<DockEdge>) {
     let Some((wa_left, wa_top, wa_right, wa_bottom, scale)) = monitor_work_area(&win) else {
         return;
     };
-    let pos = win.outer_position().unwrap_or(PhysicalPosition::new(wa_right - 370, wa_top + 80));
+    let pos = win
+        .outer_position()
+        .unwrap_or(PhysicalPosition::new(wa_right - 370, wa_top + 80));
     let size = win.outer_size().unwrap_or(PhysicalSize::new(350, 520));
 
     let edge = edge_hint.unwrap_or_else(|| {
@@ -171,7 +188,9 @@ fn undock_floating(app: &AppHandle) {
     let exp_h = target_size.height as i32;
     let gap = (18.0 * scale).round() as i32;
 
-    let base = tab_pos.or(saved_pos).unwrap_or(PhysicalPosition::new(wa_right - exp_w - gap, wa_top + 80));
+    let base = tab_pos
+        .or(saved_pos)
+        .unwrap_or(PhysicalPosition::new(wa_right - exp_w - gap, wa_top + 80));
     let (nx, ny) = match edge {
         Some(DockEdge::Left) => (
             wa_left + gap,
@@ -199,6 +218,33 @@ fn undock_floating(app: &AppHandle) {
     let _ = win.set_focus();
     let _ = win.emit("floating:dock-changed", Option::<DockEdge>::None);
     let _ = win.emit("floating:focus-input", ());
+}
+
+async fn ensure_sticky_window(app: &AppHandle, id: i64) -> Result<(), String> {
+    let label = format!("sticky-{id}");
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.show();
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    let offset = ((id.abs() % 5) as f64) * 28.0;
+    WebviewWindowBuilder::new(
+        app,
+        label,
+        WebviewUrl::App(format!("/?mode=sticky&id={id}").into()),
+    )
+    .title("ZSpace Kit · 便签")
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .inner_size(280.0, 320.0)
+    .min_inner_size(220.0, 220.0)
+    .position(920.0 + offset, 120.0 + offset)
+    .build()
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -464,6 +510,135 @@ fn snooze_reminder(
         .map_err(map_err)
 }
 
+// --- OS Native Notification Commands ---
+
+#[tauri::command]
+fn notification_permission_state(app: AppHandle) -> Result<String, String> {
+    app.notification()
+        .permission_state()
+        .map(|s| permission_label(s).to_string())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn request_notification_permission(app: AppHandle) -> Result<String, String> {
+    app.notification()
+        .request_permission()
+        .map(|s| permission_label(s).to_string())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn send_test_notification(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let sound = state
+        .service
+        .get_settings()
+        .map(|s| s.notification_sound)
+        .unwrap_or(true);
+    let mut b = app
+        .notification()
+        .builder()
+        .title("ZSpace Kit 系统提醒测试")
+        .body("收到这条系统通知，说明你的 Windows / macOS 任务提醒已正常打通！");
+    if sound {
+        b = b.sound("Default");
+    }
+    b.show().map_err(|e| e.to_string())
+}
+
+// --- Sticky Notes Commands ---
+
+#[tauri::command]
+async fn init_sticky_category(
+    state: State<'_, AppState>,
+    create_if_missing: bool,
+) -> Result<i64, String> {
+    state
+        .sticky
+        .initialize_category(create_if_missing)
+        .await
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn sync_sticky_notes(app: AppHandle, state: State<'_, AppState>) -> Result<usize, String> {
+    let fetched = state.sticky.sync().await.map_err(map_err)?;
+    let _ = app.emit("sticky:synced", fetched);
+    Ok(fetched)
+}
+
+#[tauri::command]
+fn list_sticky_notes(
+    state: State<'_, AppState>,
+    keyword: Option<String>,
+) -> Result<Vec<StickyNote>, String> {
+    state
+        .sticky
+        .list_notes(keyword.as_deref())
+        .map_err(map_err)
+}
+
+#[tauri::command]
+fn get_sticky_note(state: State<'_, AppState>, id: i64) -> Result<Option<StickyNote>, String> {
+    state.sticky.get_note(id).map_err(map_err)
+}
+
+#[tauri::command]
+async fn create_sticky_note(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    input: CreateStickyInput,
+) -> Result<StickyNote, String> {
+    let note = state.sticky.create_note(input).await.map_err(map_err)?;
+    emit_sticky_changed(&app, &window);
+    if note.floating {
+        let _ = ensure_sticky_window(&app, note.id).await;
+    }
+    Ok(note)
+}
+
+#[tauri::command]
+async fn update_sticky_note(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    id: i64,
+    patch: UpdateStickyInput,
+) -> Result<StickyNote, String> {
+    let note = state.sticky.update_note(id, patch).await.map_err(map_err)?;
+    emit_sticky_changed(&app, &window);
+    Ok(note)
+}
+
+#[tauri::command]
+async fn delete_sticky_note(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<(), String> {
+    state.sticky.delete_note(id).await.map_err(map_err)?;
+    if let Some(win) = app.get_webview_window(&format!("sticky-{id}")) {
+        let _ = win.close();
+    }
+    emit_sticky_changed(&app, &window);
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_sticky_window(app: AppHandle, id: i64) -> Result<(), String> {
+    ensure_sticky_window(&app, id).await
+}
+
+#[tauri::command]
+async fn close_sticky_window(app: AppHandle, id: i64) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(&format!("sticky-{id}")) {
+        let _ = win.close();
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn open_main_window(app: AppHandle, task_id: Option<i64>) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("main") {
@@ -571,24 +746,50 @@ pub fn run() {
                 cli_home,
                 "zspace-memo",
             ));
-            let service = Arc::new(TaskService::new(provider.clone(), storage));
+            let service = Arc::new(TaskService::new(provider.clone(), storage.clone()));
+            let sticky = Arc::new(StickyService::new(provider.clone(), storage));
 
-            scheduler::spawn_background_scheduler(app.handle().clone(), service.clone());
+            scheduler::spawn_background_scheduler(
+                app.handle().clone(),
+                service.clone(),
+                sticky.clone(),
+            );
             app.manage(AppState {
                 provider,
                 service,
+                sticky: sticky.clone(),
                 dock: Mutex::new(FloatingDockState::default()),
             });
 
-            // System tray menu.
-            let show_main = MenuItem::with_id(app, "show_main", "打开主界面", true, None::<&str>)?;
+            // Ask OS notification permission if still in prompt state (macOS).
+            if let Ok(PermissionState::Prompt | PermissionState::PromptWithRationale) =
+                app.notification().permission_state()
+            {
+                let _ = app.notification().request_permission();
+            }
+
+            // Reopen desktop-pinned sticky notes after startup.
+            let app_for_sticky = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(800)).await;
+                if let Ok(notes) = sticky.list_notes(None) {
+                    for n in notes.into_iter().filter(|n| n.floating).take(8) {
+                        let _ = ensure_sticky_window(&app_for_sticky, n.id).await;
+                    }
+                }
+            });
+
+            // System tray menu & icon (fixes invisible Windows tray icon).
+            let show_main = MenuItem::with_id(app, "show_main", "打开 ZSpace Kit", true, None::<&str>)?;
             let toggle_float =
-                MenuItem::with_id(app, "toggle_float", "快捷悬浮窗", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出 ZSpace Memo", true, None::<&str>)?;
+                MenuItem::with_id(app, "toggle_float", "悬浮待办窗", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "退出 ZSpace Kit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_main, &toggle_float, &quit])?;
 
-            let _tray = TrayIconBuilder::new()
+            let mut tray_builder = TrayIconBuilder::new()
                 .menu(&menu)
+                .tooltip("ZSpace Kit · 极空工具箱")
+                .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show_main" => {
                         let _ = open_main_window(app.clone(), None);
@@ -599,7 +800,20 @@ pub fn run() {
                     "quit" => app.exit(0),
                     _ => {}
                 })
-                .build(app)?;
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let _ = open_main_window(tray.app_handle().clone(), None);
+                    }
+                });
+            if let Some(icon) = app.default_window_icon().cloned() {
+                tray_builder = tray_builder.icon(icon);
+            }
+            let _tray = tray_builder.build(app)?;
 
             // Global shortcut: Ctrl/Cmd + Shift + M toggles the floating quick window.
             let handle = app.handle().clone();
@@ -619,6 +833,9 @@ pub fn run() {
                 if window.label() == "floating" {
                     api.prevent_close();
                     let _ = window.hide();
+                    return;
+                }
+                if window.label().starts_with("sticky-") {
                     return;
                 }
                 let state = window.state::<AppState>();
@@ -714,6 +931,18 @@ pub fn run() {
             list_notifications,
             mark_notification_read,
             snooze_reminder,
+            notification_permission_state,
+            request_notification_permission,
+            send_test_notification,
+            init_sticky_category,
+            sync_sticky_notes,
+            list_sticky_notes,
+            get_sticky_note,
+            create_sticky_note,
+            update_sticky_note,
+            delete_sticky_note,
+            open_sticky_window,
+            close_sticky_window,
             open_main_window,
             toggle_floating_window,
             dock_floating_window,
@@ -721,5 +950,5 @@ pub fn run() {
             set_autostart,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running ZSpace Memo");
+        .expect("error while running ZSpace Kit");
 }

@@ -76,7 +76,27 @@ export function FloatingWindow() {
   }, []);
 
   async function handleCreate(input: CreateTaskInput) {
-    await api.createTask(input);
+    let enriched = input;
+    if (input.schedule?.due && (!input.reminders || input.reminders.length === 0)) {
+      const cfg = await api.getSettings().catch(() => null);
+      if (!cfg || cfg.default_auto_remind) {
+        const isTimed = !input.schedule.all_day && Boolean(input.schedule.due.time);
+        enriched = {
+          ...input,
+          reminders: [
+            isTimed
+              ? { type: "relative", id: "auto_due", offset_minutes: 0 }
+              : {
+                  type: "relative",
+                  id: "auto_day",
+                  offset_days: 0,
+                  day_time: cfg?.default_all_day_reminder_time ?? "09:00",
+                },
+          ],
+        };
+      }
+    }
+    await api.createTask(enriched);
     await refresh();
   }
 

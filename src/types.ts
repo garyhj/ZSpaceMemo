@@ -136,6 +136,41 @@ export interface AppSettings {
   show_overdue_in_today: boolean;
   close_to_tray: boolean;
   autostart: boolean;
+  default_auto_remind: boolean;
+  notification_sound: boolean;
+  sticky_category_name: string;
+  sticky_category_id?: number | null;
+}
+
+export type StickyColor = "yellow" | "blue" | "green" | "pink" | "purple" | "white";
+
+export interface StickyNote {
+  id: number;
+  title: string;
+  content: string;
+  color: StickyColor;
+  pinned: boolean;
+  floating: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+  rev: number;
+  etag: string;
+}
+
+export interface CreateStickyInput {
+  title?: string;
+  content?: string;
+  color?: StickyColor;
+  pinned?: boolean;
+  floating?: boolean;
+}
+
+export interface UpdateStickyInput {
+  title?: string;
+  content?: string;
+  color?: StickyColor;
+  pinned?: boolean;
+  floating?: boolean;
 }
 
 export interface SyncSummary {

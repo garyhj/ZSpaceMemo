@@ -81,7 +81,7 @@ jobs:
         with:
           args: ${{ matrix.args }}
           tagName: v__VERSION__
-          releaseName: "ZSpace Memo v__VERSION__"
+          releaseName: "ZSpace Kit v__VERSION__"
           releaseDraft: true
           prerelease: false
       - name: Upload built installers as workflow artifacts

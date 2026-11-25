@@ -5,4 +5,5 @@ pub mod provider;
 pub mod recurrence;
 pub mod reminder;
 pub mod service;
+pub mod sticky;
 pub mod storage;
