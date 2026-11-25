@@ -1,28 +1,46 @@
-# ZSpace Memo
+# ZSpace Kit（极空工具箱）
 
 [![CI & Desktop Release](https://github.com/garyhj/ZSpaceMemo/actions/workflows/ci-release.yml/badge.svg)](https://github.com/garyhj/ZSpaceMemo/actions/workflows/ci-release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-基于**极空间 NAS 原生独立记事本（`location="2"`）**的跨平台桌面 Todo 与任务管理工具（Windows / macOS）。
+面向极空间 NAS 的跨平台桌面外置工具箱（Windows / macOS，原项目名 **ZSpace Memo**）。
 
-零服务端部署、无需存储 NAS 账号密码——通过官方 OAuth2 授权直接读写极空间原生笔记，让你在桌面拥有完整日程/重复任务/悬浮快捷窗体验的同时，所有数据依然可以在极空间官方记事本中原生查看和编辑。
+零服务端部署、无需存储 NAS 账号密码——通过官方 OAuth2 授权安全连接你的极空间 NAS，将**原生记事本 Todo 与重复日程、月视图、云便签便利贴、文件快传箱、NAS 状态/消息看板、Docker 容器管理**整合到一个轻量的桌面应用与系统托盘中。
 
 ---
 
 ## 核心特性
 
-- **原生数据互通，唯一事实来源**
-  - 一条普通任务对应极空间独立记事本中的一条原生笔记；一个重复系列也只对应一条原生笔记，统一归属专用分类 `ZSpace Memo`。
-  - 笔记正文采用「中文可读摘要 + 用户备注 + 末尾 `<p>ZSM1:{...}</p>` 数据块」结构，已通过真实极空间 NAS 与 Windows 官方客户端往返编辑验证（见 [COMPATIBILITY.md](docs/COMPATIBILITY.md)）。
-  - 支持 ETag 乐观并发冲突检测与元数据损坏自动恢复（恢复提醒/重复规则的同时保留用户在官方 App 中修改的新备注）。
-- **官方 OAuth2 授权，零服务端部署**
-  - 内置官方 `zspace-nas-agent-toolkit`（`zspace-cli` v0.3.11），应用内一键发起浏览器授权，全程不接触、不保存 NAS 账号密码，access token 自动刷新。
-- **完整任务管理与重复引擎**
-  - 7 个核心视图：收集箱、今天（含逾期分组）、即将到来（按天分组）、已逾期、全部任务、已完成、重复任务；支持全文搜索、清单、多标签、优先级、置顶。
-  - 重复任务严格区分「系列」与「发生实例」：支持每天、工作日、每周多选、每月指定日/最后一天/第 N 个周几、每年、每 N 周期（如每半年）、不存在日期顺延或跳过、逾期策略、幂等完成/跳过/撤销、实时预览接下来 5 次发生日期。
-- **桌面原生体验与本地常驻提醒**
-  - **两层窗口**：完整三栏主窗口 + 置顶悬浮窄窗口（全局快捷键 `Ctrl+Shift+M` / `Cmd+Shift+M` 随时呼出并自动聚焦快速输入框，支持自然语言如 `明天 18:00 续费 eSIM !高 #个人`）。
-  - **常驻托盘 + 开机自启**：支持多提醒（提前分钟/小时/天、全天固定时刻），后台定时增量同步与 OS 原生通知，关机期间错过的提醒在下次开机时自动补提醒并记入应用内通知中心。
+### 1. 极空工具箱六大模块（`Ctrl / Cmd + 1 ~ 6`）
+
+- **待办（`Ctrl/Cmd + 1`）**
+  - 基于**极空间原生独立记事本（`location="2"`）**：一条普通任务或一个重复系列只对应 `ZSpace Memo` 分类下的一条原生笔记。
+  - 笔记正文采用「中文可读摘要 + 用户备注 + 末尾 `<p>ZSM1:{...}</p>` 数据块」三段结构，支持在极空间官方客户端中直接查看、修改备注并安全回读（详见 [COMPATIBILITY.md](docs/COMPATIBILITY.md)）。
+  - 支持 ETag 乐观并发冲突检测与元数据损坏自动恢复（保留用户在官方 App 修改的新备注）。
+  - 7 个视图：今天（含逾期置顶）、即将到来（按天分组）、收集箱、已逾期、全部任务、已完成、重复任务；支持清单分类、多标签、优先级、置顶、全文搜索、清单拖拽归类、右键菜单与撤销 Toast。
+  - **完整重复引擎**：区分「系列」与「发生实例」，支持每天、工作日、每周多选、每月指定日/最后一天/第 N 个周几、每年、每 N 周期（如每半年）、不存在日期顺延或跳过、幂等完成/跳过/撤销及单实例覆盖。
+- **月视图（`Ctrl/Cmd + 2`）**
+  - 集成公历与农历 / 节气 / 法定节假日与调休标记，直接投射重复任务的未来发生实例。
+  - 支持按清单配色区分胶囊、单日 `+N` 溢出浮层、拖拽改期、右键空白日期格内联快速新建任务。
+- **便签（`Ctrl/Cmd + 3`）**
+  - 同步到极空间原生独立记事本的 `ZSpace Sticky` 专用分类（正文采用 `<p>ZSK1:{...}</p>` 结构），官方客户端同样可见。
+  - 支持 6 种便签色卡、置顶、800ms 防抖自动保存，并可将任意便签弹出为**独立桌面置顶便利贴窗口**。
+- **文件快传箱（`Ctrl/Cmd + 4`）**
+  - 支持直接从桌面/资源管理器**拖拽本地文件**上传至 NAS 指定目录，或通过文件选择器多文件批量上传。
+  - 支持浏览 NAS 目录、新建文件夹、按文件名极速搜索、以及一键下载到本地保存位置。
+- **NAS 状态看板与消息（`Ctrl/Cmd + 5`）**
+  - 实时展示 NAS 硬件概览、CPU、内存、风扇转速、磁盘温度与存储池容量使用情况。
+  - 对接极空间 `system events` 消息通知流，支持筛选、单条已读、全部已读；**自动将新产生的 NAS 告警桥接弹出为 Windows / macOS 系统原生通知**（SQLite 去重，首次启动静默建档不刷屏）。
+- **Docker 看板（`Ctrl/Cmd + 6`）**
+  - 展示 NAS 上所有 Docker 容器运行状态与实时 CPU/内存占用。
+  - 支持启动、停止、重启容器及查看最近 100 行容器日志。
+
+### 2. 桌面原生体验
+
+- **官方 OAuth2 授权，零服务端部署**：内置官方 `zspace-nas-agent-toolkit`（`zspace-cli` v0.3.11），应用内一键发起浏览器授权，全程不接触、不保存 NAS 账号密码，access token 自动刷新。
+- **待办悬浮窄窗**：全局快捷键 `Ctrl+Shift+M` / `Cmd+Shift+M` 随时呼出并聚焦快速输入框（支持自然语言如 `明天 18:00 续费 eSIM !高 #个人`）；展示全部待办并按「已逾期 / 今天 / 本周 / 以后 / 无日期」分组，支持顶栏拖拽、贴边自动收起为桌面书签、任务右键菜单及与主窗口毫秒级实时联动。
+- **系统原生通知与补提醒**：依托本地后台调度器，按时触发 Windows / macOS 系统通知（支持多提醒、全天固定时刻、提示音开关）；关机或休眠错过的任务提醒会在下次启动后自动补发通知。
+- **桌面端细节打磨**：支持关闭隐藏到托盘、开机自启、单实例保护（重复打开自动唤起并聚焦主窗），并屏蔽非输入区/非选区的浏览器原生右键菜单。
 
 ---
 
@@ -30,17 +48,17 @@
 
 ```mermaid
 flowchart LR
-  subgraph App["ZSpace Memo 桌面客户端（Tauri 2 · Windows / macOS）"]
-    UI["React + TypeScript + Tailwind<br/>主窗口（三栏） · 悬浮窄窗口"]
-    CORE["Rust 核心库（crates/core）<br/>Codec · 重复引擎 · 提醒计算 · TaskService"]
-    DB[("本地 SQLite<br/>增量索引缓存 · 提醒作业 · 通知记录")]
-    CLI["官方 zspace-cli（sidecar）<br/>OAuth2 授权 · 自动刷新 · file notes"]
+  subgraph App["ZSpace Kit 桌面客户端（Tauri 2 · Windows / macOS）"]
+    UI["React + TypeScript + Tailwind v4<br/>主窗口（ToolRail + 6大模块）<br/>待办悬浮窗 · 独立便利贴窗"]
+    CORE["Rust 核心库（crates/core）<br/>TaskService · StickyService · ToolboxService<br/>Codec(ZSM1/ZSK1) · 重复引擎 · 提醒计算"]
+    DB[("本地 SQLite<br/>设置 · 可重建索引缓存<br/>提醒作业 · NAS 已读告警去重")]
+    CLI["官方 zspace-cli（sidecar）<br/>OAuth2 · file/notes/search<br/>system/storage/docker"]
   end
-  NAS[("极空间 NAS 原生记事本<br/>location=2 / ZSpace Memo")]
+  NAS[("极空间 NAS<br/>原生记事本(location=2) · 文件 · 系统 · Docker")]
 
-  UI <-->|Tauri IPC / Events| CORE
+  UI <-->|55 个 Tauri IPC 命令 / Events| CORE
   CORE --> DB
-  CORE -->|NotebookProvider| CLI -->|HTTPS OAuth| NAS
+  CORE -->|OfficialCliNotebookProvider| CLI -->|HTTPS OAuth / LAN| NAS
 ```
 
 ---
@@ -49,74 +67,94 @@ flowchart LR
 
 ### 1. 下载安装包
 
-前往 [GitHub Releases](https://github.com/garyhj/ZSpaceMemo/releases) 下载对应平台安装包：
+前往 [GitHub Releases](https://github.com/garyhj/ZSpaceMemo/releases) 下载对应平台最新安装包：
 
-- **Windows (x64)**：`.exe`（NSIS）或 `.msi`
-- **macOS (Apple Silicon)**：`.dmg`
+- **Windows (x64)**：`ZSpace.Kit_<version>_x64-setup.exe`（NSIS）或 `ZSpace.Kit_<version>_x64_en-US.msi`
+- **macOS (Apple Silicon)**：`ZSpace.Kit_<version>_aarch64.dmg`
 
 > 当前版本未配置商业代码签名：
-> - Windows 首次运行若弹出 SmartScreen，点「更多信息 → 仍要运行」；
-> - macOS 首次打开请右键应用选「打开」，或在终端执行 `xattr -cr "/Applications/ZSpace Memo.app"`。
+> - Windows 首次运行若弹出 SmartScreen，点「更多信息 → 仍要运行」；从旧版 `v0.2.x` 升级后若任务栏仍显示旧固定图标缓存，在任务栏右键「从任务栏取消固定」再重新固定一次即可刷新。
+> - macOS 首次打开请右键应用选「打开」，或在终端执行 `xattr -cr "/Applications/ZSpace Kit.app"`。
 
 ### 2. 首次授权
 
-1. 打开 ZSpace Memo，点击「发起极空间官方授权」。
+1. 打开 ZSpace Kit，点击「发起极空间官方授权」。
 2. 在弹出的浏览器页面中同意授权，复制一次性授权码粘贴回应用。
-3. 应用会自动在极空间独立记事本中检查并创建 `ZSpace Memo` 专用分类。
+3. 应用会自动在极空间独立记事本中检查并创建 `ZSpace Memo`（待办）和 `ZSpace Sticky`（便签）专用分类。
 
-### 3. 常用快捷键
+### 3. 快捷键一览
 
-- `Ctrl + Shift + M`（macOS：`Cmd + Shift + M`）：全局呼出 / 隐藏置顶悬浮快捷窗。
-- 在快速输入框中按 `Enter` 直接创建任务，支持轻量语法：`今天/明天/后天/下周一`、`18:00`、`!高/!紧急/!低`、`#清单名`。
+| 快捷键 | 作用 |
+|---|---|
+| `Ctrl / Cmd + Shift + M` | 全局呼出 / 隐藏待办悬浮窗并聚焦快速输入框 |
+| `Ctrl / Cmd + 1 ~ 6` | 切换工作区：待办 / 月视图 / 便签 / 快传箱 / NAS 状态 / Docker |
+| `Ctrl / Cmd + K` 或 `/` | 聚焦任务搜索框 |
+| `N` | 聚焦快速新建任务输入框 |
+| `↑ / ↓` | 在任务列表中上下切换选中项 |
+| `Space` 或 `Ctrl / Cmd + Enter` | 完成 / 重新打开选中任务 |
+| `Delete` | 删除选中任务 |
+| `1 / 2 / 3 / 4` | 在待办视图间切换：今天 / 即将到来 / 收集箱 / 全部 |
+| `Esc` | 关闭弹窗、右键菜单或取消选中 |
+
+在快速输入框中按 `Enter` 直接创建任务，支持轻量自然语言语法：`今天/明天/后天/下周一`、`18:00`、`!高/!紧急/!低`、`#清单名`。
 
 ---
 
 ## 目录结构
 
-采用标准的 **Tauri 2 + Rust Workspace** 布局，核心业务逻辑完全下沉到零 GUI 依赖的 `crates/core` 中，便于独立单测与未来扩展：
+采用 **Tauri 2 + Rust Workspace** 布局，核心业务逻辑下沉到零 GUI 依赖的 `crates/core` 中：
 
 ```text
 ZSpaceMemo/
 ├── .github/workflows/
-│   └── ci-release.yml          # CI 单测、前端构建及 Windows/macOS 双端自动打包
+│   └── ci-release.yml          # CI 核心单测、前端构建及 Windows/macOS 双端自动打包发布
 ├── crates/
-│   └── core/                   # 纯 Rust 核心引擎（无 GUI 依赖，可独立 cargo test）
+│   └── core/                   # 纯 Rust 核心引擎（零 GUI 依赖，可独立 cargo test）
 │       ├── src/
 │       │   ├── models.rs       # Task / Schedule / Reminder / RepeatRule / Series 模型
 │       │   ├── codec.rs        # <p>ZSM1:{...}</p> 双向编解码、实体归一化、富文本保护
 │       │   ├── recurrence.rs   # 纯函数重复规则引擎（系列 → 发生实例）
 │       │   ├── reminder.rs     # 纯函数提醒触发计算（IANA 时区 & 夏令时安全）
-│       │   ├── storage.rs      # 本地 SQLite（设置、可重建索引缓存、提醒作业、通知）
+│       │   ├── sticky.rs       # 云便签服务与 <p>ZSK1:{...}</p> 编解码（ZSpace Sticky）
+│       │   ├── toolbox.rs      # ToolboxService（快传箱、NAS 状态/事件、Docker 看板）
+│       │   ├── storage.rs      # 本地 SQLite（设置、任务/便签缓存、提醒作业、NAS 告警去重）
 │       │   ├── service.rs      # TaskService（增量同步、ETag 冲突、自动恢复、7 视图）
 │       │   ├── error.rs        # 结构化错误码
 │       │   └── provider/
 │       │       ├── mod.rs          # NotebookProvider 抽象 trait
-│       │       ├── official_cli.rs # 官方 zspace-cli v0.3.11 封装与 OAuth2 交互
+│       │       ├── official_cli.rs # 官方 zspace-cli v0.3.11 封装、OAuth2 与通用 run_cli
 │       │       └── mock.rs         # 内存 MockProvider（用于自动化测试）
 │       └── tests/
 │           └── live_nas_smoke.rs   # 真实 NAS 只读冒烟测试（默认 ignored）
 ├── src/                        # React 19 + TypeScript + Tailwind v4 前端
-│   ├── App.tsx                 # 主窗口三栏布局 & 模式路由（主窗 / 悬浮窗）
+│   ├── App.tsx                 # 多窗体模式路由（主窗 / 悬浮待办 / 便利贴）与全局交互
 │   ├── api.ts                  # Tauri IPC 类型化封装
 │   ├── types.ts                # 前后端对齐的 DTO 类型定义
-│   ├── utils/date.ts           # 日期格式化、逾期判断、快捷输入解析
-│   └── components/             # 业务组件（Auth / QuickAdd / DatePicker / Reminder / Repeat / Detail / Floating / Settings / Notifications）
+│   ├── modules/                # 工具箱扩展模块
+│   │   ├── registry.tsx        # 模块注册表（Ctrl/Cmd + 1~6）
+│   │   ├── sticky/             # 云便签面板、色卡配置与独立悬浮便利贴窗
+│   │   ├── files/              # 文件快传箱（拖拽上传 / 浏览 / 搜索 / 下载）
+│   │   ├── nas/                # NAS 硬件状态看板与消息中心
+│   │   └── docker/             # Docker 容器监控、启停与日志查看
+│   ├── components/             # 待办业务组件（Auth / MonthCalendar / Floating / Detail / Settings 等）
+│   └── utils/                  # 日期自然语言解析、农历节假日、UI 偏好设置
 ├── src-tauri/                  # Tauri 2 桌面壳（Windows / macOS）
 │   ├── src/
 │   │   ├── main.rs             # 入口
-│   │   ├── lib.rs              # 25 个 IPC 命令、托盘、全局快捷键、开机自启、关闭到托盘
-│   │   └── scheduler.rs        # 后台定时同步、15 秒提醒触发与开机补提醒循环
-│   ├── capabilities/           # Tauri 2 权限声明
-│   ├── icons/                  # 跨平台应用图标（.ico / .icns / PNG）
+│   │   ├── lib.rs              # 55 个 IPC 命令、托盘、快捷键、贴边停靠、单实例、开机自启
+│   │   └── scheduler.rs        # 后台同步、15 秒原生提醒调度与 NAS 告警桥接循环
+│   ├── capabilities/           # Tauri 2 权限声明（notification / dialog / sticky-* 等）
+│   ├── icons/                  # ZSpace Kit 跨平台应用与托盘图标（.ico / .icns / PNG）
 │   ├── binaries/               # 构建时下载的官方 zspace-cli sidecar（不提交到 Git）
-│   └── tauri.conf.json         # 窗口、托盘与打包配置
+│   └── tauri.conf.json         # 窗口、托盘、bundle 与插件配置
 ├── scripts/
 │   └── fetch-sidecar.sh        # 本地开发一键下载并校验官方 zspace-cli 二进制
 ├── docs/                       # 设计、兼容验证、原型与需求归档
-│   ├── DESIGN.md               # 产品与技术设计（v0.2）
-│   ├── COMPATIBILITY.md        # M0 真实 NAS + Windows 客户端兼容性验证记录
-│   ├── prototype/index.html    # 可交互静态原型（浏览器直接打开）
+│   ├── DESIGN.md               # 产品与技术设计（v0.3）
+│   ├── COMPATIBILITY.md        # M0 真机兼容性与 CLI 实测适配记录
+│   ├── prototype/index.html    # 早期待办交互原型（单文件 HTML）
 │   └── requirements/           # 原始调研与需求文档归档
+├── CHANGELOG.md                # 版本更新记录
 ├── Cargo.toml                  # Rust Workspace（crates/core）
 ├── package.json                # 前端依赖与脚本
 └── LICENSE                     # MIT License
@@ -162,17 +200,19 @@ ZSPACE_CLI_BIN=/path/to/zspace-cli ZSPACE_CLI_HOME=/path/to/cli-home \
 
 - [x] **M0**：官方 `zspace-cli` OAuth2 与真实极空间 NAS / Windows 客户端兼容性验证（[COMPATIBILITY.md](docs/COMPATIBILITY.md)）
 - [x] **M1**：Rust 核心引擎（Codec、重复引擎、提醒计算、SQLite 缓存、`OfficialCliNotebookProvider`）与 Tauri 2 骨架
-- [x] **M2**：完整三栏主界面、悬浮窄窗口、日期/多提醒/重复编辑器、通知中心、设置与 Windows/macOS 双端打包
-- [ ] **M3 / P2**：中国法定工作日/节假日调休、农历重复、单次实例覆盖编辑（修改本次 / 本次及以后）、更多本地化体验打磨
-- [ ] **P3**：子任务、附件（复用官方 `file notes` 附件接口）、导出 TXT/DOCX、日历视图
+- [x] **M2 / M3**：完整三栏主界面、悬浮待办窗（全部分组与贴边隐藏）、月视图（农历/节假日/拖拽改期）、系统原生通知提醒、Windows/macOS 双端自动发布
+- [x] **v0.3.0**：品牌升级为 **ZSpace Kit（极空工具箱）**、工具箱壳架构、云便签与桌面悬浮便利贴、`OS 原生提醒` 全面替换应用内通知弹窗
+- [x] **v0.3.1**：文件快传箱、NAS 状态看板与告警通知桥接、Docker 容器看板、单实例保护、便签防抖自动保存、右键菜单与任务栏图标修复
+- [ ] **后续扩展**：重复引擎支持中国法定工作日/调休与农历重复、单次实例编辑、待办附件（复用官方 `file notes` 接口）、更多工具箱插件模块
 
 ---
 
 ## 文档导航
 
-- [产品与技术设计（v0.2）](docs/DESIGN.md)
-- [M0 真机兼容性验证记录](docs/COMPATIBILITY.md)
-- [交互原型（单文件 HTML）](docs/prototype/index.html)
+- [产品与技术设计（v0.3）](docs/DESIGN.md)
+- [版本变更记录（CHANGELOG）](CHANGELOG.md)
+- [M0 真机兼容性验证与 CLI 适配记录](docs/COMPATIBILITY.md)
+- [早期交互原型（单文件 HTML）](docs/prototype/index.html)
 - 原始需求归档：[01-initial.md](docs/requirements/01-initial.md) · [02-todo-extension.md](docs/requirements/02-todo-extension.md) · [03-architecture-notes.md](docs/requirements/03-architecture-notes.md)
 
 ## 致谢与许可

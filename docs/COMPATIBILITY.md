@@ -1,4 +1,4 @@
-# 极空间原生记事本兼容性验证记录（M0）
+# 极空间原生记事本与 CLI 兼容性验证记录（M0 & v0.3.x）
 
 > 验证日期：2026-11-24
 > 验证环境：真实极空间 NAS（`Z041…QYG7`）+ 官方 `zspace-nas-agent-toolkit` v0.3.11（`zspace-cli`，OAuth2 授权）+ Windows 极空间官方桌面客户端。
@@ -10,11 +10,11 @@
 
 **M0 验收通过。** 官方 `zspace-cli` + Windows 官方记事本客户端双向读写完全互通，所有三种候选格式在官方客户端编辑备注并保存后均 **100% 完整保留，无字节损坏**。
 
-最终选定的存储格式：**候选 B（`<p>ZSM1:{...}</p>`）**（用户确认在官方客户端中显示最自然，且解析器同时兼容 `<pre>ZSM1:` 和 `<p>ZSM1b:`）。
+最终选定的存储格式：**候选 B（`<p>ZSM1:{...}</p>`）**（用户确认在官方客户端中显示最自然，且解析器同时兼容 `<pre>ZSM1:` 和 `<p>ZSM1b:`）。云便签模块沿用相同原理，采用 `<p>ZSK1:{...}</p>`。
 
 ---
 
-## 2. 验证矩阵结果
+## 2. M0 验证矩阵结果
 
 | # | 验证项 | 结果 | 实测细节 |
 |---|---|---|---|
@@ -36,8 +36,24 @@
 
 以下实测发现已同步回 [DESIGN.md](DESIGN.md)：
 
-1. 数据块默认写入格式定为 `<p>ZSM1:{...}</p>`（解析器兼容 `<pre>ZSM1:` 和 `<p>ZSM1b:`）。
+1. 待办数据块默认写入格式定为 `<p>ZSM1:{...}</p>`（解析器兼容 `<pre>ZSM1:` 和 `<p>ZSM1b:`），便签数据块使用 `<p>ZSK1:{...}</p>`。
 2. 解析器和摘要哈希计算前统一做 HTML 实体反转义（处理 `&#128197;` 等 Emoji 实体）。
-3. `ZSM1` 元数据新增 `created_at` 字段，弥补原生接口返回 `created_at=0` 的问题。
-4. 同步策略明确利用 `list` 返回的 `(id, updated_at, length)` 做增量拉取，只对变更笔记调用 `info`。
-5. 后续在 macOS 和手机端官方记事本上再补做一次 T2 往返抽查（不阻塞 M1 开发）。
+3. `ZSM1` / `ZSK1` 元数据均记录 `created_at` 字段，弥补原生接口返回 `created_at=0` 的问题。
+4. 同步策略利用 `list` 返回的 `(id, updated_at, length)` 做增量拉取，只对变更笔记调用 `info`。
+
+---
+
+## 4. v0.2 ~ v0.3.1 开发期 CLI 与桌面端实战适配补充
+
+在后续集成 OAuth2、Toolbox 工具箱与 Windows / macOS 桌面集成过程中确认了以下平台边界与工程对策：
+
+1. **OAuth2 子进程管道与 Windows 控制台隐藏（`v0.2.2`）**
+   - Windows 下拉起 `zspace-cli` 子进程必须设置 `CREATE_NO_WINDOW` 避免黑框闪烁；
+   - `login --no-open --auth-code-stdin` 在输入授权码阶段需保持子进程 `stdout` 管道开启直到认证 JSON 返回。
+2. **`zspace-cli` v0.3.11 全局参数位置与 `--yes` 确认（`v0.3.1`）**
+   - `--profile <name>` 与 `--local-root <dir>` 属于全局选项，**必须放在子命令之前**（例如 `zspace-cli --local-root /dir file upload ...`）；否则文件上传/下载会报参数错误或读写受限目录外路径失败。
+   - 所有状态变更命令（`file upload` / `file download` / `file mkdir`、`system events mark_read` / `mark_all_read`、`docker containers start` / `stop` / `restart`）必须显式携带 `--yes`，且部分业务错误会输出到 `stderr` JSON，需同时解析 `stdout` 与 `stderr`。
+3. **Tauri 2 桌面权限与平台细节（`v0.2.8` / `v0.3.0` / `v0.3.1`）**
+   - 无边框悬浮窗拖拽需在 `src-tauri/capabilities/default.json` 中显式授权 `core:window:allow-start-dragging`，并允许动态便签窗口通配符 `sticky-*`。
+   - Windows WebView2 下 HTML5 `onDrop` 事件无法读取本地文件真实路径，快传箱必须使用 Tauri 原生 `getCurrentWebview().onDragDropEvent(...)` 获取系统拖入文件路径。
+   - Windows 任务栏除打包图标外，需在应用 `setup()` 中显式对运行窗体调用 `win.set_icon(...)`（若此前固定过旧版本快捷方式，需取消固定再重固定以清理 Windows Shell 图标缓存）。
