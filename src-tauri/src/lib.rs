@@ -265,7 +265,7 @@ fn peek_floating(app: &AppHandle) {
         dock.peeked = true;
         dock.peek_hold = false;
         dock.peek_seq += 1;
-        dock.ignore_moves_until_ms = now_ms() + 800;
+        dock.ignore_moves_until_ms = now_ms() + 350;
         (edge, dock.tab_pos.or(cur_pos), dock.saved_size, dock.peek_seq)
     };
 

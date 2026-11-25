@@ -260,7 +260,7 @@ export function FloatingWindow() {
     return (
       <button
         type="button"
-        title="悬停临时展开（移开自动折叠）；点击移开边缘并固定展开"
+        title="鼠标指向贴边展开，移开自动折叠；展开后拖出边缘或点「移开固定」可常驻"
         onMouseEnter={() => {
           hoveringRef.current = true;
           clearPeekTimer();
@@ -269,18 +269,15 @@ export function FloatingWindow() {
             if (hoveringRef.current && dockStateRef.current.edge && !dockStateRef.current.peeked) {
               void api.peekFloatingWindow();
             }
-          }, 180);
+          }, 100);
         }}
         onMouseLeave={() => {
           hoveringRef.current = false;
           clearPeekTimer();
         }}
-        onMouseDown={() => {
-          clearPeekTimer();
-        }}
         onClick={() => {
           clearPeekTimer();
-          void api.undockFloatingWindow();
+          void api.peekFloatingWindow();
         }}
         className={`group flex h-screen w-screen cursor-pointer items-center justify-center border border-blue-200 bg-white/95 text-slate-800 shadow-lg backdrop-blur transition hover:bg-blue-50 ${radiusClass} ${
           isTop ? "flex-row gap-2 px-3" : "flex-col gap-1.5 py-2"

@@ -2,6 +2,11 @@
 
 All notable changes to **ZSpace Kit（极空工具箱）** (repository `ZSpaceMemo`) are documented in this file.
 
+## [0.3.4] - 2026-11-25
+
+### Changed
+- **悬浮待办窗采用经典 QQ 式纯贴边交互（方案 A）**：消除书签“悬停 vs 点击”手势冲突，鼠标指向书签即顺滑贴边展开、移开自动折叠；如需脱离贴边常驻保留，直接按住顶栏拖出屏幕边缘或点击展开后顶栏的「移开固定」按钮即可，并缩短展开后拖拽响应保护期至 `350ms`。
+
 ## [0.3.3] - 2026-11-25
 
 ### Fixed
