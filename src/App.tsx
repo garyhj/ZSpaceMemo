@@ -27,6 +27,9 @@ import { TaskContextMenu, type ContextMenuState } from "./components/TaskContext
 import { TaskDetail } from "./components/TaskDetail";
 import { TaskListItem } from "./components/TaskListItem";
 import { TOOLBOX_MODULES, type WorkspaceId } from "./modules/registry";
+import { DockerBoardView } from "./modules/docker/DockerBoardView";
+import { FileDropView } from "./modules/files/FileDropView";
+import { NasStatusView } from "./modules/nas/NasStatusView";
 import { StickyBoard } from "./modules/sticky/StickyBoard";
 import { StickyFloatingCard } from "./modules/sticky/StickyFloatingCard";
 import type {
@@ -60,6 +63,23 @@ interface ToastState {
 }
 
 export default function App() {
+  useEffect(() => {
+    const onCtx = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      const allow =
+        Boolean(
+          target &&
+            (target.tagName === "INPUT" ||
+              target.tagName === "TEXTAREA" ||
+              target.tagName === "SELECT" ||
+              target.isContentEditable)
+        ) || Boolean(window.getSelection()?.toString());
+      if (!allow) e.preventDefault();
+    };
+    window.addEventListener("contextmenu", onCtx);
+    return () => window.removeEventListener("contextmenu", onCtx);
+  }, []);
+
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
   const mode = params.get("mode");
 
@@ -648,9 +668,10 @@ function MainWindow() {
         searchRef.current?.select();
         return;
       }
-      if (mod && (e.key === "1" || e.key === "2" || e.key === "3")) {
+      if (mod && ["1", "2", "3", "4", "5", "6"].includes(e.key)) {
         e.preventDefault();
-        setWorkspace(e.key === "1" ? "tasks" : e.key === "2" ? "calendar" : "sticky");
+        const modEntry = TOOLBOX_MODULES[Number(e.key) - 1];
+        if (modEntry) setWorkspace(modEntry.id);
         return;
       }
       if (e.key === "Escape") {
@@ -782,6 +803,20 @@ function MainWindow() {
           onConvertToTodo={handleCreate}
           onToast={(m) => showToast(m)}
         />
+      ) : workspace === "files" ? (
+        <FileDropView
+          settings={settings}
+          onSettingsChanged={(cfg) => setSettings(cfg)}
+          onToast={(m) => showToast(m)}
+        />
+      ) : workspace === "nas" ? (
+        <NasStatusView
+          settings={settings}
+          onSettingsChanged={(cfg) => setSettings(cfg)}
+          onToast={(m) => showToast(m)}
+        />
+      ) : workspace === "docker" ? (
+        <DockerBoardView onToast={(m) => showToast(m)} />
       ) : workspace === "calendar" ? (
         <div className="flex min-w-0 flex-1">
           <MonthCalendarView

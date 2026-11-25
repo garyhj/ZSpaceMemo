@@ -11,10 +11,11 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import type { CreateTaskInput, Task } from "../types";
+import type { CreateTaskInput, Priority, Task } from "../types";
 import { addDays, effectiveDue, isTaskOverdue, parseDate, todayStr } from "../utils/date";
 import { usePrefs } from "../utils/prefs";
 import { QuickAddBar } from "./QuickAddBar";
+import { TaskContextMenu, type ContextMenuState } from "./TaskContextMenu";
 import { TaskListItem } from "./TaskListItem";
 
 type DockEdge = "left" | "right" | "top" | null;
@@ -23,9 +24,7 @@ type GroupKey = "overdue" | "today" | "week" | "later" | "unscheduled";
 /**
  * Layer 1: Frameless always-on-top floating quick window (`/?mode=floating`).
  * - Shows ALL active tasks grouped by 已逾期 / 今天 / 本周 / 以后 / 无日期.
- * - Syncs in real time with MainWindow via `tasks:changed` and `tasks:synced`.
- * - Auto-folds into an edge bookmark tab when dragged close to left/right/top screen edge
- *   (or via the header fold button); click the bookmark to expand back.
+ * - Supports right-click & hover TaskContextMenu, real-time cross-window sync, and edge bookmark dock.
  */
 export function FloatingWindow() {
   const prefs = usePrefs();
@@ -33,6 +32,7 @@ export function FloatingWindow() {
   const [busy, setBusy] = useState(false);
   const [dockEdge, setDockEdge] = useState<DockEdge>(null);
   const [collapsed, setCollapsed] = useState<Partial<Record<GroupKey, boolean>>>({});
+  const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   async function refresh() {
@@ -45,7 +45,6 @@ export function FloatingWindow() {
   }
 
   useEffect(() => {
-    // Transparent root so rounded card / edge bookmark tab render cleanly without corners.
     document.documentElement.style.background = "transparent";
     document.body.style.background = "transparent";
 
@@ -115,9 +114,38 @@ export function FloatingWindow() {
     }
   }
 
+  async function handlePatch(task: Task, patch: Parameters<typeof api.updateTask>[1]) {
+    const prev = tasks;
+    setTasks((cur) => cur.map((t) => (t.id === task.id ? { ...t, ...patch } : t)));
+    try {
+      await api.updateTask(task.id, { ...patch, etag: task.etag });
+      await refresh();
+    } catch {
+      setTasks(prev);
+    }
+  }
+
+  async function handleDelete(task: Task) {
+    if (!window.confirm(`确定删除「${task.title}」吗？`)) return;
+    const prev = tasks;
+    setTasks((cur) => cur.filter((t) => t.id !== task.id));
+    try {
+      await api.deleteTask(task.id);
+      await refresh();
+    } catch {
+      setTasks(prev);
+    }
+  }
+
+  const lists = useMemo(() => {
+    const set = new Set<string>();
+    for (const t of tasks) if (t.list) set.add(t.list);
+    return Array.from(set).sort();
+  }, [tasks]);
+
   const { groups, overdueCount } = useMemo(() => {
     const today = todayStr();
-    const dow = parseDate(today).getDay(); // 0=Sun..6=Sat
+    const dow = parseDate(today).getDay();
     const daysToEnd = prefs.weekStart === "mon" ? (7 - dow) % 7 : 6 - dow;
     const weekEnd = addDays(today, daysToEnd);
 
@@ -303,6 +331,9 @@ export function FloatingWindow() {
                       compact
                       onSelect={(item) => void api.openMainWindow(item.id)}
                       onToggle={(item) => void handleToggle(item)}
+                      onOpenMenu={(task, x, y, mode = "full") =>
+                        setCtxMenu({ task, x, y, mode })
+                      }
                     />
                   ))}
               </div>
@@ -313,7 +344,7 @@ export function FloatingWindow() {
 
       <footer className="flex items-center justify-between border-t border-slate-100 px-3 py-1.5 text-[11px] text-slate-400 select-none">
         <span data-tauri-drag-region="deep" className="flex-1 cursor-grab active:cursor-grabbing">
-          拖到屏幕边可收起为书签
+          右键可改期/优先级 · 拖到屏幕边收起
         </span>
         <button
           type="button"
@@ -323,6 +354,29 @@ export function FloatingWindow() {
           打开主界面 ›
         </button>
       </footer>
+
+      {ctxMenu && (
+        <TaskContextMenu
+          menu={ctxMenu}
+          lists={lists}
+          onClose={() => setCtxMenu(null)}
+          onSetDate={(t, d) =>
+            void handlePatch(t, {
+              schedule: {
+                ...t.schedule,
+                all_day: d ? t.schedule.all_day || !t.schedule.due?.time : false,
+                due: d ? { date: d, time: t.schedule.all_day ? null : t.schedule.due?.time ?? null } : null,
+              },
+            })
+          }
+          onSetPriority={(t, p: Priority) => void handlePatch(t, { priority: p })}
+          onTogglePin={(t) => void handlePatch(t, { pinned: !t.pinned })}
+          onToggleDone={(t) => void handleToggle(t)}
+          onMoveToList={(t, l) => void handlePatch(t, { list: l })}
+          onCopyTitle={(t) => void navigator.clipboard?.writeText(t.title)}
+          onDelete={(t) => void handleDelete(t)}
+        />
+      )}
     </div>
   );
 }

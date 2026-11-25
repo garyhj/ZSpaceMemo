@@ -134,7 +134,7 @@ function TaskListItemImpl({ task, selected, compact, onSelect, onToggle, onOpenM
           </span>
         )}
 
-        {onOpenMenu && !compact && (
+        {onOpenMenu && (
           <div className="hidden items-center gap-0.5 group-hover:flex">
             <button
               type="button"

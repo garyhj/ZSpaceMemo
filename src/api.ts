@@ -11,6 +11,7 @@ import type {
   RepeatRule,
   StickyNote,
   SyncSummary,
+  SystemOverview,
   Task,
   TaskSort,
   TaskView,
@@ -97,6 +98,35 @@ export const api = {
   deleteStickyNote: (id: number) => invoke<void>("delete_sticky_note", { id }),
   openStickyWindow: (id: number) => invoke<void>("open_sticky_window", { id }),
   closeStickyWindow: (id: number) => invoke<void>("close_sticky_window", { id }),
+
+  // ZSpace NAS Toolbox: Files, System + Events, Docker
+  nasFileSpace: () => invoke<Record<string, unknown>>("nas_file_space"),
+  nasFileList: (path: string, start = 0, num = 100) =>
+    invoke<Record<string, unknown>>("nas_file_list", { path, start, num }),
+  nasSearchFiles: (name: string, filePath?: string | null) =>
+    invoke<Record<string, unknown>>("nas_search_files", { name, filePath: filePath ?? null }),
+  nasMkdir: (parent: string, name: string) =>
+    invoke<Record<string, unknown>>("nas_mkdir", { parent, name }),
+  nasUploadFile: (localPath: string, destDir: string, renameOnConflict = true) =>
+    invoke<Record<string, unknown>>("nas_upload_file", {
+      localPath,
+      destDir,
+      renameOnConflict,
+    }),
+  nasDownloadFile: (nasPath: string, localDest: string) =>
+    invoke<Record<string, unknown>>("nas_download_file", { nasPath, localDest }),
+  nasSystemOverview: () => invoke<SystemOverview>("nas_system_overview"),
+  nasListEvents: (eventType = "", num = 30) =>
+    invoke<Record<string, unknown>>("nas_list_events", { eventType, num }),
+  nasMarkEventsRead: (ids: string) =>
+    invoke<Record<string, unknown>>("nas_mark_events_read", { ids }),
+  nasMarkAllEventsRead: () => invoke<Record<string, unknown>>("nas_mark_all_events_read"),
+  nasDockerList: () => invoke<Record<string, unknown>>("nas_docker_list"),
+  nasDockerStats: () => invoke<Record<string, unknown>>("nas_docker_stats"),
+  nasDockerAction: (action: "start" | "stop" | "restart", containerId: string) =>
+    invoke<Record<string, unknown>>("nas_docker_action", { action, containerId }),
+  nasDockerLogs: (containerId: string) =>
+    invoke<Record<string, unknown>>("nas_docker_logs", { containerId }),
 
   openMainWindow: (taskId?: number) => invoke<void>("open_main_window", { taskId: taskId ?? null }),
   toggleFloatingWindow: () => invoke<void>("toggle_floating_window"),

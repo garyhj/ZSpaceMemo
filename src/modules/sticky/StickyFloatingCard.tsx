@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { CheckSquare, Maximize2, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import type { StickyColor, StickyNote } from "../../types";
 import { STICKY_COLORS, STICKY_COLOR_KEYS } from "./stickyColors";
@@ -13,6 +13,8 @@ export function StickyFloatingCard({ noteId }: { noteId: number }) {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [savedTip, setSavedTip] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const timerRef = useRef<number | null>(null);
 
   async function load() {
     const n = await api.getStickyNote(noteId);
@@ -20,6 +22,7 @@ export function StickyFloatingCard({ noteId }: { noteId: number }) {
       setNote(n);
       setTitle(n.title);
       setContent(n.content);
+      setDirty(false);
     }
   }
 
@@ -37,6 +40,21 @@ export function StickyFloatingCard({ noteId }: { noteId: number }) {
       void unSync.then((f) => f());
     };
   }, [noteId]);
+
+  useEffect(() => {
+    if (!dirty || !note) return;
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    setSavedTip("编辑中…");
+    timerRef.current = window.setTimeout(() => {
+      if (title.trim() !== note.title || content !== note.content) {
+        void savePatch({ title: title.trim(), content });
+      }
+      setDirty(false);
+    }, 800);
+    return () => {
+      if (timerRef.current) window.clearTimeout(timerRef.current);
+    };
+  }, [dirty, title, content, note?.id]);
 
   async function savePatch(patch: {
     title?: string;
@@ -130,10 +148,15 @@ export function StickyFloatingCard({ noteId }: { noteId: number }) {
 
       <input
         value={title}
-        onChange={(e) => setTitle(e.target.value)}
+        onChange={(e) => {
+          setTitle(e.target.value);
+          setDirty(true);
+        }}
         onBlur={() => {
-          if (note && title.trim() !== note.title) {
-            void savePatch({ title: title.trim() });
+          if (timerRef.current) window.clearTimeout(timerRef.current);
+          setDirty(false);
+          if (note && (title.trim() !== note.title || content !== note.content)) {
+            void savePatch({ title: title.trim(), content });
           }
         }}
         placeholder="便签标题"
@@ -142,10 +165,15 @@ export function StickyFloatingCard({ noteId }: { noteId: number }) {
 
       <textarea
         value={content}
-        onChange={(e) => setContent(e.target.value)}
+        onChange={(e) => {
+          setContent(e.target.value);
+          setDirty(true);
+        }}
         onBlur={() => {
-          if (note && content !== note.content) {
-            void savePatch({ content });
+          if (timerRef.current) window.clearTimeout(timerRef.current);
+          setDirty(false);
+          if (note && (title.trim() !== note.title || content !== note.content)) {
+            void savePatch({ title: title.trim(), content });
           }
         }}
         placeholder="随手记点什么…（失去焦点自动同步）"

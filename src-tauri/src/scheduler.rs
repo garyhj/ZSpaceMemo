@@ -6,15 +6,17 @@ use tracing::{info, warn};
 use zspace_memo_core::provider::official_cli::OfficialCliNotebookProvider;
 use zspace_memo_core::service::TaskService;
 use zspace_memo_core::sticky::StickyService;
+use zspace_memo_core::toolbox::ToolboxService;
 
 /// Background Tokio loop:
-/// - Syncs tasks & sticky notes from NAS on startup and every `sync_interval_secs` (default 5m)
+/// - Syncs tasks, sticky notes & NAS events on startup and every `sync_interval_secs`
 /// - Checks due reminder jobs every 15s (including missed-while-powered-off catch-up)
-/// - Fires OS native notifications (with optional sound & visible error logs)
+/// - Fires OS native notifications for tasks and newly arrived NAS alerts
 pub fn spawn_background_scheduler(
     app: AppHandle,
     service: Arc<TaskService<OfficialCliNotebookProvider>>,
     sticky: Arc<StickyService<OfficialCliNotebookProvider>>,
+    toolbox: Arc<ToolboxService>,
 ) {
     tauri::async_runtime::spawn(async move {
         let mut sync_elapsed = 9999u64; // Trigger immediate sync on boot.
@@ -47,6 +49,31 @@ pub fn spawn_background_scheduler(
                     }
                     Err(e) => {
                         warn!(error = %e, "background sticky sync skipped/failed");
+                    }
+                }
+                if cfg.bridge_nas_events {
+                    match toolbox.poll_new_nas_notifications().await {
+                        Ok(events) => {
+                            if !events.is_empty() {
+                                let _ = app.emit("nas:events-updated", &events);
+                            }
+                            for ev in events {
+                                let mut b = app
+                                    .notification()
+                                    .builder()
+                                    .title(&format!("极空间通知 · {}", ev.title))
+                                    .body(&ev.body);
+                                if cfg.notification_sound {
+                                    b = b.sound("Default");
+                                }
+                                if let Err(e) = b.show() {
+                                    warn!(error = %e, "NAS bridged notification show failed");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "NAS events poll skipped/failed");
+                        }
                     }
                 }
             } else {

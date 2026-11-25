@@ -120,7 +120,7 @@ export function SettingsModal({ auth, onClose, onLogout, onSettingsChanged }: Pr
           <div className="space-y-1.5 text-xs">
             {[
               ["Ctrl / Cmd + Shift + M", "全局呼出 / 隐藏待办悬浮窗"],
-              ["Ctrl / Cmd + 1 / 2 / 3", "切换 待办 / 月视图 / 便签 模块"],
+              ["Ctrl / Cmd + 1 ~ 6", "切换 待办 / 月视图 / 便签 / 快传箱 / NAS / Docker"],
               ["Ctrl / Cmd + K 或 /", "聚焦搜索框"],
               ["N", "快速新建任务"],
               ["↑ / ↓", "上下切换选中任务"],
@@ -219,6 +219,18 @@ export function SettingsModal({ auth, onClose, onLogout, onSettingsChanged }: Pr
                   checked={settings.default_auto_remind}
                   onChange={(e) =>
                     void save({ ...settings, default_auto_remind: e.target.checked })
+                  }
+                  className="h-4 w-4 accent-blue-600"
+                />
+              </label>
+
+              <label className="flex items-center justify-between">
+                <span className="text-slate-700">将新 NAS 告警同步弹出系统通知</span>
+                <input
+                  type="checkbox"
+                  checked={settings.bridge_nas_events}
+                  onChange={(e) =>
+                    void save({ ...settings, bridge_nas_events: e.target.checked })
                   }
                   className="h-4 w-4 accent-blue-600"
                 />

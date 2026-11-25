@@ -26,6 +26,10 @@ pub struct AppSettings {
     pub sticky_category_name: String,
     #[serde(default)]
     pub sticky_category_id: Option<i64>,
+    #[serde(default)]
+    pub nas_drop_dir: Option<String>,
+    #[serde(default = "default_true")]
+    pub bridge_nas_events: bool,
 }
 
 fn default_true() -> bool {
@@ -52,6 +56,8 @@ impl Default for AppSettings {
             notification_sound: true,
             sticky_category_name: default_sticky_cat(),
             sticky_category_id: None,
+            nas_drop_dir: None,
+            bridge_nas_events: true,
         }
     }
 }
@@ -163,6 +169,10 @@ impl LocalStorage {
                 updated_at_unix INTEGER NOT NULL,
                 length INTEGER NOT NULL,
                 note_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS nas_seen_events (
+                event_id TEXT PRIMARY KEY,
+                seen_at_unix INTEGER NOT NULL
             );
             "#,
         )?;
@@ -508,6 +518,33 @@ impl LocalStorage {
     pub fn delete_sticky(&self, id: i64) -> AppResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM sticky_index WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn has_any_seen_nas_events(&self) -> AppResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let cnt: i64 = conn.query_row("SELECT COUNT(*) FROM nas_seen_events", [], |r| r.get(0))?;
+        Ok(cnt > 0)
+    }
+
+    pub fn is_nas_event_seen(&self, event_id: &str) -> AppResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let found: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM nas_seen_events WHERE event_id = ?1",
+                params![event_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    }
+
+    pub fn mark_nas_event_seen(&self, event_id: &str) -> AppResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO nas_seen_events(event_id, seen_at_unix) VALUES(?1, ?2)",
+            params![event_id, Utc::now().timestamp()],
+        )?;
         Ok(())
     }
 }

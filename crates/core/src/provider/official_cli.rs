@@ -3,7 +3,7 @@ use crate::provider::{AuthStatus, NoteCategory, NoteHistoryEntry, NoteSummary, N
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
@@ -57,8 +57,21 @@ impl OfficialCliNotebookProvider {
     }
 
     async fn run_json(&self, args: &[&str]) -> AppResult<Value> {
-        let output = self
-            .base_command()
+        self.run_cli_raw(args, None).await
+    }
+
+    /// Execute any official `zspace-cli` subcommand and return its full `{ok, data}` JSON.
+    pub async fn run_cli(&self, args: &[&str], local_root: Option<&Path>) -> AppResult<Value> {
+        let val = self.run_cli_raw(args, local_root).await?;
+        Ok(val.get("data").cloned().unwrap_or(val))
+    }
+
+    async fn run_cli_raw(&self, args: &[&str], local_root: Option<&Path>) -> AppResult<Value> {
+        let mut cmd = self.base_command();
+        if let Some(root) = local_root {
+            cmd.arg("--local-root").arg(root);
+        }
+        let output = cmd
             .args(args)
             .output()
             .await
@@ -67,22 +80,27 @@ impl OfficialCliNotebookProvider {
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
 
-        if let Ok(val) = serde_json::from_str::<Value>(&stdout) {
-            if val.get("ok").and_then(|v| v.as_bool()) == Some(true) {
-                return Ok(val);
+        for raw in [&stdout, &stderr] {
+            if raw.is_empty() {
+                continue;
             }
-            let code = val
-                .pointer("/error/code")
-                .and_then(|v| v.as_str())
-                .unwrap_or("UNKNOWN");
-            let msg = val
-                .pointer("/error/message")
-                .and_then(|v| v.as_str())
-                .unwrap_or(&stderr);
-            if code.contains("OAUTH") || code.contains("AUTH") || code.contains("CREDENTIAL") {
-                return Err(AppError::NasAuthRequired(format!("{code}: {msg}")));
+            if let Ok(val) = serde_json::from_str::<Value>(raw) {
+                if val.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                    return Ok(val);
+                }
+                let code = val
+                    .pointer("/error/code")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("UNKNOWN");
+                let msg = val
+                    .pointer("/error/message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&stderr);
+                if code.contains("OAUTH") || code.contains("AUTH") || code.contains("CREDENTIAL") {
+                    return Err(AppError::NasAuthRequired(format!("{code}: {msg}")));
+                }
+                return Err(AppError::NasUnavailable(format!("{code}: {msg}")));
             }
-            return Err(AppError::NasUnavailable(format!("{code}: {msg}")));
         }
 
         if !output.status.success() {

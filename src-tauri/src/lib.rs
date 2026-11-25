@@ -1,6 +1,7 @@
 mod scheduler;
 
 use serde::Serialize;
+use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -25,6 +26,7 @@ use zspace_memo_core::recurrence::{
 use zspace_memo_core::service::{SyncSummary, TaskService};
 use zspace_memo_core::sticky::{CreateStickyInput, StickyNote, StickyService, UpdateStickyInput};
 use zspace_memo_core::storage::{AppSettings, LocalStorage, NotificationRecord};
+use zspace_memo_core::toolbox::{SystemOverview, ToolboxService};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -47,6 +49,7 @@ struct AppState {
     provider: Arc<OfficialCliNotebookProvider>,
     service: Arc<TaskService<OfficialCliNotebookProvider>>,
     sticky: Arc<StickyService<OfficialCliNotebookProvider>>,
+    toolbox: Arc<ToolboxService>,
     dock: Mutex<FloatingDockState>,
 }
 
@@ -639,6 +642,139 @@ async fn close_sticky_window(app: AppHandle, id: i64) -> Result<(), String> {
     Ok(())
 }
 
+// --- ZSpace NAS Toolbox Commands (Files, System + Events, Docker) ---
+
+#[tauri::command]
+async fn nas_file_space(state: State<'_, AppState>) -> Result<Value, String> {
+    state.toolbox.file_space().await.map_err(map_err)
+}
+
+#[tauri::command]
+async fn nas_file_list(
+    state: State<'_, AppState>,
+    path: String,
+    start: Option<u32>,
+    num: Option<u32>,
+) -> Result<Value, String> {
+    state
+        .toolbox
+        .file_list(&path, start.unwrap_or(0), num.unwrap_or(100))
+        .await
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn nas_search_files(
+    state: State<'_, AppState>,
+    name: String,
+    file_path: Option<String>,
+) -> Result<Value, String> {
+    state
+        .toolbox
+        .search_files(&name, file_path.as_deref())
+        .await
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn nas_mkdir(
+    state: State<'_, AppState>,
+    parent: String,
+    name: String,
+) -> Result<Value, String> {
+    state.toolbox.mkdir(&parent, &name).await.map_err(map_err)
+}
+
+#[tauri::command]
+async fn nas_upload_file(
+    state: State<'_, AppState>,
+    local_path: String,
+    dest_dir: String,
+    rename_on_conflict: Option<bool>,
+) -> Result<Value, String> {
+    state
+        .toolbox
+        .upload_file(&local_path, &dest_dir, rename_on_conflict.unwrap_or(true))
+        .await
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn nas_download_file(
+    state: State<'_, AppState>,
+    nas_path: String,
+    local_dest: String,
+) -> Result<Value, String> {
+    state
+        .toolbox
+        .download_file(&nas_path, &local_dest)
+        .await
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn nas_system_overview(state: State<'_, AppState>) -> Result<SystemOverview, String> {
+    state.toolbox.system_overview().await.map_err(map_err)
+}
+
+#[tauri::command]
+async fn nas_list_events(
+    state: State<'_, AppState>,
+    event_type: Option<String>,
+    num: Option<u32>,
+) -> Result<Value, String> {
+    state
+        .toolbox
+        .list_events(event_type.as_deref().unwrap_or(""), num.unwrap_or(30))
+        .await
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn nas_mark_events_read(state: State<'_, AppState>, ids: String) -> Result<Value, String> {
+    state.toolbox.mark_events_read(&ids).await.map_err(map_err)
+}
+
+#[tauri::command]
+async fn nas_mark_all_events_read(state: State<'_, AppState>) -> Result<Value, String> {
+    state.toolbox.mark_all_events_read().await.map_err(map_err)
+}
+
+#[tauri::command]
+async fn nas_docker_list(state: State<'_, AppState>) -> Result<Value, String> {
+    state.toolbox.docker_list().await.map_err(map_err)
+}
+
+#[tauri::command]
+async fn nas_docker_stats(state: State<'_, AppState>) -> Result<Value, String> {
+    state.toolbox.docker_stats().await.map_err(map_err)
+}
+
+#[tauri::command]
+async fn nas_docker_action(
+    state: State<'_, AppState>,
+    action: String,
+    container_id: String,
+) -> Result<Value, String> {
+    state
+        .toolbox
+        .docker_action(&action, &container_id)
+        .await
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn nas_docker_logs(
+    state: State<'_, AppState>,
+    container_id: String,
+) -> Result<Value, String> {
+    state
+        .toolbox
+        .docker_logs(&container_id)
+        .await
+        .map_err(map_err)
+}
+
 #[tauri::command]
 fn open_main_window(app: AppHandle, task_id: Option<i64>) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("main") {
@@ -724,6 +860,10 @@ pub fn run() {
     let _ = tracing_subscriber::fmt::try_init();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let _ = open_main_window(app.clone(), None);
+        }))
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
@@ -747,19 +887,30 @@ pub fn run() {
                 "zspace-memo",
             ));
             let service = Arc::new(TaskService::new(provider.clone(), storage.clone()));
-            let sticky = Arc::new(StickyService::new(provider.clone(), storage));
+            let sticky = Arc::new(StickyService::new(provider.clone(), storage.clone()));
+            let toolbox = Arc::new(ToolboxService::new(provider.clone(), storage));
 
             scheduler::spawn_background_scheduler(
                 app.handle().clone(),
                 service.clone(),
                 sticky.clone(),
+                toolbox.clone(),
             );
             app.manage(AppState {
                 provider,
                 service,
                 sticky: sticky.clone(),
+                toolbox,
                 dock: Mutex::new(FloatingDockState::default()),
             });
+
+            if let Some(icon) = app.default_window_icon().cloned() {
+                for label in ["main", "floating"] {
+                    if let Some(win) = app.get_webview_window(label) {
+                        let _ = win.set_icon(icon.clone());
+                    }
+                }
+            }
 
             // Ask OS notification permission if still in prompt state (macOS).
             if let Ok(PermissionState::Prompt | PermissionState::PromptWithRationale) =
@@ -943,6 +1094,20 @@ pub fn run() {
             delete_sticky_note,
             open_sticky_window,
             close_sticky_window,
+            nas_file_space,
+            nas_file_list,
+            nas_search_files,
+            nas_mkdir,
+            nas_upload_file,
+            nas_download_file,
+            nas_system_overview,
+            nas_list_events,
+            nas_mark_events_read,
+            nas_mark_all_events_read,
+            nas_docker_list,
+            nas_docker_stats,
+            nas_docker_action,
+            nas_docker_logs,
             open_main_window,
             toggle_floating_window,
             dock_floating_window,

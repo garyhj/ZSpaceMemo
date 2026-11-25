@@ -140,6 +140,23 @@ export interface AppSettings {
   notification_sound: boolean;
   sticky_category_name: string;
   sticky_category_id?: number | null;
+  nas_drop_dir?: string | null;
+  bridge_nas_events: boolean;
+}
+
+export interface NasEventNotice {
+  id: string;
+  title: string;
+  body: string;
+  level: string;
+  time: string;
+}
+
+export interface SystemOverview {
+  system: Record<string, unknown> | null;
+  storage: Record<string, unknown> | null;
+  disk: Record<string, unknown> | null;
+  errors: string[];
 }
 
 export type StickyColor = "yellow" | "blue" | "green" | "pink" | "purple" | "white";

@@ -10,7 +10,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api";
 import type { CreateTaskInput, StickyColor, StickyNote } from "../../types";
 import { STICKY_COLORS, STICKY_COLOR_KEYS } from "./stickyColors";
@@ -278,12 +278,37 @@ function StickyCardItem({
 }) {
   const [title, setTitle] = useState(note.title);
   const [content, setContent] = useState(note.content);
+  const [dirty, setDirty] = useState(false);
+  const timerRef = useRef<number | null>(null);
   const theme = STICKY_COLORS[note.color] ?? STICKY_COLORS.yellow;
 
   useEffect(() => {
     setTitle(note.title);
     setContent(note.content);
+    setDirty(false);
   }, [note.id, note.title, note.content]);
+
+  useEffect(() => {
+    if (!dirty || note.id < 0) return;
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => {
+      if (title.trim() !== note.title || content !== note.content) {
+        void onUpdate(note.id, { title: title.trim(), content });
+      }
+      setDirty(false);
+    }, 800);
+    return () => {
+      if (timerRef.current) window.clearTimeout(timerRef.current);
+    };
+  }, [dirty, title, content, note.id]);
+
+  function flushNow() {
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    if (note.id >= 0 && (title.trim() !== note.title || content !== note.content)) {
+      setDirty(false);
+      void onUpdate(note.id, { title: title.trim(), content });
+    }
+  }
 
   return (
     <div
@@ -292,15 +317,15 @@ function StickyCardItem({
       <div className={`flex items-center gap-1.5 px-3 py-2 ${theme.header}`}>
         <input
           value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          onBlur={() => {
-            if (title.trim() !== note.title) {
-              void onUpdate(note.id, { title: title.trim() });
-            }
+          onChange={(e) => {
+            setTitle(e.target.value);
+            setDirty(true);
           }}
+          onBlur={flushNow}
           placeholder="无标题便签"
           className="min-w-0 flex-1 bg-transparent text-xs font-semibold text-slate-800 outline-none placeholder:text-slate-400"
         />
+        {dirty && <span className="text-[10px] text-slate-400">待保存…</span>}
         <button
           type="button"
           title={note.pinned ? "取消置顶" : "置顶"}
@@ -327,12 +352,11 @@ function StickyCardItem({
 
       <textarea
         value={content}
-        onChange={(e) => setContent(e.target.value)}
-        onBlur={() => {
-          if (content !== note.content) {
-            void onUpdate(note.id, { content });
-          }
+        onChange={(e) => {
+          setContent(e.target.value);
+          setDirty(true);
         }}
+        onBlur={flushNow}
         placeholder="写点什么…（失去焦点自动同步到极空间）"
         className="flex-1 resize-none bg-transparent p-3 text-xs leading-relaxed text-slate-700 outline-none placeholder:text-slate-400"
       />

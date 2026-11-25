@@ -1,0 +1,399 @@
+import { listen } from "@tauri-apps/api/event";
+import {
+  Activity,
+  Bell,
+  CheckCheck,
+  Code2,
+  Cpu,
+  HardDrive,
+  MemoryStick,
+  RefreshCw,
+  Thermometer,
+} from "lucide-react";
+import { useEffect, useState } from "react";
+import { api } from "../../api";
+import type { AppSettings, SystemOverview } from "../../types";
+
+interface Props {
+  settings: AppSettings | null;
+  onSettingsChanged: (cfg: AppSettings) => void;
+  onToast: (msg: string) => void;
+}
+
+interface EventRow {
+  id: string;
+  title: string;
+  body: string;
+  level: string;
+  time: string;
+  unread: boolean;
+}
+
+function asObj(v: unknown): Record<string, unknown> | null {
+  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+}
+
+function asArr(v: unknown, keys: string[]): Record<string, unknown>[] {
+  if (Array.isArray(v)) return v.filter((x): x is Record<string, unknown> => Boolean(asObj(x)));
+  const o = asObj(v);
+  if (!o) return [];
+  for (const k of keys) {
+    if (Array.isArray(o[k])) {
+      return (o[k] as unknown[]).filter((x): x is Record<string, unknown> => Boolean(asObj(x)));
+    }
+  }
+  return [];
+}
+
+function pick(obj: Record<string, unknown> | null, keys: string[]): string {
+  if (!obj) return "-";
+  for (const k of keys) {
+    const v = obj[k];
+    if (v !== undefined && v !== null && String(v).trim() !== "") return String(v);
+  }
+  return "-";
+}
+
+function pickNum(obj: Record<string, unknown> | null, keys: string[]): number | null {
+  if (!obj) return null;
+  for (const k of keys) {
+    const n = Number(obj[k]);
+    if (!Number.isNaN(n) && obj[k] !== undefined && obj[k] !== null && obj[k] !== "") return n;
+  }
+  return null;
+}
+
+function fmtSize(val: number | null): string {
+  if (val === null || val <= 0) return "-";
+  // Heuristic: values > 1e9 are bytes; otherwise check MB/GB
+  let bytes = val;
+  if (bytes < 1e7) bytes = val * 1024 * 1024; // assume MB if tiny
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (bytes >= 1024 && i < units.length - 1) {
+    bytes /= 1024;
+    i++;
+  }
+  return `${bytes.toFixed(1)} ${units[i]}`;
+}
+
+export function NasStatusView({ settings, onSettingsChanged, onToast }: Props) {
+  const [overview, setOverview] = useState<SystemOverview | null>(null);
+  const [events, setEvents] = useState<EventRow[]>([]);
+  const [eventFilter, setEventFilter] = useState<"" | "notify" | "log">("");
+  const [loading, setLoading] = useState(false);
+  const [showRaw, setShowRaw] = useState(false);
+
+  async function refreshAll(evType = eventFilter) {
+    setLoading(true);
+    try {
+      const [ovRes, evRes] = await Promise.allSettled([
+        api.nasSystemOverview(),
+        api.nasListEvents(evType, 30),
+      ]);
+      if (ovRes.status === "fulfilled") {
+        setOverview(ovRes.value);
+      } else {
+        onToast(`获取 NAS 状态失败：${String(ovRes.reason)}`);
+      }
+      if (evRes.status === "fulfilled") {
+        const rows = asArr(evRes.value, ["list", "events", "items", "data"]).map((r) => ({
+          id: String(r.id ?? r.event_id ?? Math.random()),
+          title: pick(r, ["title", "event_name", "group", "action"]),
+          body: pick(r, ["content", "message", "msg", "desc", "detail"]),
+          level: pick(r, ["level", "severity"]),
+          time: pick(r, ["created_at", "time", "ctime", "create_time"]),
+          unread: Number(r.is_new ?? r.unread ?? (r.is_read === false ? 1 : 0)) === 1,
+        }));
+        setEvents(rows);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void refreshAll(eventFilter);
+  }, [eventFilter]);
+
+  useEffect(() => {
+    const un = listen("nas:events-updated", () => void refreshAll(eventFilter));
+    return () => {
+      void un.then((f) => f());
+    };
+  }, [eventFilter]);
+
+  async function toggleBridge(checked: boolean) {
+    if (!settings) return;
+    const next = { ...settings, bridge_nas_events: checked };
+    await api.saveSettings(next);
+    onSettingsChanged(next);
+    onToast(checked ? "已开启：极空间新告警将同步弹出桌面系统通知" : "已关闭 NAS 告警弹窗转发");
+  }
+
+  async function markOneRead(id: string) {
+    try {
+      await api.nasMarkEventsRead(id);
+      setEvents((cur) => cur.map((e) => (e.id === id ? { ...e, unread: false } : e)));
+    } catch (e) {
+      onToast(`操作失败：${String(e)}`);
+    }
+  }
+
+  async function markAllRead() {
+    try {
+      await api.nasMarkAllEventsRead();
+      setEvents((cur) => cur.map((e) => ({ ...e, unread: false })));
+      onToast("已全部标为已读");
+    } catch (e) {
+      onToast(`操作失败：${String(e)}`);
+    }
+  }
+
+  const sys = asObj(overview?.system);
+  const basic = asObj(sys?.basic) ?? sys;
+  const cpu = asObj(sys?.cpu);
+  const mem = asObj(sys?.memory);
+  const fan = asObj(sys?.fan);
+
+  const cpuPct = pickNum(cpu, ["usage", "percent", "used_percent", "cpu_usage", "load"]);
+  const cpuTemp = pickNum(cpu, ["temp", "temperature", "cpu_temp"]);
+  const memPct = pickNum(mem, ["usage", "percent", "used_percent", "mem_usage"]);
+  const memTotal = pickNum(mem, ["total", "total_bytes", "size"]);
+  const memUsed = pickNum(mem, ["used", "used_bytes"]);
+
+  const pools = asArr(overview?.storage, ["pools", "list", "storage_pools", "data"]);
+  const disks = asArr(overview?.disk, ["disks", "mounts", "list", "data"]);
+
+  return (
+    <div className="flex min-w-0 flex-1 flex-col bg-white">
+      <div className="flex flex-wrap items-center gap-3 border-b border-slate-200 px-5 py-3">
+        <div>
+          <h1 className="text-lg font-semibold tracking-tight text-slate-900">NAS 状态与消息</h1>
+          <p className="text-[11px] text-slate-400">
+            设备：{pick(basic, ["device_name", "name", "model", "hostname"])} · 系统：
+            {pick(basic, ["version", "os_version", "zos_version", "firmware"])}
+          </p>
+        </div>
+
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowRaw((v) => !v)}
+            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-500 hover:bg-slate-50"
+          >
+            <Code2 className="h-3.5 w-3.5" />
+            {showRaw ? "隐藏原始 JSON" : "原始数据"}
+          </button>
+          <button
+            type="button"
+            onClick={() => void refreshAll(eventFilter)}
+            className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+            刷新状态
+          </button>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto bg-slate-50/50 p-5 space-y-5">
+        {/* Hardware Cards */}
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <StatCard
+            icon={<Cpu className="h-4 w-4 text-blue-600" />}
+            label="CPU 负载"
+            value={cpuPct !== null ? `${cpuPct.toFixed(1)}%` : pick(cpu, ["model", "cores"])}
+            sub={cpuTemp !== null ? `温度 ${cpuTemp}°C` : "处理器运行正常"}
+          />
+          <StatCard
+            icon={<MemoryStick className="h-4 w-4 text-emerald-600" />}
+            label="内存占用"
+            value={
+              memPct !== null
+                ? `${memPct.toFixed(1)}%`
+                : memUsed && memTotal
+                ? `${((memUsed / memTotal) * 100).toFixed(1)}%`
+                : "-"
+            }
+            sub={memTotal ? `${fmtSize(memUsed)} / ${fmtSize(memTotal)}` : "系统内存"}
+          />
+          <StatCard
+            icon={<Thermometer className="h-4 w-4 text-amber-500" />}
+            label="散热 / 风扇"
+            value={pick(fan, ["rpm", "speed", "mode", "status"])}
+            sub={cpuTemp !== null ? `核心 ${cpuTemp}°C` : "风扇状态"}
+          />
+          <StatCard
+            icon={<Activity className="h-4 w-4 text-violet-600" />}
+            label="存储池 / 硬盘"
+            value={`${pools.length || "-"} 池 · ${disks.length || "-"} 盘`}
+            sub={overview?.errors.length ? `部分字段受限 (${overview.errors.length})` : "在线监测中"}
+          />
+        </div>
+
+        {/* Storage Pools */}
+        {pools.length > 0 && (
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+            <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+              <HardDrive className="h-4 w-4 text-blue-600" />
+              存储池容量
+            </div>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              {pools.map((p, idx) => {
+                const name = pick(p, ["name", "pool_name", "id", "label"]);
+                const total = pickNum(p, ["total", "total_bytes", "size", "capacity"]);
+                const used = pickNum(p, ["used", "used_bytes"]);
+                const pct =
+                  used !== null && total && total > 0
+                    ? Math.min(100, Math.round((used / total) * 100))
+                    : pickNum(p, ["usage", "percent"]) ?? 0;
+                return (
+                  <div key={idx} className="rounded-xl border border-slate-100 bg-slate-50/70 p-3 space-y-1.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-semibold text-slate-800">{name}</span>
+                      <span className="text-slate-500">
+                        {pick(p, ["raid", "raid_type", "status", "health"])} · {pct}%
+                      </span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full bg-slate-200">
+                      <div
+                        className={`h-full rounded-full ${pct >= 90 ? "bg-red-500" : "bg-blue-600"}`}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                    {total !== null && (
+                      <div className="text-[11px] text-slate-400">
+                        已用 {fmtSize(used)} / 总共 {fmtSize(total)}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Raw JSON Inspector */}
+        {showRaw && overview && (
+          <pre className="max-h-60 overflow-auto rounded-2xl border border-slate-200 bg-slate-900 p-4 text-[11px] text-slate-100">
+            {JSON.stringify(overview, null, 2)}
+          </pre>
+        )}
+
+        {/* NAS Events & Notification Bridge */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Bell className="h-4 w-4 text-blue-600" />
+              <span className="text-sm font-semibold text-slate-800">极空间 NAS 消息与事件</span>
+              <div className="ml-2 flex rounded-lg bg-slate-100 p-0.5 text-[11px]">
+                {(
+                  [
+                    ["", "全部"],
+                    ["notify", "通知"],
+                    ["log", "日志"],
+                  ] as const
+                ).map(([k, lbl]) => (
+                  <button
+                    key={lbl}
+                    type="button"
+                    onClick={() => setEventFilter(k)}
+                    className={`rounded-md px-2 py-0.5 ${
+                      eventFilter === k ? "bg-white font-medium text-blue-600 shadow-2xs" : "text-slate-500"
+                    }`}
+                  >
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 text-xs">
+              <label className="flex cursor-pointer items-center gap-1.5 text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={settings?.bridge_nas_events !== false}
+                  onChange={(e) => void toggleBridge(e.target.checked)}
+                  className="accent-blue-600"
+                />
+                新 NAS 告警弹出桌面系统通知
+              </label>
+              <button
+                type="button"
+                onClick={() => void markAllRead()}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1 text-slate-600 hover:bg-slate-50"
+              >
+                <CheckCheck className="h-3.5 w-3.5" />
+                全部已读
+              </button>
+            </div>
+          </div>
+
+          {events.length === 0 ? (
+            <div className="py-8 text-center text-xs text-slate-400">
+              {loading ? "正在拉取 NAS 消息…" : "暂无消息记录"}
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {events.map((ev) => (
+                <div key={ev.id} className="flex items-start gap-2.5 py-2.5 text-xs">
+                  <span
+                    className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${
+                      ev.unread ? "bg-blue-600" : "bg-slate-200"
+                    }`}
+                  />
+                  <div className="min-w-0 flex-1 space-y-0.5">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-slate-800">{ev.title}</span>
+                      {ev.level !== "-" && (
+                        <span className="rounded bg-slate-100 px-1.5 text-[10px] text-slate-500">
+                          {ev.level}
+                        </span>
+                      )}
+                      <span className="ml-auto text-[11px] text-slate-400">{ev.time}</span>
+                    </div>
+                    {ev.body !== "-" && ev.body !== ev.title && (
+                      <div className="text-slate-500">{ev.body}</div>
+                    )}
+                  </div>
+                  {ev.unread && (
+                    <button
+                      type="button"
+                      onClick={() => void markOneRead(ev.id)}
+                      className="shrink-0 text-[11px] text-blue-600 hover:underline"
+                    >
+                      已读
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatCard({
+  icon,
+  label,
+  value,
+  sub,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  sub: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-3.5 space-y-1">
+      <div className="flex items-center gap-1.5 text-xs text-slate-500">
+        {icon}
+        <span>{label}</span>
+      </div>
+      <div className="truncate text-lg font-semibold text-slate-900">{value}</div>
+      <div className="truncate text-[11px] text-slate-400">{sub}</div>
+    </div>
+  );
+}

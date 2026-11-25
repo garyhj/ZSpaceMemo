@@ -442,6 +442,11 @@ export function MonthCalendarView({
                 setQuickAddDate(cell.date);
                 setQuickTitle("");
               }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setQuickAddDate(cell.date);
+                setQuickTitle("");
+              }}
               className={`group flex min-h-0 flex-col p-1.5 transition ${
                 !cell.inMonth
                   ? "bg-slate-50/80 opacity-55"
