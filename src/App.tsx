@@ -668,11 +668,14 @@ function MainWindow() {
         searchRef.current?.select();
         return;
       }
-      if (mod && ["1", "2", "3", "4", "5", "6"].includes(e.key)) {
-        e.preventDefault();
-        const modEntry = TOOLBOX_MODULES[Number(e.key) - 1];
-        if (modEntry) setWorkspace(modEntry.id);
-        return;
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        const idx = ["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6"].indexOf(e.code);
+        if (idx >= 0) {
+          e.preventDefault();
+          const modEntry = TOOLBOX_MODULES[idx];
+          if (modEntry) setWorkspace(modEntry.id);
+          return;
+        }
       }
       if (e.key === "Escape") {
         if (ctxMenu) { setCtxMenu(null); return; }

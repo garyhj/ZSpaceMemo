@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Maximize2,
   PanelRightClose,
+  Pin,
   RefreshCw,
   X,
 } from "lucide-react";
@@ -19,21 +20,60 @@ import { TaskContextMenu, type ContextMenuState } from "./TaskContextMenu";
 import { TaskListItem } from "./TaskListItem";
 
 type DockEdge = "left" | "right" | "top" | null;
+type DockEventPayload = DockEdge | { edge?: DockEdge; peeked?: boolean } | null;
 type GroupKey = "overdue" | "today" | "week" | "later" | "unscheduled";
 
 /**
  * Layer 1: Frameless always-on-top floating quick window (`/?mode=floating`).
  * - Shows ALL active tasks grouped by 已逾期 / 今天 / 本周 / 以后 / 无日期.
- * - Supports right-click & hover TaskContextMenu, real-time cross-window sync, and edge bookmark dock.
+ * - Edge dock behavior:
+ *   - Hovering over the docked bookmark tab peeks open flush at the edge; leaving folds it back.
+ *   - Clicking the docked bookmark tab (or clicking "固定移开" while peeking) undocks and moves it away from the edge.
  */
 export function FloatingWindow() {
   const prefs = usePrefs();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [busy, setBusy] = useState(false);
   const [dockEdge, setDockEdge] = useState<DockEdge>(null);
+  const [dockPeeked, setDockPeeked] = useState(false);
   const [collapsed, setCollapsed] = useState<Partial<Record<GroupKey, boolean>>>({});
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const dockStateRef = useRef<{ edge: DockEdge; peeked: boolean }>({ edge: null, peeked: false });
+  const hoveringRef = useRef(false);
+  const inputFocusedRef = useRef(false);
+  const ctxOpenRef = useRef(false);
+  const peekTimerRef = useRef<number | null>(null);
+  const collapseTimerRef = useRef<number | null>(null);
+
+  dockStateRef.current = { edge: dockEdge, peeked: dockPeeked };
+  ctxOpenRef.current = Boolean(ctxMenu);
+
+  function clearPeekTimer() {
+    if (peekTimerRef.current !== null) {
+      window.clearTimeout(peekTimerRef.current);
+      peekTimerRef.current = null;
+    }
+  }
+
+  function clearCollapseTimer() {
+    if (collapseTimerRef.current !== null) {
+      window.clearTimeout(collapseTimerRef.current);
+      collapseTimerRef.current = null;
+    }
+  }
+
+  function scheduleCollapseIfPeeked() {
+    clearCollapseTimer();
+    collapseTimerRef.current = window.setTimeout(() => {
+      collapseTimerRef.current = null;
+      const st = dockStateRef.current;
+      if (!st.edge || !st.peeked) return;
+      if (hoveringRef.current || ctxOpenRef.current || inputFocusedRef.current) return;
+      void api.collapsePeekFloatingWindow();
+    }, 220);
+  }
 
   async function refresh() {
     try {
@@ -59,13 +99,24 @@ export function FloatingWindow() {
     const unlistenChanged = listen<string>("tasks:changed", (ev) => {
       if (ev.payload !== "floating") void refresh();
     });
-    const unlistenDock = listen<DockEdge>("floating:dock-changed", (ev) => {
-      setDockEdge(ev.payload ?? null);
+    const unlistenDock = listen<DockEventPayload>("floating:dock-changed", (ev) => {
+      const p = ev.payload;
+      if (p && typeof p === "object") {
+        setDockEdge(p.edge ?? null);
+        setDockPeeked(Boolean(p.peeked));
+      } else {
+        setDockEdge((p as DockEdge) ?? null);
+        setDockPeeked(false);
+      }
+      clearPeekTimer();
+      clearCollapseTimer();
     });
     const onWinFocus = () => void refresh();
     window.addEventListener("focus", onWinFocus);
 
     return () => {
+      clearPeekTimer();
+      clearCollapseTimer();
       window.removeEventListener("focus", onWinFocus);
       void unlistenFocus.then((f) => f());
       void unlistenSync.then((f) => f());
@@ -73,6 +124,12 @@ export function FloatingWindow() {
       void unlistenDock.then((f) => f());
     };
   }, []);
+
+  useEffect(() => {
+    if (!ctxMenu) {
+      scheduleCollapseIfPeeked();
+    }
+  }, [ctxMenu]);
 
   async function handleCreate(input: CreateTaskInput) {
     let enriched = input;
@@ -182,8 +239,8 @@ export function FloatingWindow() {
 
   const totalCount = tasks.length;
 
-  // Compact edge-docked bookmark tab
-  if (dockEdge) {
+  // Compact edge-docked bookmark tab (collapsed state)
+  if (dockEdge && !dockPeeked) {
     const isTop = dockEdge === "top";
     const radiusClass =
       dockEdge === "left"
@@ -195,8 +252,25 @@ export function FloatingWindow() {
     return (
       <button
         type="button"
-        title="点击展开待办悬浮窗"
-        onClick={() => void api.undockFloatingWindow()}
+        title="悬停临时展开（移开自动折叠）；点击移开边缘并固定展开"
+        onMouseEnter={() => {
+          hoveringRef.current = true;
+          clearPeekTimer();
+          peekTimerRef.current = window.setTimeout(() => {
+            peekTimerRef.current = null;
+            if (hoveringRef.current && dockStateRef.current.edge && !dockStateRef.current.peeked) {
+              void api.peekFloatingWindow();
+            }
+          }, 140);
+        }}
+        onMouseLeave={() => {
+          hoveringRef.current = false;
+          clearPeekTimer();
+        }}
+        onClick={() => {
+          clearPeekTimer();
+          void api.undockFloatingWindow();
+        }}
         className={`group flex h-screen w-screen cursor-pointer items-center justify-center border border-blue-200 bg-white/95 text-slate-800 shadow-lg backdrop-blur transition hover:bg-blue-50 ${radiusClass} ${
           isTop ? "flex-row gap-2 px-3" : "flex-col gap-1.5 py-2"
         }`}
@@ -234,11 +308,27 @@ export function FloatingWindow() {
   }
 
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-xl">
+    <div
+      onMouseEnter={() => {
+        hoveringRef.current = true;
+        clearCollapseTimer();
+      }}
+      onMouseLeave={() => {
+        hoveringRef.current = false;
+        scheduleCollapseIfPeeked();
+      }}
+      className={`flex h-screen w-screen flex-col overflow-hidden rounded-2xl border bg-white shadow-xl ${
+        dockPeeked ? "border-blue-300 ring-1 ring-blue-200/70" : "border-slate-200/90"
+      }`}
+    >
       <header className="flex items-center justify-between border-b border-slate-200 px-3 py-2 select-none">
         <div
           data-tauri-drag-region="deep"
-          title="按住拖动位置；拖到屏幕左 / 右 / 上边缘可自动收起为书签"
+          title={
+            dockPeeked
+              ? "悬停展开中：移出鼠标自动折叠；拖动或点右侧「固定移开」可常驻展开"
+              : "按住拖动位置；拖到屏幕左 / 右 / 上边缘可自动收起为书签"
+          }
           className="flex flex-1 cursor-grab items-center gap-1.5 py-0.5 active:cursor-grabbing"
         >
           <CheckSquare className="h-4 w-4 text-blue-600" />
@@ -249,16 +339,33 @@ export function FloatingWindow() {
               <span className="text-red-500"> · {overdueCount} 逾期</span>
             )}
           </span>
+          {dockPeeked && (
+            <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600">
+              悬停展开
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-0.5">
-          <button
-            type="button"
-            title="贴边收起为书签"
-            onClick={() => void api.dockFloatingWindow()}
-            className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-blue-600"
-          >
-            <PanelRightClose className="h-3.5 w-3.5" />
-          </button>
+          {dockPeeked ? (
+            <button
+              type="button"
+              title="移开边缘并固定展开"
+              onClick={() => void api.undockFloatingWindow()}
+              className="inline-flex items-center gap-0.5 rounded-lg bg-blue-50 px-1.5 py-1 text-[11px] font-medium text-blue-600 hover:bg-blue-100"
+            >
+              <Pin className="h-3 w-3" />
+              移开固定
+            </button>
+          ) : (
+            <button
+              type="button"
+              title="贴边收起为书签"
+              onClick={() => void api.dockFloatingWindow()}
+              className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-blue-600"
+            >
+              <PanelRightClose className="h-3.5 w-3.5" />
+            </button>
+          )}
           <button
             type="button"
             title="立即同步"
@@ -284,8 +391,10 @@ export function FloatingWindow() {
           </button>
           <button
             type="button"
-            title="隐藏悬浮窗 (Ctrl/Cmd+Shift+M)"
-            onClick={() => void api.toggleFloatingWindow()}
+            title={dockPeeked ? "立即折叠回贴边书签" : "隐藏悬浮窗 (Ctrl/Cmd+Shift+M)"}
+            onClick={() =>
+              void (dockPeeked ? api.collapsePeekFloatingWindow() : api.toggleFloatingWindow())
+            }
             className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
           >
             <X className="h-3.5 w-3.5" />
@@ -293,7 +402,23 @@ export function FloatingWindow() {
         </div>
       </header>
 
-      <div className="border-b border-slate-100 p-2">
+      <div
+        className="border-b border-slate-100 p-2"
+        onFocusCapture={() => {
+          inputFocusedRef.current = true;
+          clearCollapseTimer();
+        }}
+        onBlurCapture={() => {
+          window.setTimeout(() => {
+            const active = document.activeElement;
+            const stillInsideInput = Boolean(
+              active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")
+            );
+            inputFocusedRef.current = stillInsideInput;
+            if (!stillInsideInput) scheduleCollapseIfPeeked();
+          }, 30);
+        }}
+      >
         <QuickAddBar compact inputRef={inputRef} busy={busy} onCreate={handleCreate} />
       </div>
 
@@ -344,7 +469,7 @@ export function FloatingWindow() {
 
       <footer className="flex items-center justify-between border-t border-slate-100 px-3 py-1.5 text-[11px] text-slate-400 select-none">
         <span data-tauri-drag-region="deep" className="flex-1 cursor-grab active:cursor-grabbing">
-          右键可改期/优先级 · 拖到屏幕边收起
+          {dockPeeked ? "鼠标移开自动折叠 · 拖动/点「移开固定」常驻" : "右键可改期/优先级 · 拖到屏幕边收起"}
         </span>
         <button
           type="button"

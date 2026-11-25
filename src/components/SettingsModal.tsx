@@ -120,7 +120,7 @@ export function SettingsModal({ auth, onClose, onLogout, onSettingsChanged }: Pr
           <div className="space-y-1.5 text-xs">
             {[
               ["Ctrl / Cmd + Shift + M", "全局呼出 / 隐藏待办悬浮窗"],
-              ["Ctrl / Cmd + 1 ~ 6", "切换 待办 / 月视图 / 便签 / 快传箱 / NAS / Docker"],
+              ["Alt / Option + 1 ~ 6", "切换 待办 / 月视图 / 便签 / 快传箱 / NAS / Docker"],
               ["Ctrl / Cmd + K 或 /", "聚焦搜索框"],
               ["N", "快速新建任务"],
               ["↑ / ↓", "上下切换选中任务"],

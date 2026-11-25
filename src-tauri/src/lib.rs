@@ -36,9 +36,17 @@ enum DockEdge {
     Top,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct FloatingDockPayload {
+    edge: Option<DockEdge>,
+    peeked: bool,
+}
+
 #[derive(Default)]
 struct FloatingDockState {
     docked: Option<DockEdge>,
+    peeked: bool,
+    tab_pos: Option<PhysicalPosition<i32>>,
     saved_pos: Option<PhysicalPosition<i32>>,
     saved_size: Option<PhysicalSize<u32>>,
     ignore_moves_until_ms: u64,
@@ -125,17 +133,6 @@ fn dock_floating(app: &AppHandle, edge_hint: Option<DockEdge>) {
         }
     });
 
-    {
-        let state = app.state::<AppState>();
-        let mut dock = state.dock.lock().unwrap();
-        if dock.docked.is_none() {
-            dock.saved_pos = Some(pos);
-            dock.saved_size = Some(size);
-        }
-        dock.docked = Some(edge);
-        dock.ignore_moves_until_ms = now_ms() + 800;
-    }
-
     let (lw, lh) = match edge {
         DockEdge::Left | DockEdge::Right => (38_u32, 124_u32),
         DockEdge::Top => (144_u32, 34_u32),
@@ -158,26 +155,169 @@ fn dock_floating(app: &AppHandle, edge_hint: Option<DockEdge>) {
         ),
     };
 
+    {
+        let state = app.state::<AppState>();
+        let mut dock = state.dock.lock().unwrap();
+        if dock.docked.is_none() {
+            dock.saved_pos = Some(pos);
+            dock.saved_size = Some(size);
+        }
+        dock.docked = Some(edge);
+        dock.peeked = false;
+        dock.tab_pos = Some(PhysicalPosition::new(nx, ny));
+        dock.ignore_moves_until_ms = now_ms() + 800;
+    }
+
     let _ = win.set_min_size(None::<LogicalSize<u32>>);
     let _ = win.set_resizable(false);
     let _ = win.set_size(LogicalSize::new(lw, lh));
     let _ = win.set_position(PhysicalPosition::new(nx, ny));
-    let _ = win.emit("floating:dock-changed", Some(edge));
+    let _ = win.emit(
+        "floating:dock-changed",
+        FloatingDockPayload {
+            edge: Some(edge),
+            peeked: false,
+        },
+    );
+}
+
+fn peek_floating(app: &AppHandle) {
+    let Some(win) = app.get_webview_window("floating") else {
+        return;
+    };
+    let cur_pos = win.outer_position().ok();
+    let (edge, tab_pos, saved_size) = {
+        let state = app.state::<AppState>();
+        let mut dock = state.dock.lock().unwrap();
+        let Some(edge) = dock.docked else {
+            return;
+        };
+        if dock.peeked {
+            return;
+        }
+        if dock.tab_pos.is_none() {
+            dock.tab_pos = cur_pos;
+        }
+        dock.peeked = true;
+        dock.ignore_moves_until_ms = now_ms() + 800;
+        (edge, dock.tab_pos.or(cur_pos), dock.saved_size)
+    };
+
+    let (wa_left, wa_top, wa_right, wa_bottom, scale) =
+        monitor_work_area(&win).unwrap_or((0, 0, 1440, 900, 1.0));
+    let target_size = saved_size.unwrap_or_else(|| {
+        PhysicalSize::new(
+            (350.0 * scale).round() as u32,
+            (520.0 * scale).round() as u32,
+        )
+    });
+    let exp_w = target_size.width as i32;
+    let exp_h = target_size.height as i32;
+    let base = tab_pos.unwrap_or(PhysicalPosition::new(wa_right - 38, wa_top + 80));
+
+    let (nx, ny) = match edge {
+        DockEdge::Left => (
+            wa_left,
+            base.y.clamp(wa_top + 8, (wa_bottom - exp_h - 8).max(wa_top)),
+        ),
+        DockEdge::Right => (
+            wa_right - exp_w,
+            base.y.clamp(wa_top + 8, (wa_bottom - exp_h - 8).max(wa_top)),
+        ),
+        DockEdge::Top => (
+            base.x.clamp(wa_left + 8, (wa_right - exp_w - 8).max(wa_left)),
+            wa_top,
+        ),
+    };
+
+    let _ = win.set_resizable(true);
+    let _ = win.set_min_size(Some(LogicalSize::new(300_u32, 360_u32)));
+    let _ = win.set_size(target_size);
+    let _ = win.set_position(PhysicalPosition::new(nx, ny));
+    let _ = win.show();
+    let _ = win.emit(
+        "floating:dock-changed",
+        FloatingDockPayload {
+            edge: Some(edge),
+            peeked: true,
+        },
+    );
+}
+
+fn collapse_peek_floating(app: &AppHandle) {
+    let Some(win) = app.get_webview_window("floating") else {
+        return;
+    };
+    let (edge, tab_pos) = {
+        let state = app.state::<AppState>();
+        let mut dock = state.dock.lock().unwrap();
+        let Some(edge) = dock.docked else {
+            return;
+        };
+        if !dock.peeked {
+            return;
+        }
+        dock.peeked = false;
+        dock.ignore_moves_until_ms = now_ms() + 800;
+        (edge, dock.tab_pos)
+    };
+
+    let (wa_left, wa_top, wa_right, wa_bottom, scale) =
+        monitor_work_area(&win).unwrap_or((0, 0, 1440, 900, 1.0));
+    let (lw, lh) = match edge {
+        DockEdge::Left | DockEdge::Right => (38_u32, 124_u32),
+        DockEdge::Top => (144_u32, 34_u32),
+    };
+    let pw = (lw as f64 * scale).round() as i32;
+    let ph = (lh as f64 * scale).round() as i32;
+    let cur_pos = win.outer_position().ok();
+    let base = tab_pos
+        .or(cur_pos)
+        .unwrap_or(PhysicalPosition::new(wa_right - pw, wa_top + 80));
+
+    let (nx, ny) = match edge {
+        DockEdge::Left => (
+            wa_left,
+            base.y.clamp(wa_top + 12, (wa_bottom - ph - 12).max(wa_top)),
+        ),
+        DockEdge::Right => (
+            wa_right - pw,
+            base.y.clamp(wa_top + 12, (wa_bottom - ph - 12).max(wa_top)),
+        ),
+        DockEdge::Top => (
+            base.x.clamp(wa_left + 12, (wa_right - pw - 12).max(wa_left)),
+            wa_top,
+        ),
+    };
+
+    let _ = win.set_min_size(None::<LogicalSize<u32>>);
+    let _ = win.set_resizable(false);
+    let _ = win.set_size(LogicalSize::new(lw, lh));
+    let _ = win.set_position(PhysicalPosition::new(nx, ny));
+    let _ = win.emit(
+        "floating:dock-changed",
+        FloatingDockPayload {
+            edge: Some(edge),
+            peeked: false,
+        },
+    );
 }
 
 fn undock_floating(app: &AppHandle) {
     let Some(win) = app.get_webview_window("floating") else {
         return;
     };
-    let (edge, saved_pos, saved_size) = {
+    let (edge, tab_pos, saved_pos, saved_size) = {
         let state = app.state::<AppState>();
         let mut dock = state.dock.lock().unwrap();
         let edge = dock.docked.take();
+        dock.peeked = false;
+        let tab_pos = dock.tab_pos.take();
         dock.ignore_moves_until_ms = now_ms() + 1000;
-        (edge, dock.saved_pos, dock.saved_size)
+        (edge, tab_pos, dock.saved_pos, dock.saved_size)
     };
 
-    let tab_pos = win.outer_position().ok();
+    let cur_pos = win.outer_position().ok();
     let (wa_left, wa_top, wa_right, wa_bottom, scale) =
         monitor_work_area(&win).unwrap_or((0, 0, 1440, 900, 1.0));
 
@@ -189,9 +329,11 @@ fn undock_floating(app: &AppHandle) {
     });
     let exp_w = target_size.width as i32;
     let exp_h = target_size.height as i32;
-    let gap = (18.0 * scale).round() as i32;
+    // Shift noticeably away from the screen edge (> 20px dock threshold) when clicking to undock.
+    let gap = (48.0 * scale).round() as i32;
 
     let base = tab_pos
+        .or(cur_pos)
         .or(saved_pos)
         .unwrap_or(PhysicalPosition::new(wa_right - exp_w - gap, wa_top + 80));
     let (nx, ny) = match edge {
@@ -219,7 +361,13 @@ fn undock_floating(app: &AppHandle) {
     let _ = win.set_position(PhysicalPosition::new(nx, ny));
     let _ = win.show();
     let _ = win.set_focus();
-    let _ = win.emit("floating:dock-changed", Option::<DockEdge>::None);
+    let _ = win.emit(
+        "floating:dock-changed",
+        FloatingDockPayload {
+            edge: None,
+            peeked: false,
+        },
+    );
     let _ = win.emit("floating:focus-input", ());
 }
 
@@ -819,6 +967,18 @@ fn dock_floating_window(app: AppHandle, edge: Option<String>) -> Result<(), Stri
 }
 
 #[tauri::command]
+fn peek_floating_window(app: AppHandle) -> Result<(), String> {
+    peek_floating(&app);
+    Ok(())
+}
+
+#[tauri::command]
+fn collapse_peek_floating_window(app: AppHandle) -> Result<(), String> {
+    collapse_peek_floating(&app);
+    Ok(())
+}
+
+#[tauri::command]
 fn undock_floating_window(app: AppHandle) -> Result<(), String> {
     undock_floating(&app);
     Ok(())
@@ -1002,16 +1162,35 @@ pub fn run() {
             }
             WindowEvent::Moved(_) if window.label() == "floating" => {
                 let app = window.app_handle().clone();
-                let seq_opt = {
+                let (seq_opt, broke_peek) = {
                     let state = app.state::<AppState>();
                     let mut dock = state.dock.lock().unwrap();
-                    if dock.docked.is_some() || now_ms() < dock.ignore_moves_until_ms {
-                        None
+                    if now_ms() < dock.ignore_moves_until_ms {
+                        (None, false)
+                    } else if dock.docked.is_some() && !dock.peeked {
+                        (None, false)
                     } else {
+                        let broke = dock.docked.is_some() && dock.peeked;
+                        if broke {
+                            dock.docked = None;
+                            dock.peeked = false;
+                            dock.tab_pos = None;
+                        }
                         dock.move_seq += 1;
-                        Some(dock.move_seq)
+                        (Some(dock.move_seq), broke)
                     }
                 };
+                if broke_peek {
+                    if let Some(win) = app.get_webview_window("floating") {
+                        let _ = win.emit(
+                            "floating:dock-changed",
+                            FloatingDockPayload {
+                                edge: None,
+                                peeked: false,
+                            },
+                        );
+                    }
+                }
                 if let Some(seq) = seq_opt {
                     tauri::async_runtime::spawn(async move {
                         tokio::time::sleep(Duration::from_millis(480)).await;
@@ -1111,6 +1290,8 @@ pub fn run() {
             open_main_window,
             toggle_floating_window,
             dock_floating_window,
+            peek_floating_window,
+            collapse_peek_floating_window,
             undock_floating_window,
             set_autostart,
         ])

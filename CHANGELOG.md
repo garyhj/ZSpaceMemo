@@ -2,6 +2,14 @@
 
 All notable changes to **ZSpace Kit（极空工具箱）** (repository `ZSpaceMemo`) are documented in this file.
 
+## [0.3.2] - 2026-11-25
+
+### Improved & Fixed
+- **悬浮待办窗贴边交互区分**：贴边折叠为书签后，鼠标指向即贴边临时展开预览、移开鼠标自动折叠回书签；点击书签或点击「移开固定」按钮则将悬浮窗向内移开一段距离并保持常驻展开。
+- **调整工作区切换快捷键**：由 `Ctrl/Cmd + 1 ~ 6` 改为 `Alt + 1 ~ 6`（macOS 为 `Option + 1 ~ 6`），避免与常见截图软件全局快捷键冲突。
+- **NAS 状态与消息优化**：`system info` 请求开启 `include_polling: true` 并增强字段兼容（支持 `pool_list` / 实时 CPU 负载 / 内存 / 风扇读取），消除 CPU 负载显示 `-` 的问题；NAS 消息面板默认聚焦「通知」标签。
+- **文档文案修正**：修正 README 错别字，同步最新快捷键、悬浮窗交互说明及 `57` 个 IPC 命令统计。
+
 ## [0.3.1] - 2026-11-25
 
 ### Added

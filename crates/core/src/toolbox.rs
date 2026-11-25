@@ -144,7 +144,8 @@ impl ToolboxService {
 
     pub async fn system_overview(&self) -> AppResult<SystemOverview> {
         let p_sys = serde_json::to_string(&json!({
-            "fields": ["basic", "cpu", "memory", "fan", "network", "disk"]
+            "fields": ["basic", "cpu", "memory", "fan", "network", "disk"],
+            "include_polling": true
         }))?;
         let p_disk = serde_json::to_string(&json!({
             "include": ["mounts", "statics"]

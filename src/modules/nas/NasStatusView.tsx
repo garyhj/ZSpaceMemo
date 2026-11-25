@@ -45,29 +45,101 @@ function asArr(v: unknown, keys: string[]): Record<string, unknown>[] {
   return [];
 }
 
-function pick(obj: Record<string, unknown> | null, keys: string[]): string {
-  if (!obj) return "-";
-  for (const k of keys) {
-    const v = obj[k];
-    if (v !== undefined && v !== null && String(v).trim() !== "") return String(v);
+/** Collect nested candidate objects from ZSpace CLI/ZOS JSON envelopes. */
+function collectObjs(root: unknown): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  const seen = new Set<unknown>();
+  const queue: unknown[] = [root];
+  while (queue.length > 0 && out.length < 24) {
+    const cur = queue.shift();
+    const o = asObj(cur);
+    if (!o || seen.has(o)) continue;
+    seen.add(o);
+    out.push(o);
+    for (const k of [
+      "polling",
+      "polling2",
+      "sysinfo",
+      "system",
+      "info",
+      "data",
+      "fields",
+      "status",
+      "runtime",
+      "summary",
+      "temperatures",
+      "hardware",
+    ]) {
+      if (asObj(o[k])) queue.push(o[k]);
+    }
+  }
+  return out;
+}
+
+function pickFrom(objs: (Record<string, unknown> | null)[], keys: string[]): string {
+  for (const obj of objs) {
+    if (!obj) continue;
+    for (const k of keys) {
+      const v = obj[k];
+      if (v !== undefined && v !== null && String(v).trim() !== "") return String(v).trim();
+    }
   }
   return "-";
 }
 
-function pickNum(obj: Record<string, unknown> | null, keys: string[]): number | null {
-  if (!obj) return null;
-  for (const k of keys) {
-    const n = Number(obj[k]);
-    if (!Number.isNaN(n) && obj[k] !== undefined && obj[k] !== null && obj[k] !== "") return n;
+function parseNumeric(val: unknown): number | null {
+  if (typeof val === "number") return Number.isFinite(val) ? val : null;
+  if (typeof val === "string") {
+    const cleaned = val.trim().replace(/[,%°℃CF\s]+$/gi, "");
+    if (!cleaned) return null;
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : null;
   }
   return null;
 }
 
+function pickNumFrom(objs: (Record<string, unknown> | null)[], keys: string[]): number | null {
+  for (const obj of objs) {
+    if (!obj) continue;
+    for (const k of keys) {
+      const n = parseNumeric(obj[k]);
+      if (n !== null) return n;
+    }
+  }
+  return null;
+}
+
+function pick(obj: Record<string, unknown> | null, keys: string[]): string {
+  return pickFrom([obj], keys);
+}
+
+function pickNum(obj: Record<string, unknown> | null, keys: string[]): number | null {
+  return pickNumFrom([obj], keys);
+}
+
 function fmtSize(val: number | null): string {
   if (val === null || val <= 0) return "-";
-  // Heuristic: values > 1e9 are bytes; otherwise check MB/GB
   let bytes = val;
-  if (bytes < 1e7) bytes = val * 1024 * 1024; // assume MB if tiny
+  if (bytes < 1e6) bytes = val * 1024 * 1024;
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  let i = 0;
+  while (bytes >= 1024 && i < units.length - 1) {
+    bytes /= 1024;
+    i++;
+  }
+  return `${bytes.toFixed(1)} ${units[i]}`;
+}
+
+function fmtMemSize(val: number | null): string {
+  if (val === null || val <= 0) return "-";
+  let bytes = val;
+  if (val <= 512) {
+    bytes = val * 1024 * 1024 * 1024; // GiB
+  } else if (val < 524_288) {
+    bytes = val * 1024 * 1024; // MiB
+  } else if (val < 536_870_912) {
+    bytes = val * 1024; // KiB
+  }
   const units = ["B", "KB", "MB", "GB", "TB"];
   let i = 0;
   while (bytes >= 1024 && i < units.length - 1) {
@@ -80,7 +152,7 @@ function fmtSize(val: number | null): string {
 export function NasStatusView({ settings, onSettingsChanged, onToast }: Props) {
   const [overview, setOverview] = useState<SystemOverview | null>(null);
   const [events, setEvents] = useState<EventRow[]>([]);
-  const [eventFilter, setEventFilter] = useState<"" | "notify" | "log">("");
+  const [eventFilter, setEventFilter] = useState<"notify" | "log" | "">("notify");
   const [loading, setLoading] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
 
@@ -150,20 +222,125 @@ export function NasStatusView({ settings, onSettingsChanged, onToast }: Props) {
     }
   }
 
-  const sys = asObj(overview?.system);
-  const basic = asObj(sys?.basic) ?? sys;
-  const cpu = asObj(sys?.cpu);
-  const mem = asObj(sys?.memory);
-  const fan = asObj(sys?.fan);
+  const sysObjs = collectObjs(overview?.system);
+  const basicObjs = [
+    ...sysObjs.map((o) => asObj(o.basic)).filter(Boolean),
+    ...sysObjs,
+  ];
+  const cpuObjs = [
+    ...sysObjs.map((o) => asObj(o.cpu)).filter(Boolean),
+    ...sysObjs.map((o) => asObj(o.cpu_info)).filter(Boolean),
+    ...sysObjs,
+  ];
+  const memObjs = [
+    ...sysObjs.map((o) => asObj(o.memory)).filter(Boolean),
+    ...sysObjs.map((o) => asObj(o.mem)).filter(Boolean),
+    ...sysObjs,
+  ];
+  const fanObjs = [
+    ...sysObjs.map((o) => asObj(o.fan)).filter(Boolean),
+    ...sysObjs.flatMap((o) => asArr(o, ["fans", "fan_list"])),
+    ...sysObjs,
+  ];
 
-  const cpuPct = pickNum(cpu, ["usage", "percent", "used_percent", "cpu_usage", "load"]);
-  const cpuTemp = pickNum(cpu, ["temp", "temperature", "cpu_temp"]);
-  const memPct = pickNum(mem, ["usage", "percent", "used_percent", "mem_usage"]);
-  const memTotal = pickNum(mem, ["total", "total_bytes", "size"]);
-  const memUsed = pickNum(mem, ["used", "used_bytes"]);
+  // CPU metrics: check dedicated CPU object first, then polling scalars
+  const directCpuNum = sysObjs
+    .map((o) => parseNumeric(o.cpu))
+    .find((n): n is number => n !== null);
+  const cpuPct =
+    pickNumFrom(cpuObjs, [
+      "usage",
+      "percent",
+      "used_percent",
+      "usage_percent",
+      "cpu_usage",
+      "cpuUsage",
+      "cpu_percent",
+      "cpuPercent",
+      "cpu_use",
+      "cpuUse",
+      "utilization",
+      "use",
+      "rate",
+      "busy",
+    ]) ?? directCpuNum ?? null;
+  const cpuLoad = pickNumFrom(cpuObjs, ["load", "load1", "load_1", "load_avg", "loadavg"]);
+  const cpuTemp = pickNumFrom(cpuObjs, ["temp", "temperature", "cpu_temp", "cpuTemp", "core_temp"]);
+  const cpuModel = pickFrom(cpuObjs, ["model", "model_name", "cpu_model", "brand", "name"]);
+  const cpuCores = pickNumFrom(cpuObjs, ["cores", "core_num", "cpu_cores", "threads"]);
 
-  const pools = asArr(overview?.storage, ["pools", "list", "storage_pools", "data"]);
-  const disks = asArr(overview?.disk, ["disks", "mounts", "list", "data"]);
+  const cpuValue =
+    cpuPct !== null
+      ? `${cpuPct.toFixed(1)}%`
+      : cpuLoad !== null
+      ? `Load ${cpuLoad.toFixed(2)}`
+      : cpuCores !== null
+      ? `${cpuCores} 核`
+      : cpuModel !== "-"
+      ? cpuModel
+      : "-";
+  const cpuSub = [
+    cpuTemp !== null ? `温度 ${cpuTemp}°C` : null,
+    cpuPct !== null && cpuLoad !== null ? `负载 ${cpuLoad.toFixed(2)}` : null,
+    cpuModel !== "-" ? cpuModel : cpuCores !== null ? `${cpuCores} 核心` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ") || "处理器运行状态";
+
+  // Memory metrics
+  const memTotal = pickNumFrom(memObjs, [
+    "total",
+    "total_bytes",
+    "total_size",
+    "mem_total",
+    "physical_total",
+    "size",
+  ]);
+  const memFree = pickNumFrom(memObjs, ["free", "available", "avail", "mem_free", "mem_avail"]);
+  const memUsedRaw = pickNumFrom(memObjs, ["used", "used_bytes", "usage_size", "mem_used", "active"]);
+  const memUsed =
+    memUsedRaw !== null
+      ? memUsedRaw
+      : memTotal !== null && memFree !== null
+      ? Math.max(0, memTotal - memFree)
+      : null;
+  const memPct =
+    pickNumFrom(memObjs, [
+      "usage",
+      "percent",
+      "used_percent",
+      "usage_percent",
+      "mem_usage",
+      "memUsage",
+      "mem_percent",
+      "memPercent",
+      "use",
+      "rate",
+    ]) ?? (memUsed !== null && memTotal && memTotal > 0 ? (memUsed / memTotal) * 100 : null);
+
+  // Fan metrics
+  const fanRpm = pickNumFrom(fanObjs, ["rpm", "speed", "fan_speed", "fan1", "value"]);
+  const fanMode = pickFrom(fanObjs, ["mode", "status", "level", "fan_mode"]);
+
+  // Storage pools & disks (supports `/zspool/info` `pool_list` + `total_size` / `usage_size`)
+  const pools = asArr(overview?.storage, [
+    "pools",
+    "pool_list",
+    "list",
+    "storage_pools",
+    "sys_pools",
+    "data",
+  ]);
+  const rawDisks = asArr(overview?.disk, [
+    "disks",
+    "mounts",
+    "disk_list",
+    "list",
+    "statics",
+    "data",
+  ]);
+  const nestedPoolDisks = pools.flatMap((p) => asArr(p, ["disk_list", "disks"]));
+  const disks = rawDisks.length > 0 ? rawDisks : nestedPoolDisks;
 
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-white">
@@ -171,8 +348,9 @@ export function NasStatusView({ settings, onSettingsChanged, onToast }: Props) {
         <div>
           <h1 className="text-lg font-semibold tracking-tight text-slate-900">NAS 状态与消息</h1>
           <p className="text-[11px] text-slate-400">
-            设备：{pick(basic, ["device_name", "name", "model", "hostname"])} · 系统：
-            {pick(basic, ["version", "os_version", "zos_version", "firmware"])}
+            设备：{pickFrom(basicObjs, ["device_name", "name", "model", "hostname", "product"])} ·
+            系统：
+            {pickFrom(basicObjs, ["version", "os_version", "zos_version", "firmware", "rom_version"])}
           </p>
         </div>
 
@@ -202,26 +380,20 @@ export function NasStatusView({ settings, onSettingsChanged, onToast }: Props) {
           <StatCard
             icon={<Cpu className="h-4 w-4 text-blue-600" />}
             label="CPU 负载"
-            value={cpuPct !== null ? `${cpuPct.toFixed(1)}%` : pick(cpu, ["model", "cores"])}
-            sub={cpuTemp !== null ? `温度 ${cpuTemp}°C` : "处理器运行正常"}
+            value={cpuValue}
+            sub={cpuSub}
           />
           <StatCard
             icon={<MemoryStick className="h-4 w-4 text-emerald-600" />}
             label="内存占用"
-            value={
-              memPct !== null
-                ? `${memPct.toFixed(1)}%`
-                : memUsed && memTotal
-                ? `${((memUsed / memTotal) * 100).toFixed(1)}%`
-                : "-"
-            }
-            sub={memTotal ? `${fmtSize(memUsed)} / ${fmtSize(memTotal)}` : "系统内存"}
+            value={memPct !== null ? `${memPct.toFixed(1)}%` : "-"}
+            sub={memTotal ? `${fmtMemSize(memUsed)} / ${fmtMemSize(memTotal)}` : "系统内存"}
           />
           <StatCard
             icon={<Thermometer className="h-4 w-4 text-amber-500" />}
             label="散热 / 风扇"
-            value={pick(fan, ["rpm", "speed", "mode", "status"])}
-            sub={cpuTemp !== null ? `核心 ${cpuTemp}°C` : "风扇状态"}
+            value={fanRpm !== null ? `${Math.round(fanRpm)} RPM` : fanMode}
+            sub={cpuTemp !== null ? `核心温度 ${cpuTemp}°C` : "风扇状态"}
           />
           <StatCard
             icon={<Activity className="h-4 w-4 text-violet-600" />}
@@ -241,8 +413,15 @@ export function NasStatusView({ settings, onSettingsChanged, onToast }: Props) {
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               {pools.map((p, idx) => {
                 const name = pick(p, ["name", "pool_name", "id", "label"]);
-                const total = pickNum(p, ["total", "total_bytes", "size", "capacity"]);
-                const used = pickNum(p, ["used", "used_bytes"]);
+                const total = pickNum(p, ["total", "total_bytes", "total_size", "size", "capacity"]);
+                const free = pickNum(p, ["free", "free_size", "available"]);
+                const usedRaw = pickNum(p, ["used", "used_bytes", "usage_size"]);
+                const used =
+                  usedRaw !== null
+                    ? usedRaw
+                    : total !== null && free !== null
+                    ? Math.max(0, total - free)
+                    : null;
                 const pct =
                   used !== null && total && total > 0
                     ? Math.min(100, Math.round((used / total) * 100))
@@ -252,7 +431,7 @@ export function NasStatusView({ settings, onSettingsChanged, onToast }: Props) {
                     <div className="flex items-center justify-between text-xs">
                       <span className="font-semibold text-slate-800">{name}</span>
                       <span className="text-slate-500">
-                        {pick(p, ["raid", "raid_type", "status", "health"])} · {pct}%
+                        {pick(p, ["pool_type", "raid", "raid_type", "status", "health"])} · {pct}%
                       </span>
                     </div>
                     <div className="h-2 overflow-hidden rounded-full bg-slate-200">
@@ -289,9 +468,9 @@ export function NasStatusView({ settings, onSettingsChanged, onToast }: Props) {
               <div className="ml-2 flex rounded-lg bg-slate-100 p-0.5 text-[11px]">
                 {(
                   [
-                    ["", "全部"],
                     ["notify", "通知"],
                     ["log", "日志"],
+                    ["", "全部"],
                   ] as const
                 ).map(([k, lbl]) => (
                   <button

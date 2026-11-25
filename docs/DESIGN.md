@@ -24,8 +24,8 @@
 | D3 | **纯桌面客户端**：Tauri 2（Windows + macOS）内置官方 `zspace-cli` v0.3.11 sidecar，零服务端部署，不依赖 NAS 端运行 Docker 伴侣 |
 | D4 | **官方 OAuth2 登录**：全程不接触、不存储 NAS 账号密码；由 `zspace-cli` 管理凭据并自动刷新（保留 `identifier="com.garyhj.zspacememo"` 确保跨版本配置与授权无缝延续） |
 | D5 | 笔记正文均采用「人类可读 HTML + 底部结构化数据块」，不依赖 HTML 注释、隐藏标签或自定义属性 |
-| D6 | **可扩展工具箱壳架构**：左侧 ToolRail 通过 `TOOLBOX_MODULES`（`Ctrl/Cmd + 1 ~ 6`）统一切换 6 个核心工作区（待办 / 月视图 / 便签 / 快传箱 / NAS / Docker） |
-| D7 | **三类桌面窗口**：完整主窗口（ToolRail + 工作区）· 置顶悬浮待办窗（`/?mode=floating`，按已逾期/今天/本周/以后/无日期全量分组 + 贴边收起）· 独立桌面便利贴窗（`/?mode=sticky&id={id}`） |
+| D6 | **可扩展工具箱壳架构**：左侧 ToolRail 通过 `TOOLBOX_MODULES`（`Alt + 1 ~ 6` / macOS `Option + 1 ~ 6`）统一切换 6 个核心工作区（待办 / 月视图 / 便签 / 快传箱 / NAS / Docker） |
+| D7 | **三类桌面窗口**：完整主窗口（ToolRail + 工作区）· 置顶悬浮待办窗（`/?mode=floating`，按已逾期/今天/本周/以后/无日期全量分组 + 贴边悬停/点击展开）· 独立桌面便利贴窗（`/?mode=sticky&id={id}`） |
 | D8 | **时间模型精简**：不支持开始时间和时间段，只保留**截止日期 + 截止时间**（以及全天开关） |
 | D9 | **OS 原生通知替代应用内通知中心**：直接触发 Windows / macOS 原生系统通知（含提示音开关与权限检测），关闭重启后自动补发遗漏提醒；新增 `bridge_nas_events` 开关同步弹出新 NAS 告警 |
 | D10 | 本地辅助 SQLite（`LocalStorage`）只存配置、提醒作业、**可重建的笔记/便签索引缓存**及 `nas_seen_events` 去重记录，任务/便签唯一事实来源仍在极空间 NAS |
@@ -39,9 +39,9 @@
 flowchart LR
   subgraph App["ZSpace Kit 桌面客户端（Tauri 2 · Windows / macOS）"]
     subgraph UI["React 19 + TypeScript + Tailwind v4"]
-      RAIL["ToolRail 工具栏<br/>Ctrl/Cmd + 1..6"]
+      RAIL["ToolRail 工具栏<br/>Alt/Option + 1..6"]
       MODS["待办 · 月视图 · 便签板<br/>快传箱 · NAS 状态 · Docker 看板"]
-      FLOAT["悬浮待办窗 (floating)<br/>全部分组 · 右键菜单 · 贴边隐藏"]
+      FLOAT["悬浮待办窗 (floating)<br/>全部分组 · 右键菜单 · 贴边悬停/移开"]
       STICKY_W["独立便利贴窗 (sticky-{id})"]
     end
     subgraph Core["Rust 核心层（crates/core + src-tauri）"]
@@ -58,7 +58,7 @@ flowchart LR
   NAS[("极空间 NAS<br/>记事本 · 文件 · 系统 · Docker")]
 
   RAIL --> MODS
-  MODS & FLOAT & STICKY_W <-->|55 个 Tauri IPC 命令 / Events| Core
+  MODS & FLOAT & STICKY_W <-->|57 个 Tauri IPC 命令 / Events| Core
   TS --> RE
   TS & SS --> NP --> CLI -->|HTTPS OAuth / LAN| NAS
   TB --> NP
@@ -135,16 +135,16 @@ flowchart LR
 
 ### 4.2 待办悬浮窄窗（`FloatingWindow`）
 - 无边框置顶窄窗（默认约 `350×520`，快捷键 `Ctrl/Cmd + Shift + M` 随时呼出或隐藏）。
-- 顶部显示「**待办**」并带有显式 `data-tauri-drag-region` 拖拽条；列表展示**全部活跃待办**并按 **已逾期 / 今天 / 本周 / 以后 / 无日期** 分组折叠。
-- 贴靠屏幕左/右/上边缘 20px 内自动收起为窄书签条；悬停或快捷键可再次展开；支持 `TaskContextMenu` 右键操作。
+- 顶部显示「**待办**」并带有显式 `data-tauri-drag-region` 拖拽条；列表展示**全部活跃待办**并按 **已逾期 / 今天 / 本周 / 以后 / 无日期** 分组折叠；支持 `TaskContextMenu` 右键操作。
+- 贴靠屏幕左/右/上边缘 20px 内自动收起为窄书签条；**鼠标悬停在书签上会贴边临时展开，移开鼠标自动折叠回书签；点击书签（或点「移开固定」）则会向内移开一段距离（48px）并保持常驻展开**。
 
 ### 4.3 文件快传箱（`FileDropView`）
 - 底层调用 `zspace-cli` 的 `file space` / `file list` / `file mkdir` / `file upload` / `file download` / `search files`。
 - 通过 Tauri 2 WebView `onDragDropEvent` 捕获系统原生态文件拖入事件，直接获取本机真实文件路径批量上传到 NAS 当前目录或预设快传目录（`nas_drop_dir`）；同时支持 `tauri-plugin-dialog` 选择本地文件上传或选择本地保存路径下载。
 
 ### 4.4 NAS 状态看板与消息（`NasStatusView`）
-- 并发聚合 `system info`（基础信息/CPU/内存/风扇/网络）、`storage info`（存储池与容量）与 `system disk`（磁盘健康与挂载状态）。
-- 下方集成 `system events` 消息中心，展示 NAS 系统/通知事件，支持类型筛选、单条已读与全部已读（`--yes`）。
+- 并发聚合 `system info`（含 `include_polling: true` 实时指标：基础信息/CPU/内存/风扇/网络）、`storage info`（存储池 `pool_list` 与容量）与 `system disk`（磁盘健康与挂载状态）。
+- 下方集成 `system events` 消息中心，默认聚焦「**通知**」分类（可选「日志 / 全部」），支持单条已读与全部已读（`--yes`）。
 
 ### 4.5 Docker 看板（`DockerBoardView`）
 - 调用 `zspace-cli docker containers` 查询容器列表（`action=list`）与实时资源占用（`action=stats`）。
