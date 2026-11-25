@@ -1,38 +1,43 @@
 import { listen } from "@tauri-apps/api/event";
 import {
+  CheckSquare,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
-  ChevronDown,
   Maximize2,
   PanelRightClose,
   RefreshCw,
-  Sun,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { CreateTaskInput, Task } from "../types";
-import { isTaskOverdue } from "../utils/date";
+import { addDays, effectiveDue, isTaskOverdue, parseDate, todayStr } from "../utils/date";
+import { usePrefs } from "../utils/prefs";
 import { QuickAddBar } from "./QuickAddBar";
 import { TaskListItem } from "./TaskListItem";
 
 type DockEdge = "left" | "right" | "top" | null;
+type GroupKey = "overdue" | "today" | "week" | "later" | "unscheduled";
 
 /**
  * Layer 1: Frameless always-on-top floating quick window (`/?mode=floating`).
+ * - Shows ALL active tasks grouped by 已逾期 / 今天 / 本周 / 以后 / 无日期.
  * - Syncs in real time with MainWindow via `tasks:changed` and `tasks:synced`.
  * - Auto-folds into an edge bookmark tab when dragged close to left/right/top screen edge
  *   (or via the header fold button); click the bookmark to expand back.
  */
 export function FloatingWindow() {
+  const prefs = usePrefs();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [busy, setBusy] = useState(false);
   const [dockEdge, setDockEdge] = useState<DockEdge>(null);
+  const [collapsed, setCollapsed] = useState<Partial<Record<GroupKey, boolean>>>({});
   const inputRef = useRef<HTMLInputElement>(null);
 
   async function refresh() {
     try {
-      const list = await api.listTasks("today", undefined, "date");
+      const list = await api.listTasks("all", undefined, "date");
       setTasks(list);
     } catch {
       // Ignore if not logged in yet.
@@ -90,8 +95,43 @@ export function FloatingWindow() {
     }
   }
 
-  const overdue = tasks.filter(isTaskOverdue);
-  const today = tasks.filter((t) => !isTaskOverdue(t));
+  const { groups, overdueCount } = useMemo(() => {
+    const today = todayStr();
+    const dow = parseDate(today).getDay(); // 0=Sun..6=Sat
+    const daysToEnd = prefs.weekStart === "mon" ? (7 - dow) % 7 : 6 - dow;
+    const weekEnd = addDays(today, daysToEnd);
+
+    const overdue: Task[] = [];
+    const todayList: Task[] = [];
+    const week: Task[] = [];
+    const later: Task[] = [];
+    const unscheduled: Task[] = [];
+
+    for (const t of tasks) {
+      const due = effectiveDue(t);
+      if (isTaskOverdue(t)) {
+        overdue.push(t);
+      } else if (!due) {
+        unscheduled.push(t);
+      } else if (due.date <= today) {
+        todayList.push(t);
+      } else if (due.date <= weekEnd) {
+        week.push(t);
+      } else {
+        later.push(t);
+      }
+    }
+
+    const list: { key: GroupKey; label: string; tone: "danger" | "primary" | "default"; items: Task[] }[] = [
+      { key: "overdue", label: "已逾期", tone: "danger", items: overdue },
+      { key: "today", label: "今天", tone: "primary", items: todayList },
+      { key: "week", label: "本周", tone: "default", items: week },
+      { key: "later", label: "以后", tone: "default", items: later },
+      { key: "unscheduled", label: "无日期", tone: "default", items: unscheduled },
+    ];
+    return { groups: list.filter((g) => g.items.length > 0), overdueCount: overdue.length };
+  }, [tasks, prefs.weekStart]);
+
   const totalCount = tasks.length;
 
   // Compact edge-docked bookmark tab
@@ -107,7 +147,7 @@ export function FloatingWindow() {
     return (
       <button
         type="button"
-        title="点击展开快捷悬浮窗"
+        title="点击展开待办悬浮窗"
         onClick={() => void api.undockFloatingWindow()}
         className={`group flex h-screen w-screen cursor-pointer items-center justify-center border border-blue-200 bg-white/95 text-slate-800 shadow-lg backdrop-blur transition hover:bg-blue-50 ${radiusClass} ${
           isTop ? "flex-row gap-2 px-3" : "flex-col gap-1.5 py-2"
@@ -115,10 +155,10 @@ export function FloatingWindow() {
       >
         {isTop ? (
           <>
-            <Sun className="h-3.5 w-3.5 text-amber-500" />
-            <span className="text-xs font-semibold">今日 {totalCount}</span>
-            {overdue.length > 0 && (
-              <span className="h-2 w-2 rounded-full bg-red-500" title={`${overdue.length} 项逾期`} />
+            <CheckSquare className="h-3.5 w-3.5 text-blue-600" />
+            <span className="text-xs font-semibold">待办 {totalCount}</span>
+            {overdueCount > 0 && (
+              <span className="h-2 w-2 rounded-full bg-red-500" title={`${overdueCount} 项逾期`} />
             )}
             <ChevronDown className="h-3.5 w-3.5 text-blue-600 transition group-hover:translate-y-0.5" />
           </>
@@ -130,11 +170,11 @@ export function FloatingWindow() {
               <ChevronLeft className="h-3.5 w-3.5 text-blue-600 transition group-hover:-translate-x-0.5" />
             )}
             <span className="text-[11px] font-semibold leading-tight tracking-widest [writing-mode:vertical-rl]">
-              今日待办
+              待办
             </span>
             <span
               className={`flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-bold text-white ${
-                overdue.length > 0 ? "bg-red-500" : "bg-blue-600"
+                overdueCount > 0 ? "bg-red-500" : "bg-blue-600"
               }`}
             >
               {totalCount}
@@ -151,13 +191,14 @@ export function FloatingWindow() {
         <div
           data-tauri-drag-region="deep"
           title="按住拖动位置；拖到屏幕左 / 右 / 上边缘可自动收起为书签"
-          className="flex flex-1 cursor-grab items-center gap-2 py-0.5 active:cursor-grabbing"
+          className="flex flex-1 cursor-grab items-center gap-1.5 py-0.5 active:cursor-grabbing"
         >
-          <span className="text-sm font-semibold">☀️ 今天</span>
+          <CheckSquare className="h-4 w-4 text-blue-600" />
+          <span className="text-sm font-semibold text-slate-900">待办</span>
           <span className="text-xs text-slate-400">
-            {today.length} 项
-            {overdue.length > 0 && (
-              <span className="text-red-500"> · {overdue.length} 项逾期</span>
+            {totalCount} 项
+            {overdueCount > 0 && (
+              <span className="text-red-500"> · {overdueCount} 逾期</span>
             )}
           </span>
         </div>
@@ -208,37 +249,45 @@ export function FloatingWindow() {
         <QuickAddBar compact inputRef={inputRef} busy={busy} onCreate={handleCreate} />
       </div>
 
-      <div className="flex-1 overflow-y-auto px-1">
-        {overdue.length > 0 && (
-          <>
-            <div className="bg-red-50/60 px-2.5 py-1 text-[11px] font-semibold text-red-600">
-              已逾期 · {overdue.length}
-            </div>
-            {overdue.map((t) => (
-              <TaskListItem
-                key={t.id}
-                task={t}
-                compact
-                onSelect={(item) => void api.openMainWindow(item.id)}
-                onToggle={(item) => void handleToggle(item)}
-              />
-            ))}
-          </>
-        )}
-
-        <div className="px-2.5 py-1 text-[11px] font-semibold text-slate-400">今天</div>
-        {today.length === 0 ? (
-          <div className="p-4 text-center text-xs text-slate-400">今天没有待办 🎉</div>
+      <div className="flex-1 overflow-y-auto px-1 pb-2">
+        {groups.length === 0 ? (
+          <div className="p-8 text-center text-xs text-slate-400">暂无待办 🎉</div>
         ) : (
-          today.map((t) => (
-            <TaskListItem
-              key={t.id}
-              task={t}
-              compact
-              onSelect={(item) => void api.openMainWindow(item.id)}
-              onToggle={(item) => void handleToggle(item)}
-            />
-          ))
+          groups.map((g) => {
+            const isCollapsed = Boolean(collapsed[g.key]);
+            const headerColor =
+              g.tone === "danger"
+                ? "text-red-500 bg-red-50/70"
+                : g.tone === "primary"
+                ? "text-blue-600 bg-white/95"
+                : "text-slate-500 bg-white/95";
+
+            return (
+              <div key={g.key}>
+                <button
+                  type="button"
+                  onClick={() => setCollapsed((c) => ({ ...c, [g.key]: !c[g.key] }))}
+                  className={`sticky top-0 z-10 flex w-full items-center gap-1 px-2 py-1.5 text-[11px] font-semibold backdrop-blur ${headerColor}`}
+                >
+                  <ChevronRight
+                    className={`h-3 w-3 transition-transform ${isCollapsed ? "" : "rotate-90"}`}
+                  />
+                  <span>{g.label}</span>
+                  <span className="font-normal opacity-75">{g.items.length}</span>
+                </button>
+                {!isCollapsed &&
+                  g.items.map((t) => (
+                    <TaskListItem
+                      key={t.id}
+                      task={t}
+                      compact
+                      onSelect={(item) => void api.openMainWindow(item.id)}
+                      onToggle={(item) => void handleToggle(item)}
+                    />
+                  ))}
+              </div>
+            );
+          })
         )}
       </div>
 
