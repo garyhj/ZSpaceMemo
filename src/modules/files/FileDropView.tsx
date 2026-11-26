@@ -5,10 +5,9 @@ import {
   Download,
   File as FileIcon,
   Folder,
-  FolderPlus,
   FolderUp,
-  Home,
   Loader2,
+  Lock,
   RefreshCw,
   Search,
   Upload,
@@ -60,9 +59,7 @@ function parseEntries(data: Record<string, unknown>, basePath: string): NasEntry
   return arr.map((r) => {
     const name = String(r.name ?? r.file_name ?? r.filename ?? "");
     const rawPath = r.path ?? r.file_path ?? r.full_path;
-    const path = rawPath
-      ? String(rawPath)
-      : `${basePath.replace(/\/$/, "")}/${name}`;
+    const path = rawPath ? String(rawPath) : `${basePath.replace(/\/$/, "")}/${name}`;
     const ftype = String(r.ftype ?? r.type ?? "");
     const isDir =
       Boolean(r.is_dir ?? r.isDir ?? r.dir) ||
@@ -97,16 +94,13 @@ function extractSpaces(data: Record<string, unknown>): string[] {
 }
 
 export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
-  const [spaces, setSpaces] = useState<string[]>([]);
-  const [currentDir, setCurrentDir] = useState<string>(settings?.nas_drop_dir || "");
+  const [lockedDir, setLockedDir] = useState<string>("");
   const [entries, setEntries] = useState<NasEntry[]>([]);
   const [query, setQuery] = useState("");
   const [searchMode, setSearchMode] = useState(false);
   const [loading, setLoading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [jobs, setJobs] = useState<UploadJob[]>([]);
-  const [creatingDir, setCreatingDir] = useState(false);
-  const [newDirName, setNewDirName] = useState("");
 
   async function loadDir(path: string) {
     if (!path) return;
@@ -116,32 +110,78 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
       const res = await api.nasFileList(path);
       setEntries(parseEntries(res, path));
     } catch (e) {
-      onToast(`读取目录失败：${String(e)}`);
+      onToast(`读取「我的文件/downloads」失败：${String(e)}`);
     } finally {
       setLoading(false);
     }
   }
 
-  async function initSpaces() {
+  async function initDownloadsDir() {
     setLoading(true);
+    setSearchMode(false);
     try {
       const res = await api.nasFileSpace();
-      const found = extractSpaces(res);
-      setSpaces(found);
-      const initial = settings?.nas_drop_dir || found[0] || "";
-      if (initial) {
-        setCurrentDir(initial);
-        await loadDir(initial);
+      const spaces = extractSpaces(res);
+      if (spaces.length === 0) {
+        onToast("未检测到极空间「个人空间 / 我的文件」根目录");
+        return;
       }
+
+      // 1. Fast path: reuse already-resolved `.../downloads` if it lives under one of personal_spaces.
+      const saved = settings?.nas_drop_dir?.replace(/\/+$/, "") || "";
+      if (saved && /\/downloads$/i.test(saved) && spaces.some((s) => saved.startsWith(`${s.replace(/\/+$/, "")}/`))) {
+        try {
+          const listRes = await api.nasFileList(saved, 0, 100);
+          setLockedDir(saved);
+          setEntries(parseEntries(listRes, saved));
+          return;
+        } catch {
+          // Fall through to full discovery across personal spaces.
+        }
+      }
+
+      // 2. Scan personal spaces to find an existing `downloads` folder (exact lowercase preferred).
+      const spaceLists = await Promise.allSettled(spaces.map((s) => api.nasFileList(s, 0, 100)));
+      let targetDir = "";
+      let ciFallback = "";
+      spaces.forEach((space, idx) => {
+        const result = spaceLists[idx];
+        if (result.status !== "fulfilled") return;
+        const items = parseEntries(result.value, space);
+        const exact = items.find((item) => item.isDir && item.name === "downloads");
+        if (exact && !targetDir) targetDir = exact.path;
+        const ci = items.find((item) => item.isDir && item.name.toLowerCase() === "downloads");
+        if (ci && !ciFallback) ciFallback = ci.path;
+      });
+
+      targetDir = targetDir || ciFallback;
+
+      // 3. Create `我的文件/downloads` on primary personal space if it does not exist yet.
+      if (!targetDir) {
+        const primary = spaces[0].replace(/\/+$/, "");
+        await api.nasMkdir(primary, "downloads");
+        targetDir = `${primary}/downloads`;
+      }
+
+      setLockedDir(targetDir);
+      if (settings && settings.nas_drop_dir !== targetDir) {
+        const next = { ...settings, nas_drop_dir: targetDir };
+        api
+          .saveSettings(next)
+          .then(() => onSettingsChanged(next))
+          .catch(() => {});
+      }
+      const listRes = await api.nasFileList(targetDir, 0, 100);
+      setEntries(parseEntries(listRes, targetDir));
     } catch (e) {
-      onToast(`获取极空间存储目录失败：${String(e)}`);
+      onToast(`定位「我的文件/downloads」失败：${String(e)}`);
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    void initSpaces();
+    void initDownloadsDir();
   }, []);
 
   // Listen to native OS drag-drop onto this window when FileDropView is mounted
@@ -161,22 +201,22 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
     return () => {
       void un.then((f) => f());
     };
-  }, [currentDir]);
+  }, [lockedDir]);
 
   async function enqueueUploads(paths: string[]) {
-    if (!currentDir) {
-      onToast("请先选择或等待加载目标 NAS 目录");
+    if (!lockedDir) {
+      onToast("正在定位「我的文件/downloads」目录，请稍后再试");
       return;
     }
     for (const p of paths) {
       const name = p.split(/[\\/]/).pop() || p;
       const jobId = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
       setJobs((prev) => [
-        { id: jobId, name, localPath: p, destDir: currentDir, status: "uploading" },
+        { id: jobId, name, localPath: p, destDir: "我的文件/downloads", status: "uploading" },
         ...prev.slice(0, 19),
       ]);
       try {
-        await api.nasUploadFile(p, currentDir, true);
+        await api.nasUploadFile(p, lockedDir, true);
         setJobs((prev) =>
           prev.map((j) => (j.id === jobId ? { ...j, status: "done" } : j))
         );
@@ -188,10 +228,14 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
         );
       }
     }
-    void loadDir(currentDir);
+    void loadDir(lockedDir);
   }
 
   async function handlePickUpload() {
+    if (!lockedDir) {
+      onToast("正在定位「我的文件/downloads」目录，请稍候");
+      return;
+    }
     const picked = await open({ multiple: true, directory: false });
     if (!picked) return;
     const list = Array.isArray(picked) ? picked : [picked];
@@ -215,47 +259,21 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
   async function handleSearch() {
     const q = query.trim();
     if (!q) {
-      if (currentDir) void loadDir(currentDir);
+      if (lockedDir) void loadDir(lockedDir);
       return;
     }
+    if (!lockedDir) return;
     setLoading(true);
     setSearchMode(true);
     try {
-      const res = await api.nasSearchFiles(q, currentDir || null);
-      setEntries(parseEntries(res, currentDir));
+      const res = await api.nasSearchFiles(q, lockedDir);
+      setEntries(parseEntries(res, lockedDir));
     } catch (e) {
       onToast(`搜索失败：${String(e)}`);
     } finally {
       setLoading(false);
     }
   }
-
-  async function setAsDefaultDropDir() {
-    if (!settings || !currentDir) return;
-    const next = { ...settings, nas_drop_dir: currentDir };
-    await api.saveSettings(next);
-    onSettingsChanged(next);
-    onToast(`已将「${currentDir}」设为默认投递目录`);
-  }
-
-  async function handleMkdir() {
-    const name = newDirName.trim();
-    if (!name || !currentDir) return;
-    setCreatingDir(false);
-    setNewDirName("");
-    try {
-      await api.nasMkdir(currentDir, name);
-      onToast(`已创建文件夹「${name}」`);
-      void loadDir(currentDir);
-    } catch (e) {
-      onToast(`创建文件夹失败：${String(e)}`);
-    }
-  }
-
-  const rootSpace = spaces.find((s) => currentDir.startsWith(s)) ?? spaces[0] ?? "/";
-  const relSegments = currentDir.startsWith(rootSpace)
-    ? currentDir.slice(rootSpace.length).split("/").filter(Boolean)
-    : [];
 
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-white">
@@ -264,7 +282,7 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
         <div>
           <h1 className="text-lg font-semibold tracking-tight text-slate-900">文件快传箱</h1>
           <p className="text-[11px] text-slate-400">
-            拖入桌面文件即可上传到极空间，或按关键词搜索 NAS 文件一键下载
+            专用中转目录，固定收发于极空间「个人空间 / 我的文件/downloads」
           </p>
         </div>
 
@@ -275,15 +293,15 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && void handleSearch()}
-              placeholder="搜索 NAS 文件，回车搜索"
-              className="w-44 bg-transparent text-xs outline-none placeholder:text-slate-400"
+              placeholder="搜索 downloads 内文件，回车"
+              className="w-48 bg-transparent text-xs outline-none placeholder:text-slate-400"
             />
             {query && (
               <button
                 type="button"
                 onClick={() => {
                   setQuery("");
-                  if (currentDir) void loadDir(currentDir);
+                  if (lockedDir) void loadDir(lockedDir);
                 }}
                 className="text-slate-400 hover:text-slate-600"
               >
@@ -294,7 +312,7 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
 
           <button
             type="button"
-            onClick={() => currentDir && void loadDir(currentDir)}
+            onClick={() => (lockedDir ? void loadDir(lockedDir) : void initDownloadsDir())}
             className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin text-blue-500" : ""}`} />
@@ -312,8 +330,8 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
         </div>
       </div>
 
-      {/* Drop Zone + Target Directory Bar */}
-      <div className="border-b border-slate-100 bg-slate-50/60 px-5 py-3 space-y-2.5">
+      {/* Drop Zone + Locked Directory Indicator */}
+      <div className="border-b border-slate-100 bg-slate-50/60 px-5 py-3 space-y-2">
         <div
           onClick={() => void handlePickUpload()}
           className={`flex cursor-pointer items-center justify-center gap-3 rounded-xl border-2 border-dashed py-4 transition ${
@@ -326,106 +344,26 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
           <div className="text-xs">
             <span className="font-medium text-slate-700">把电脑上的文件拖到这里</span>
             <span className="text-slate-400">（或点击选择文件），将直接上传至：</span>
-            <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-blue-600">
-              {currentDir || "正在获取个人空间…"}
+            <code className="rounded bg-blue-50 px-1.5 py-0.5 font-mono text-[11px] font-medium text-blue-600">
+              我的文件/downloads
             </code>
           </div>
         </div>
 
-        {/* Space selector + Breadcrumb + Mkdir + Set Default */}
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          {spaces.length > 1 && (
-            <select
-              value={rootSpace}
-              onChange={(e) => {
-                setCurrentDir(e.target.value);
-                void loadDir(e.target.value);
-              }}
-              className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs"
-            >
-              {spaces.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          )}
-
-          <div className="flex flex-wrap items-center gap-1 text-slate-600">
-            <button
-              type="button"
-              onClick={() => {
-                setCurrentDir(rootSpace);
-                void loadDir(rootSpace);
-              }}
-              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-slate-200/70"
-            >
-              <Home className="h-3.5 w-3.5 text-slate-400" />
-              <span>{rootSpace}</span>
-            </button>
-            {relSegments.map((seg, i) => {
-              const target = `${rootSpace.replace(/\/$/, "")}/${relSegments.slice(0, i + 1).join("/")}`;
-              return (
-                <span key={target} className="flex items-center gap-1">
-                  <span className="text-slate-300">/</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCurrentDir(target);
-                      void loadDir(target);
-                    }}
-                    className="rounded px-1.5 py-0.5 hover:bg-slate-200/70"
-                  >
-                    {seg}
-                  </button>
-                </span>
-              );
-            })}
-          </div>
-
-          <div className="ml-auto flex items-center gap-2">
-            {creatingDir ? (
-              <div className="flex items-center gap-1">
-                <input
-                  autoFocus
-                  value={newDirName}
-                  onChange={(e) => setNewDirName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") void handleMkdir();
-                    if (e.key === "Escape") setCreatingDir(false);
-                  }}
-                  placeholder="新建文件夹名"
-                  className="w-28 rounded border border-blue-400 bg-white px-2 py-0.5 text-xs outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => void handleMkdir()}
-                  className="rounded bg-blue-600 px-2 py-0.5 text-white"
-                >
-                  确定
-                </button>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setCreatingDir(true)}
-                className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-slate-600 hover:bg-slate-100"
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+          <div className="inline-flex items-center gap-1.5">
+            <Lock className="h-3.5 w-3.5 text-blue-600" />
+            <span>固定目录：个人空间 · 我的文件/downloads</span>
+            {lockedDir && (
+              <code
+                title={lockedDir}
+                className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-400"
               >
-                <FolderPlus className="h-3.5 w-3.5" />
-                新建文件夹
-              </button>
-            )}
-
-            {currentDir && currentDir !== settings?.nas_drop_dir && (
-              <button
-                type="button"
-                onClick={() => void setAsDefaultDropDir()}
-                className="rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-blue-600 hover:bg-blue-100"
-              >
-                设为默认投递目录
-              </button>
+                {lockedDir}
+              </code>
             )}
           </div>
+          <span className="text-[11px] text-slate-400">共 {entries.length} 项</span>
         </div>
       </div>
 
@@ -461,34 +399,32 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
       <div className="flex-1 overflow-y-auto px-3 py-2">
         {searchMode && (
           <div className="mb-2 flex items-center justify-between px-2 text-xs text-blue-600">
-            <span>搜索「{query}」的结果（共 {entries.length} 项）</span>
+            <span>在「我的文件/downloads」中搜索「{query}」的结果（共 {entries.length} 项）</span>
             <button
               type="button"
               onClick={() => {
                 setQuery("");
-                if (currentDir) void loadDir(currentDir);
+                if (lockedDir) void loadDir(lockedDir);
               }}
               className="hover:underline"
             >
-              返回目录浏览
+              返回目录列表
             </button>
           </div>
         )}
         {entries.length === 0 ? (
           <div className="py-16 text-center text-sm text-slate-400">
-            {loading ? "正在加载…" : searchMode ? "未找到匹配的文件" : "当前目录为空"}
+            {loading
+              ? "正在加载「我的文件/downloads」…"
+              : searchMode
+              ? "未找到匹配的文件"
+              : "「我的文件/downloads」目录为空"}
           </div>
         ) : (
           <div className="divide-y divide-slate-100">
             {entries.map((entry) => (
               <div
                 key={entry.path}
-                onDoubleClick={() => {
-                  if (entry.isDir) {
-                    setCurrentDir(entry.path);
-                    void loadDir(entry.path);
-                  }
-                }}
                 className="flex items-center gap-3 rounded-lg px-2.5 py-2 text-sm hover:bg-slate-50"
               >
                 {entry.isDir ? (
@@ -496,23 +432,18 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
                 ) : (
                   <FileIcon className="h-4 w-4 shrink-0 text-slate-400" />
                 )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (entry.isDir) {
-                      setCurrentDir(entry.path);
-                      void loadDir(entry.path);
-                    }
-                  }}
-                  className={`min-w-0 flex-1 truncate text-left ${
-                    entry.isDir ? "font-medium text-slate-800 hover:text-blue-600" : "text-slate-700"
+                <span
+                  className={`min-w-0 flex-1 truncate ${
+                    entry.isDir ? "font-medium text-slate-500" : "text-slate-700"
                   }`}
                 >
                   {entry.name}
-                  {searchMode && (
-                    <span className="ml-2 text-[11px] font-normal text-slate-400">{entry.path}</span>
+                  {entry.isDir && (
+                    <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-normal text-slate-400">
+                      子目录已锁定
+                    </span>
                   )}
-                </button>
+                </span>
                 <span className="w-20 text-right text-xs tabular-nums text-slate-400">
                   {entry.isDir ? "文件夹" : formatBytes(entry.size)}
                 </span>

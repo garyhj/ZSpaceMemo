@@ -1,17 +1,26 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { BellRing, FolderOpen, LogOut, RefreshCw, Sparkles, X } from "lucide-react";
+import { BellRing, Download, FolderOpen, LogOut, RefreshCw, Sparkles, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { AppSettings, AuthStatus } from "../types";
 import { setPrefs, usePrefs } from "../utils/prefs";
-import { checkLatestRelease, type ReleaseUpdateInfo } from "../utils/updater";
+import {
+  checkLatestRelease,
+  formatBytesCompact,
+  type ReleaseUpdateInfo,
+  type UpdateProgressEvent,
+} from "../utils/updater";
 import { TimePicker } from "./TimePicker";
 
 interface Props {
   auth: AuthStatus;
   updateInfo?: ReleaseUpdateInfo | null;
+  updateProgress?: UpdateProgressEvent | null;
+  installingUpdate?: boolean;
+  updateError?: string | null;
   onUpdateChecked?: (info: ReleaseUpdateInfo) => void;
+  onInstallUpdate?: (info: ReleaseUpdateInfo) => Promise<void>;
   onClose: () => void;
   onLogout: () => Promise<void>;
   onSettingsChanged: (settings: AppSettings) => void;
@@ -20,7 +29,11 @@ interface Props {
 export function SettingsModal({
   auth,
   updateInfo,
+  updateProgress,
+  installingUpdate = false,
+  updateError,
   onUpdateChecked,
+  onInstallUpdate,
   onClose,
   onLogout,
   onSettingsChanged,
@@ -29,7 +42,7 @@ export function SettingsModal({
   const [tab, setTab] = useState<"general" | "shortcuts">("general");
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [notifPerm, setNotifPerm] = useState<"granted" | "denied" | "prompt" | "unknown">("unknown");
-  const [appVersion, setAppVersion] = useState("0.4.0");
+  const [appVersion, setAppVersion] = useState("0.4.1");
   const [localUpdate, setLocalUpdate] = useState<ReleaseUpdateInfo | null>(updateInfo ?? null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -378,17 +391,17 @@ export function SettingsModal({
                 <div className="flex items-center gap-1.5">
                   <button
                     type="button"
-                    disabled={checkingUpdate}
+                    disabled={checkingUpdate || installingUpdate}
                     onClick={async () => {
                       setCheckingUpdate(true);
                       setMsg("");
                       try {
-                        const info = await checkLatestRelease(appVersion);
+                        const info = await checkLatestRelease();
                         setLocalUpdate(info);
                         onUpdateChecked?.(info);
                         setMsg(
-                          info.hasUpdate
-                            ? `发现新版本 v${info.latestVersion}，可点击前往 GitHub Releases 下载`
+                          info.has_update
+                            ? `发现新版本 v${info.latest_version}，可直接点击下方「立即应用内更新」`
                             : `当前 v${appVersion} 已是最新版本`
                         );
                       } catch (e) {
@@ -420,19 +433,60 @@ export function SettingsModal({
                 </div>
               </div>
 
-              {localUpdate?.hasUpdate && (
-                <div className="flex items-center justify-between rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">
-                  <span className="inline-flex items-center gap-1.5 font-medium">
-                    <Sparkles className="h-3.5 w-3.5" />
-                    新版本 v{localUpdate.latestVersion} 已发布
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => void openUrl(localUpdate.url)}
-                    className="rounded-md bg-blue-600 px-2.5 py-1 font-medium text-white hover:bg-blue-700"
-                  >
-                    前往下载
-                  </button>
+              {localUpdate?.has_update && (
+                <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs text-blue-800 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 font-medium">
+                      <Sparkles className="h-3.5 w-3.5 text-blue-600" />
+                      发现新版本 v{localUpdate.latest_version}
+                      {localUpdate.asset_size ? (
+                        <span className="font-normal text-blue-600">
+                          （{formatBytesCompact(localUpdate.asset_size)}）
+                        </span>
+                      ) : null}
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      {localUpdate.auto_install_supported && onInstallUpdate && (
+                        <button
+                          type="button"
+                          disabled={installingUpdate}
+                          onClick={() => void onInstallUpdate(localUpdate)}
+                          className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1 font-medium text-white hover:bg-blue-700 disabled:opacity-60"
+                        >
+                          <Download className="h-3 w-3" />
+                          {installingUpdate ? "正在更新…" : "立即应用内更新"}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => void openUrl(localUpdate.release_url)}
+                        className="rounded-md border border-blue-200 bg-white px-2 py-1 text-blue-700 hover:bg-blue-100"
+                      >
+                        发布页
+                      </button>
+                    </div>
+                  </div>
+
+                  {updateProgress && installingUpdate && (
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-[11px] text-blue-700">
+                        <span>{updateProgress.message}</span>
+                        <span className="tabular-nums">
+                          {updateProgress.total
+                            ? `${formatBytesCompact(updateProgress.downloaded)} / ${formatBytesCompact(updateProgress.total)} · ${updateProgress.percent}%`
+                            : `${formatBytesCompact(updateProgress.downloaded)}`}
+                        </span>
+                      </div>
+                      <div className="h-1.5 overflow-hidden rounded-full bg-blue-200">
+                        <div
+                          className="h-full rounded-full bg-blue-600 transition-all duration-150"
+                          style={{ width: `${Math.max(4, updateProgress.percent)}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {updateError && <div className="text-[11px] text-red-600">{updateError}</div>}
                 </div>
               )}
             </div>

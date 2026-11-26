@@ -2,6 +2,17 @@
 
 All notable changes to **ZSpace Kit（极空工具箱）** (repository `ZSpaceMemo`) are documented in this file.
 
+## [0.4.1] - 2026-11-26
+
+### Added
+- **支持真正的应用内更新（下载 → SHA-256 校验 → 自动安装重启）**：
+  - 发现新版本时，主窗口右下角与「设置 → 版本与诊断日志」均可直接点击 **「立即应用内更新」**；由 Rust 后端（`updater.rs`）流式下载对应平台安装包、实时推送下载进度条与百分比，并在运行前强制校验 GitHub Release 提供的 `SHA-256` 摘要。
+  - 校验通过后自动关闭当前进程并启动安装器完成覆盖更新与重启（Windows 自动适配 per-user `-setup.exe` 静默升级或 `Program Files` `.msi`；macOS 自动替换 `.app` 包或挂载 `.dmg`）。
+
+### Changed
+- **文件快传箱严格锁定至 `我的文件/downloads`**：
+  - 打开后自动探测个人空间（`personal_spaces`）下已有的 `我的文件/downloads` 目录（不存在时自动在主空间创建），移除盘符选择器、面包屑跳转、目录切换与新建文件夹功能，确保快传文件集中收发不走偏。
+
 ## [0.4.0] - 2026-11-26
 
 ### Fixed

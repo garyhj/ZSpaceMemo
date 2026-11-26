@@ -1,6 +1,6 @@
 [package]
 name = "zspace-memo"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 license = "MIT"
 description = "ZSpace Memo Tauri 2 desktop application (Windows / macOS)"
@@ -27,6 +27,9 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 tauri-plugin-single-instance = "2"
 tauri-plugin-dialog = "2"
+base64 = "0.22"
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "charset", "http2", "system-proxy"] }
+sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.8"

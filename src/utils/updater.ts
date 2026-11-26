@@ -1,58 +1,44 @@
+import { api } from "../api";
+
 export interface ReleaseUpdateInfo {
-  latestVersion: string;
-  currentVersion: string;
-  hasUpdate: boolean;
-  url: string;
-  publishedAt?: string;
-  notes?: string;
+  current_version: string;
+  latest_version: string;
+  has_update: boolean;
+  release_url: string;
+  release_notes: string;
+  published_at?: string | null;
+  asset_name?: string | null;
+  download_url?: string | null;
+  asset_size?: number | null;
+  asset_sha256?: string | null;
+  auto_install_supported: boolean;
 }
 
-export function compareSemver(a: string, b: string): number {
-  const pa = a
-    .replace(/^v/i, "")
-    .split(".")
-    .map((n) => parseInt(n, 10) || 0);
-  const pb = b
-    .replace(/^v/i, "")
-    .split(".")
-    .map((n) => parseInt(n, 10) || 0);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const da = pa[i] ?? 0;
-    const db = pb[i] ?? 0;
-    if (da !== db) return da - db;
-  }
-  return 0;
+export interface UpdateProgressEvent {
+  phase: "downloading" | "verifying" | "installing" | "error" | "done";
+  downloaded: number;
+  total?: number | null;
+  percent: number;
+  message: string;
 }
 
-export async function checkLatestRelease(currentVersion: string): Promise<ReleaseUpdateInfo> {
-  const ctrl = new AbortController();
-  const timer = window.setTimeout(() => ctrl.abort(), 5000);
-  try {
-    const resp = await fetch("https://api.github.com/repos/garyhj/ZSpaceMemo/releases/latest", {
-      headers: { Accept: "application/vnd.github+json" },
-      signal: ctrl.signal,
-    });
-    if (!resp.ok) {
-      throw new Error(`HTTP ${resp.status}`);
-    }
-    const data = (await resp.json()) as {
-      tag_name?: string;
-      html_url?: string;
-      published_at?: string;
-      body?: string;
-    };
-    const rawTag = String(data.tag_name ?? "").trim();
-    const latestVersion = rawTag.replace(/^v/i, "");
-    const cleanCurrent = currentVersion.replace(/^v/i, "");
-    return {
-      latestVersion,
-      currentVersion: cleanCurrent,
-      hasUpdate: Boolean(latestVersion) && compareSemver(latestVersion, cleanCurrent) > 0,
-      url: data.html_url || "https://github.com/garyhj/ZSpaceMemo/releases/latest",
-      publishedAt: data.published_at,
-      notes: data.body,
-    };
-  } finally {
-    window.clearTimeout(timer);
+export async function checkLatestRelease(): Promise<ReleaseUpdateInfo> {
+  return api.checkAppUpdate();
+}
+
+export async function startInAppUpdate(info: ReleaseUpdateInfo): Promise<void> {
+  if (!info.download_url || !info.asset_name) {
+    throw new Error("当前平台暂无可自动安装的更新包，请前往 GitHub Releases 手动下载");
   }
+  return api.installAppUpdate(
+    info.download_url,
+    info.asset_name,
+    info.asset_sha256 ?? null
+  );
+}
+
+export function formatBytesCompact(bytes?: number | null): string {
+  if (!bytes || bytes <= 0) return "";
+  const mb = bytes / (1024 * 1024);
+  return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`;
 }

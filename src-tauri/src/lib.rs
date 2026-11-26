@@ -1,5 +1,6 @@
 mod logging;
 mod scheduler;
+mod updater;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -155,7 +156,7 @@ pub fn refresh_tray_tooltip(app: &AppHandle) {
         if let Some(tray) = guard.as_ref() {
             let _ = tray.set_tooltip(Some(&tip));
         }
-    }
+    };
 }
 
 fn clamp_physical_rect_to_monitors(
@@ -1446,6 +1447,21 @@ fn open_logs_dir(app: AppHandle) -> Result<String, String> {
     Ok(path_str)
 }
 
+#[tauri::command]
+async fn check_app_update(app: AppHandle) -> Result<updater::UpdateCheckResult, String> {
+    updater::check_app_update(&app).await
+}
+
+#[tauri::command]
+async fn install_app_update(
+    app: AppHandle,
+    download_url: String,
+    asset_name: String,
+    expected_sha256: Option<String>,
+) -> Result<(), String> {
+    updater::install_app_update(app, download_url, asset_name, expected_sha256).await
+}
+
 fn resolve_cli_path(app: &AppHandle) -> PathBuf {
     if let Ok(env_path) = std::env::var("ZSPACE_CLI_BIN") {
         return PathBuf::from(env_path);
@@ -1931,6 +1947,8 @@ pub fn run() {
             set_autostart,
             get_logs_dir,
             open_logs_dir,
+            check_app_update,
+            install_app_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ZSpace Kit");

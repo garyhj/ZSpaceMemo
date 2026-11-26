@@ -1,11 +1,12 @@
-import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   AlertCircle,
   Calendar,
   CalendarClock,
   CheckCircle2,
   ChevronRight,
+  Download,
   Inbox,
   Layers,
   PanelRightOpen,
@@ -14,6 +15,7 @@ import {
   Repeat,
   Search,
   Settings,
+  Sparkles,
   Sun,
   X,
 } from "lucide-react";
@@ -33,7 +35,13 @@ import { FileDropView } from "./modules/files/FileDropView";
 import { NasStatusView } from "./modules/nas/NasStatusView";
 import { StickyBoard } from "./modules/sticky/StickyBoard";
 import { StickyFloatingCard } from "./modules/sticky/StickyFloatingCard";
-import { checkLatestRelease, type ReleaseUpdateInfo } from "./utils/updater";
+import {
+  checkLatestRelease,
+  formatBytesCompact,
+  startInAppUpdate,
+  type ReleaseUpdateInfo,
+  type UpdateProgressEvent,
+} from "./utils/updater";
 import type {
   AppSettings,
   AuthStatus,
@@ -118,7 +126,31 @@ function MainWindow() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<ReleaseUpdateInfo | null>(null);
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgressEvent | null>(null);
+  const [installingUpdate, setInstallingUpdate] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+  const [updateDismissed, setUpdateDismissed] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  async function handleInstallUpdate(info: ReleaseUpdateInfo) {
+    setInstallingUpdate(true);
+    setUpdateError(null);
+    setUpdateDismissed(false);
+    setUpdateProgress({
+      phase: "downloading",
+      downloaded: 0,
+      total: info.asset_size ?? null,
+      percent: 0,
+      message: "正在准备下载更新包…",
+    });
+    try {
+      await startInAppUpdate(info);
+    } catch (e) {
+      setUpdateError(String(e));
+      setInstallingUpdate(false);
+      setUpdateProgress(null);
+    }
+  }
   const [toast, setToast] = useState<ToastState | null>(null);
   const [conflictMsg, setConflictMsg] = useState<string | null>(null);
   const [calendarRefreshToken, setCalendarRefreshToken] = useState(0);
@@ -267,10 +299,12 @@ function MainWindow() {
         setWorkspace(ws);
       }
     });
+    const unUpdateProg = listen<UpdateProgressEvent>("update:progress", (ev) => {
+      setUpdateProgress(ev.payload);
+    });
 
     const updateTimer = window.setTimeout(() => {
-      getVersion()
-        .then((ver) => checkLatestRelease(ver))
+      checkLatestRelease()
         .then((info) => {
           setUpdateInfo(info);
         })
@@ -283,6 +317,7 @@ function MainWindow() {
       void unChanged.then((f) => f());
       void unSelect.then((f) => f());
       void unNavigate.then((f) => f());
+      void unUpdateProg.then((f) => f());
     };
   }, []);
 
@@ -813,15 +848,15 @@ function MainWindow() {
           <button
             type="button"
             title={
-              updateInfo?.hasUpdate
-                ? `设置 · 发现新版本 v${updateInfo.latestVersion}`
+              updateInfo?.has_update
+                ? `设置 · 发现新版本 v${updateInfo.latest_version}`
                 : "设置"
             }
             onClick={() => setShowSettings(true)}
             className="relative flex h-9 w-9 items-center justify-center rounded-xl text-slate-500 hover:bg-slate-200/70"
           >
             <Settings className="h-4.5 w-4.5" />
-            {updateInfo?.hasUpdate && (
+            {updateInfo?.has_update && (
               <span className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-blue-600 ring-2 ring-slate-100" />
             )}
           </button>
@@ -1235,7 +1270,14 @@ function MainWindow() {
         <SettingsModal
           auth={auth}
           updateInfo={updateInfo}
-          onUpdateChecked={setUpdateInfo}
+          updateProgress={updateProgress}
+          installingUpdate={installingUpdate}
+          updateError={updateError}
+          onUpdateChecked={(info) => {
+            setUpdateInfo(info);
+            if (info.has_update) setUpdateDismissed(false);
+          }}
+          onInstallUpdate={handleInstallUpdate}
           onClose={() => setShowSettings(false)}
           onLogout={async () => {
             await api.logout();
@@ -1247,6 +1289,78 @@ function MainWindow() {
             void refreshAll();
           }}
         />
+      )}
+
+      {updateInfo?.has_update && !updateDismissed && !showSettings && (
+        <div className="fixed bottom-5 right-5 z-40 w-80 rounded-2xl border border-slate-200 bg-white p-3.5 shadow-xl space-y-2.5">
+          <div className="flex items-start gap-2">
+            <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+              <Sparkles className="h-4 w-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-semibold text-slate-900">
+                发现新版本 v{updateInfo.latest_version}
+              </div>
+              <div className="text-[11px] text-slate-400">
+                当前 v{updateInfo.current_version}
+                {updateInfo.asset_size ? ` · 包体积 ${formatBytesCompact(updateInfo.asset_size)}` : ""}
+              </div>
+            </div>
+            {!installingUpdate && (
+              <button
+                type="button"
+                title="稍后提醒"
+                onClick={() => setUpdateDismissed(true)}
+                className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+
+          {updateProgress && installingUpdate ? (
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-[11px] text-blue-700">
+                <span className="truncate">{updateProgress.message}</span>
+                <span className="shrink-0 tabular-nums">
+                  {updateProgress.total
+                    ? `${updateProgress.percent}%`
+                    : formatBytesCompact(updateProgress.downloaded)}
+                </span>
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
+                <div
+                  className="h-full rounded-full bg-blue-600 transition-all duration-150"
+                  style={{ width: `${Math.max(4, updateProgress.percent)}%` }}
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 text-xs">
+              {updateInfo.auto_install_supported && (
+                <button
+                  type="button"
+                  onClick={() => void handleInstallUpdate(updateInfo)}
+                  className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 font-medium text-white hover:bg-blue-700"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  立即应用内更新
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => void openUrl(updateInfo.release_url)}
+                className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-slate-600 hover:bg-slate-50"
+              >
+                发布页
+              </button>
+            </div>
+          )}
+
+          {updateError && (
+            <div className="text-[11px] text-red-500">{updateError}</div>
+          )}
+        </div>
       )}
 
       {ctxMenu && (

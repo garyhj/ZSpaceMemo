@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { ReleaseUpdateInfo } from "./utils/updater";
 import type {
   AppSettings,
   AuthStatus,
@@ -139,4 +140,15 @@ export const api = {
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
   getLogsDir: () => invoke<string>("get_logs_dir"),
   openLogsDir: () => invoke<string>("open_logs_dir"),
+  checkAppUpdate: () => invoke<ReleaseUpdateInfo>("check_app_update"),
+  installAppUpdate: (
+    downloadUrl: string,
+    assetName: string,
+    expectedSha256?: string | null
+  ) =>
+    invoke<void>("install_app_update", {
+      downloadUrl,
+      assetName,
+      expectedSha256: expectedSha256 ?? null,
+    }),
 };
