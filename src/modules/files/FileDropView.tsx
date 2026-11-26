@@ -53,27 +53,45 @@ function formatBytes(bytes: number): string {
   return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
+function parseBoolFlag(v: unknown): boolean {
+  if (typeof v === "boolean") return v;
+  if (typeof v === "number") return v === 1;
+  if (typeof v === "string") {
+    const s = v.trim().toLowerCase();
+    return s === "1" || s === "true" || s === "yes" || s === "dir" || s === "folder";
+  }
+  return false;
+}
+
 function parseEntries(data: Record<string, unknown>, basePath: string): NasEntry[] {
   const candidates = [data.list, data.files, data.items, data.data, data.rows];
   const arr = (candidates.find(Array.isArray) as Record<string, unknown>[] | undefined) ?? [];
-  return arr.map((r) => {
+  const entries = arr.map((r) => {
     const name = String(r.name ?? r.file_name ?? r.filename ?? "");
     const rawPath = r.path ?? r.file_path ?? r.full_path;
     const path = rawPath ? String(rawPath) : `${basePath.replace(/\/$/, "")}/${name}`;
-    const ftype = String(r.ftype ?? r.type ?? "");
-    const isDir =
-      Boolean(r.is_dir ?? r.isDir ?? r.dir) ||
-      ftype === "dir" ||
-      ftype === "folder" ||
-      ftype === "1";
+    const ftype = String(r.ftype ?? r.type ?? "").trim().toLowerCase();
+    const hasDirFlag =
+      r.is_dir !== undefined ||
+      r.isDir !== undefined ||
+      r.dir !== undefined ||
+      r.is_folder !== undefined ||
+      r.isFolder !== undefined;
+    const isDir = hasDirFlag
+      ? parseBoolFlag(r.is_dir ?? r.isDir ?? r.dir ?? r.is_folder ?? r.isFolder)
+      : ftype === "dir" || ftype === "folder";
     const size = Number(r.size ?? r.file_size ?? 0) || 0;
-    const mt = r.mtime ?? r.updated_at ?? r.update_time ?? r.mod_time ?? "";
+    const mt =
+      r.modify_time ?? r.mtime ?? r.updated_at ?? r.update_time ?? r.mod_time ?? r.create_time ?? "";
     const mtime =
       typeof mt === "number" && mt > 0
         ? new Date(mt * (mt > 1e12 ? 1 : 1000)).toLocaleString("zh-CN", { hour12: false })
         : String(mt || "");
     return { name: name || path.split("/").pop() || path, path, isDir, size, mtime };
   });
+  return entries.sort(
+    (a, b) => Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name, "zh-CN")
+  );
 }
 
 function extractSpaces(data: Record<string, unknown>): string[] {
@@ -363,7 +381,13 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
               </code>
             )}
           </div>
-          <span className="text-[11px] text-slate-400">共 {entries.length} 项</span>
+          <span className="text-[11px] text-slate-400">
+            {entries.some((e) => e.isDir)
+              ? `${entries.filter((e) => e.isDir).length} 个目录 · ${
+                  entries.filter((e) => !e.isDir).length
+                } 个文件`
+              : `共 ${entries.length} 个文件`}
+          </span>
         </div>
       </div>
 
@@ -428,39 +452,45 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
                 className="flex items-center gap-3 rounded-lg px-2.5 py-2 text-sm hover:bg-slate-50"
               >
                 {entry.isDir ? (
-                  <Folder className="h-4 w-4 shrink-0 text-amber-500" />
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-amber-50 text-amber-500">
+                    <Folder className="h-3.5 w-3.5" />
+                  </span>
                 ) : (
-                  <FileIcon className="h-4 w-4 shrink-0 text-slate-400" />
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-slate-100 text-slate-500">
+                    <FileIcon className="h-3.5 w-3.5" />
+                  </span>
                 )}
                 <span
                   className={`min-w-0 flex-1 truncate ${
-                    entry.isDir ? "font-medium text-slate-500" : "text-slate-700"
+                    entry.isDir ? "font-medium text-slate-800" : "text-slate-700"
                   }`}
                 >
                   {entry.name}
                   {entry.isDir && (
-                    <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-normal text-slate-400">
-                      子目录已锁定
+                    <span className="ml-2 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                      目录
                     </span>
                   )}
                 </span>
                 <span className="w-20 text-right text-xs tabular-nums text-slate-400">
-                  {entry.isDir ? "文件夹" : formatBytes(entry.size)}
+                  {entry.isDir ? "—" : formatBytes(entry.size)}
                 </span>
                 <span className="hidden w-36 text-right text-[11px] text-slate-400 md:inline">
                   {entry.mtime}
                 </span>
-                {!entry.isDir && (
-                  <button
-                    type="button"
-                    title="下载到本地"
-                    onClick={() => void handleDownload(entry)}
-                    className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-600"
-                  >
-                    <Download className="h-3 w-3" />
-                    下载
-                  </button>
-                )}
+                <div className="flex w-16 shrink-0 justify-end">
+                  {!entry.isDir && (
+                    <button
+                      type="button"
+                      title="下载到本地"
+                      onClick={() => void handleDownload(entry)}
+                      className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-600"
+                    >
+                      <Download className="h-3 w-3" />
+                      下载
+                    </button>
+                  )}
+                </div>
               </div>
             ))}
           </div>

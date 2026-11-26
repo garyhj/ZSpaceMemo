@@ -1,6 +1,6 @@
 # ZSpace Kit（极空工具箱）产品与技术设计（v0.4）
 
-> 状态：**v0.4.1 已实现并发布**（Windows / macOS 双端）。
+> 状态：**v0.4.2 已实现并发布**（Windows / macOS 双端）。
 > 变更记录：
 > - v0.1：初始设计（FastAPI 服务端 + `zspace_skill` + 多端）。
 > - v0.2：采用官方 `zspace-nas-agent-toolkit`（`zspace-cli` v0.3.11）OAuth2 授权与 `file notes` 契约；简化为**纯桌面客户端架构（Tauri 2 + 内置 `zspace-cli`）**，开机自启常驻托盘，零服务端部署；时间模型简化为**截止日期 + 截止时间 + 全天**。
