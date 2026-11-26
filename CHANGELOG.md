@@ -2,6 +2,13 @@
 
 All notable changes to **ZSpace Kit（极空工具箱）** (repository `ZSpaceMemo`) are documented in this file.
 
+## [0.3.6] - 2026-11-25
+
+### Fixed
+- **修复 Windows 10/11 原生系统通知与测试通知不弹出的问题**：
+  - `tauri-plugin-notification` 默认使用 `com.garyhj.zspacememo` 作为 Toast `AppUserModelID`，在未注册对应 `HKCU\SOFTWARE\Classes\AppUserModelId\com.garyhj.zspacememo`（或 `.msi`/快捷方式未带 AUMID）时会调用失败且内部静默吞错。
+  - 启动及通知发送前自动注册当前用户的 Windows `AppUserModelId`（含 `ZSpace Kit` 名称与本地图标），绑定当前进程 AUMID，并直接使用 `tauri_winrt_notification` 同步弹出且透传真实错误信息（失败时自动回退保障可达）。
+
 ## [0.3.5] - 2026-11-25
 
 ### Fixed

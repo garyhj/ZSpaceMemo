@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
-use tauri_plugin_notification::NotificationExt;
 use tracing::{info, warn};
 use zspace_memo_core::provider::official_cli::OfficialCliNotebookProvider;
 use zspace_memo_core::service::TaskService;
@@ -58,15 +57,12 @@ pub fn spawn_background_scheduler(
                                 let _ = app.emit("nas:events-updated", &events);
                             }
                             for ev in events {
-                                let mut b = app
-                                    .notification()
-                                    .builder()
-                                    .title(&format!("极空间通知 · {}", ev.title))
-                                    .body(&ev.body);
-                                if cfg.notification_sound {
-                                    b = b.sound("Default");
-                                }
-                                if let Err(e) = b.show() {
+                                if let Err(e) = crate::send_native_notification(
+                                    &app,
+                                    &format!("极空间通知 · {}", ev.title),
+                                    &ev.body,
+                                    cfg.notification_sound,
+                                ) {
                                     warn!(error = %e, "NAS bridged notification show failed");
                                 }
                             }
@@ -83,15 +79,12 @@ pub fn spawn_background_scheduler(
             match service.process_due_reminders().await {
                 Ok(fired) => {
                     for notif in fired {
-                        let mut builder = app
-                            .notification()
-                            .builder()
-                            .title(&notif.title)
-                            .body(&notif.body);
-                        if cfg.notification_sound {
-                            builder = builder.sound("Default");
-                        }
-                        if let Err(e) = builder.show() {
+                        if let Err(e) = crate::send_native_notification(
+                            &app,
+                            &notif.title,
+                            &notif.body,
+                            cfg.notification_sound,
+                        ) {
                             warn!(error = %e, title = %notif.title, "OS notification show failed");
                         }
                         let _ = app.emit("reminder:fired", &notif);

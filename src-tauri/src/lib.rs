@@ -765,6 +765,78 @@ fn request_notification_permission(app: AppHandle) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+#[cfg(windows)]
+const WINDOWS_AUMID: &str = "com.garyhj.zspacememo";
+
+#[cfg(windows)]
+fn ensure_windows_aumid(app: Option<&AppHandle>) {
+    unsafe {
+        let _ = windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(
+            windows::core::h!("com.garyhj.zspacememo"),
+        );
+    }
+    if let Ok(key) =
+        windows_registry::CURRENT_USER.create(format!(r"SOFTWARE\Classes\AppUserModelId\{WINDOWS_AUMID}"))
+    {
+        let _ = key.set_string("DisplayName", "ZSpace Kit");
+        let _ = key.set_string("IconBackgroundColor", "0");
+        if let Some(handle) = app {
+            if let Ok(data_dir) = handle.path().app_data_dir() {
+                let _ = std::fs::create_dir_all(&data_dir);
+                let icon_path = data_dir.join("toast-icon.png");
+                if !icon_path.exists() {
+                    let _ = std::fs::write(&icon_path, include_bytes!("../icons/128x128.png"));
+                }
+                if let Some(s) = icon_path.to_str() {
+                    let _ = key.set_string("IconUri", s);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn ensure_windows_aumid(_app: Option<&AppHandle>) {}
+
+pub(crate) fn send_native_notification(
+    app: &AppHandle,
+    title: &str,
+    body: &str,
+    sound: bool,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use tauri_winrt_notification::{Sound, Toast};
+        ensure_windows_aumid(Some(app));
+        let snd = if sound { Some(Sound::Default) } else { None };
+        match Toast::new(WINDOWS_AUMID)
+            .title(title)
+            .text1(body)
+            .sound(snd)
+            .show()
+        {
+            Ok(()) => Ok(()),
+            Err(e1) => {
+                tracing::warn!(error = %e1, "WinRT toast via custom AUMID failed, retrying fallback");
+                Toast::new(Toast::POWERSHELL_APP_ID)
+                    .title(title)
+                    .text1(body)
+                    .sound(snd)
+                    .show()
+                    .map_err(|e2| format!("Windows 通知调用失败：{e1} / {e2}"))
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let mut b = app.notification().builder().title(title).body(body);
+        if sound {
+            b = b.sound("Default");
+        }
+        b.show().map_err(|e| e.to_string())
+    }
+}
+
 #[tauri::command]
 fn send_test_notification(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let sound = state
@@ -772,15 +844,12 @@ fn send_test_notification(app: AppHandle, state: State<'_, AppState>) -> Result<
         .get_settings()
         .map(|s| s.notification_sound)
         .unwrap_or(true);
-    let mut b = app
-        .notification()
-        .builder()
-        .title("ZSpace Kit 系统提醒测试")
-        .body("收到这条系统通知，说明你的 Windows / macOS 任务提醒已正常打通！");
-    if sound {
-        b = b.sound("Default");
-    }
-    b.show().map_err(|e| e.to_string())
+    send_native_notification(
+        &app,
+        "ZSpace Kit 系统提醒测试",
+        "收到这条系统通知，说明你的 Windows / macOS 任务提醒已正常打通！",
+        sound,
+    )
 }
 
 // --- Sticky Notes Commands ---
@@ -1112,6 +1181,7 @@ fn resolve_cli_path(app: &AppHandle) -> PathBuf {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _ = tracing_subscriber::fmt::try_init();
+    ensure_windows_aumid(None);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -1126,6 +1196,7 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
+            ensure_windows_aumid(Some(app.handle()));
             let data_dir = app
                 .path()
                 .app_data_dir()
