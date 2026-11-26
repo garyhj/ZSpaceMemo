@@ -2,8 +2,10 @@ import { listen } from "@tauri-apps/api/event";
 import {
   Activity,
   Bell,
+  Check,
   CheckCheck,
   Code2,
+  Copy,
   Cpu,
   HardDrive,
   MemoryStick,
@@ -45,32 +47,66 @@ function asArr(v: unknown, keys: string[]): Record<string, unknown>[] {
   return [];
 }
 
-/** Collect nested candidate objects from ZSpace CLI/ZOS JSON envelopes. */
+const SKIP_CHILD_KEYS = new Set([
+  "disks",
+  "disk_list",
+  "pool_list",
+  "pools",
+  "mounts",
+  "cache_list",
+  "free_list",
+  "ext_mnt_list",
+  "nic_list",
+  "nets",
+  "processes",
+]);
+
+/** Collect nested candidate objects from ZSpace CLI/ZOS JSON envelopes (e.g. detail.list[0], polling). */
 function collectObjs(root: unknown): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
   const seen = new Set<unknown>();
   const queue: unknown[] = [root];
-  while (queue.length > 0 && out.length < 24) {
+  const priorityKeys = [
+    "detail",
+    "polling",
+    "polling2",
+    "sysinfo",
+    "system",
+    "info",
+    "data",
+    "fields",
+    "status",
+    "runtime",
+    "summary",
+    "temperatures",
+    "hardware",
+    "list",
+    "items",
+    "rows",
+    "result",
+  ];
+  while (queue.length > 0 && out.length < 64) {
     const cur = queue.shift();
+    if (Array.isArray(cur)) {
+      for (const item of cur.slice(0, 4)) {
+        if (asObj(item) && !seen.has(item)) queue.push(item);
+      }
+      continue;
+    }
     const o = asObj(cur);
     if (!o || seen.has(o)) continue;
     seen.add(o);
     out.push(o);
-    for (const k of [
-      "polling",
-      "polling2",
-      "sysinfo",
-      "system",
-      "info",
-      "data",
-      "fields",
-      "status",
-      "runtime",
-      "summary",
-      "temperatures",
-      "hardware",
-    ]) {
-      if (asObj(o[k])) queue.push(o[k]);
+    for (const k of priorityKeys) {
+      if (o[k] !== undefined && !SKIP_CHILD_KEYS.has(k)) {
+        queue.push(o[k]);
+      }
+    }
+    for (const [k, v] of Object.entries(o)) {
+      if (SKIP_CHILD_KEYS.has(k) || priorityKeys.includes(k)) continue;
+      if (asObj(v) || Array.isArray(v)) {
+        queue.push(v);
+      }
     }
   }
   return out;
@@ -155,6 +191,19 @@ export function NasStatusView({ settings, onSettingsChanged, onToast }: Props) {
   const [eventFilter, setEventFilter] = useState<"notify" | "log" | "">("notify");
   const [loading, setLoading] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
+  const [copiedRaw, setCopiedRaw] = useState(false);
+
+  async function copyRawJson() {
+    if (!overview) return;
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(overview, null, 2));
+      setCopiedRaw(true);
+      onToast("已复制原始 JSON");
+      window.setTimeout(() => setCopiedRaw(false), 1600);
+    } catch (e) {
+      onToast(`复制失败：${String(e)}`);
+    }
+  }
 
   async function refreshAll(evType = eventFilter) {
     setLoading(true);
@@ -224,46 +273,75 @@ export function NasStatusView({ settings, onSettingsChanged, onToast }: Props) {
 
   const sysObjs = collectObjs(overview?.system);
   const basicObjs = [
-    ...sysObjs.map((o) => asObj(o.basic)).filter(Boolean),
+    ...sysObjs.flatMap((o) => [asObj(o.basic), asObj(o.system), asObj(o.os), asObj(o.device)]),
     ...sysObjs,
-  ];
-  const cpuObjs = [
-    ...sysObjs.map((o) => asObj(o.cpu)).filter(Boolean),
-    ...sysObjs.map((o) => asObj(o.cpu_info)).filter(Boolean),
-    ...sysObjs,
-  ];
-  const memObjs = [
-    ...sysObjs.map((o) => asObj(o.memory)).filter(Boolean),
-    ...sysObjs.map((o) => asObj(o.mem)).filter(Boolean),
-    ...sysObjs,
-  ];
-  const fanObjs = [
-    ...sysObjs.map((o) => asObj(o.fan)).filter(Boolean),
-    ...sysObjs.flatMap((o) => asArr(o, ["fans", "fan_list"])),
-    ...sysObjs,
-  ];
+  ].filter((x): x is Record<string, unknown> => Boolean(x));
 
-  // CPU metrics: check dedicated CPU object first, then polling scalars
+  const cpuSelfObjs = sysObjs
+    .flatMap((o) => [asObj(o.cpu), asObj(o.cpu_info)])
+    .filter((x): x is Record<string, unknown> => Boolean(x));
+  const cpuObjs = [...cpuSelfObjs, ...sysObjs];
+
+  const memSelfObjs = sysObjs
+    .flatMap((o) => [asObj(o.memory), asObj(o.mem), asObj(o.mem_info), asObj(o.ram)])
+    .filter((x): x is Record<string, unknown> => Boolean(x));
+  const memObjs = [...memSelfObjs, ...sysObjs];
+
+  const fanObjs = [
+    ...sysObjs.flatMap((o) => [
+      asObj(o.fan),
+      asObj(o.sys_fan),
+      asObj(o.hard_fan),
+      asObj(o.fan_info),
+    ]),
+    ...sysObjs.flatMap((o) => asArr(o, ["fans", "fan_list"])),
+    ...sysObjs.flatMap((o) => [asObj(o.cpu_fan)]),
+    ...sysObjs,
+  ].filter((x): x is Record<string, unknown> => Boolean(x));
+
+  const deviceName = pickFrom(basicObjs, ["device_name", "name", "model", "hostname", "product"]);
+  const sysVersion = pickFrom(basicObjs, [
+    "version",
+    "os_version",
+    "zos_version",
+    "sys_version",
+    "soft_version",
+    "firmware",
+    "rom_version",
+    "ver",
+  ]);
+  const nasId = pickFrom(basicObjs, ["nasid", "nas_id", "sn", "serial"]);
+
+  // CPU metrics: check dedicated CPU object first (ZOS detail uses `cpu.used` in 0..1), then polling scalars
   const directCpuNum = sysObjs
     .map((o) => parseNumeric(o.cpu))
     .find((n): n is number => n !== null);
+  const cpuExplicitPct = pickNumFrom(cpuObjs, [
+    "usage",
+    "percent",
+    "used_percent",
+    "usage_percent",
+    "cpu_usage",
+    "cpuUsage",
+    "cpu_percent",
+    "cpuPercent",
+    "cpu_use",
+    "cpuUse",
+    "utilization",
+    "busy",
+  ]);
+  const cpuRatioOrPct =
+    cpuExplicitPct === null
+      ? pickNumFrom(cpuSelfObjs, ["used", "use", "rate", "ratio"]) ??
+        pickNumFrom(sysObjs, ["cpu_used", "cpu_rate", "cpu_ratio"])
+      : null;
   const cpuPct =
-    pickNumFrom(cpuObjs, [
-      "usage",
-      "percent",
-      "used_percent",
-      "usage_percent",
-      "cpu_usage",
-      "cpuUsage",
-      "cpu_percent",
-      "cpuPercent",
-      "cpu_use",
-      "cpuUse",
-      "utilization",
-      "use",
-      "rate",
-      "busy",
-    ]) ?? directCpuNum ?? null;
+    cpuExplicitPct ??
+    (cpuRatioOrPct !== null
+      ? cpuRatioOrPct > 0 && cpuRatioOrPct < 1
+        ? cpuRatioOrPct * 100
+        : cpuRatioOrPct
+      : directCpuNum ?? null);
   const cpuLoad = pickNumFrom(cpuObjs, ["load", "load1", "load_1", "load_avg", "loadavg"]);
   const cpuTemp = pickNumFrom(cpuObjs, ["temp", "temperature", "cpu_temp", "cpuTemp", "core_temp"]);
   const cpuModel = pickFrom(cpuObjs, ["model", "model_name", "cpu_model", "brand", "name"]);
@@ -279,15 +357,16 @@ export function NasStatusView({ settings, onSettingsChanged, onToast }: Props) {
       : cpuModel !== "-"
       ? cpuModel
       : "-";
-  const cpuSub = [
-    cpuTemp !== null ? `温度 ${cpuTemp}°C` : null,
-    cpuPct !== null && cpuLoad !== null ? `负载 ${cpuLoad.toFixed(2)}` : null,
-    cpuModel !== "-" ? cpuModel : cpuCores !== null ? `${cpuCores} 核心` : null,
-  ]
-    .filter(Boolean)
-    .join(" · ") || "处理器运行状态";
+  const cpuSub =
+    [
+      cpuTemp !== null ? `温度 ${cpuTemp}°C` : null,
+      cpuPct !== null && cpuLoad !== null ? `负载 ${cpuLoad.toFixed(2)}` : null,
+      cpuModel !== "-" ? cpuModel : cpuCores !== null ? `${cpuCores} 核心` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ") || "处理器运行状态";
 
-  // Memory metrics
+  // Memory metrics (supports bytes/MB/GB AND fractional 0..1 `mem.used` / `mem.rate`)
   const memTotal = pickNumFrom(memObjs, [
     "total",
     "total_bytes",
@@ -295,32 +374,85 @@ export function NasStatusView({ settings, onSettingsChanged, onToast }: Props) {
     "mem_total",
     "physical_total",
     "size",
+    "all",
+    "capacity",
   ]);
   const memFree = pickNumFrom(memObjs, ["free", "available", "avail", "mem_free", "mem_avail"]);
-  const memUsedRaw = pickNumFrom(memObjs, ["used", "used_bytes", "usage_size", "mem_used", "active"]);
+  const memUsedRaw =
+    pickNumFrom(memSelfObjs, [
+      "used",
+      "used_bytes",
+      "usage_size",
+      "mem_used",
+      "active",
+      "usage_mem",
+    ]) ?? pickNumFrom(sysObjs, ["mem_used", "used_mem", "memory_used"]);
+  const memRatioField = pickNumFrom(memSelfObjs, [
+    "usage",
+    "percent",
+    "used_percent",
+    "usage_percent",
+    "rate",
+    "ratio",
+  ]);
+  const memScalarPct = pickNumFrom(sysObjs, [
+    "mem_usage",
+    "memUsage",
+    "mem_percent",
+    "memPercent",
+    "memory_usage",
+    "mem_rate",
+  ]);
+  const memUsedIsRatio = memUsedRaw !== null && memUsedRaw > 0 && memUsedRaw < 1;
   const memUsed =
-    memUsedRaw !== null
+    memUsedIsRatio && memTotal !== null
+      ? memTotal * memUsedRaw
+      : memUsedRaw !== null && !memUsedIsRatio
       ? memUsedRaw
       : memTotal !== null && memFree !== null
       ? Math.max(0, memTotal - memFree)
       : null;
+  const memPctRaw = memRatioField ?? memScalarPct ?? (memUsedIsRatio ? memUsedRaw : null);
   const memPct =
-    pickNumFrom(memObjs, [
-      "usage",
-      "percent",
-      "used_percent",
-      "usage_percent",
-      "mem_usage",
-      "memUsage",
-      "mem_percent",
-      "memPercent",
-      "use",
-      "rate",
-    ]) ?? (memUsed !== null && memTotal && memTotal > 0 ? (memUsed / memTotal) * 100 : null);
+    memPctRaw !== null
+      ? memPctRaw > 0 && memPctRaw < 1
+        ? memPctRaw * 100
+        : memPctRaw
+      : memUsed !== null && memTotal && memTotal > 0
+      ? (memUsed / memTotal) * 100
+      : null;
 
-  // Fan metrics
-  const fanRpm = pickNumFrom(fanObjs, ["rpm", "speed", "fan_speed", "fan1", "value"]);
-  const fanMode = pickFrom(fanObjs, ["mode", "status", "level", "fan_mode"]);
+  // Fan metrics (ignore negative sentinel RPM like `cpu_fan.speed: -1`)
+  const fanRpm = (() => {
+    const keys = ["rpm", "speed", "fan_speed", "fan1", "fan2", "cur_speed", "value"];
+    for (const obj of fanObjs) {
+      for (const k of keys) {
+        const n = parseNumeric(obj[k]);
+        if (n !== null && n >= 0) return n;
+      }
+    }
+    return null;
+  })();
+  const fanMode = pickFrom(fanObjs, ["mode", "level", "fan_mode", "status_text", "mode_name"]);
+  const fanValue =
+    fanRpm !== null
+      ? `${Math.round(fanRpm)} RPM`
+      : cpuTemp !== null
+      ? `${cpuTemp}°C`
+      : fanMode !== "-"
+      ? fanMode
+      : "-";
+  const fanSub =
+    fanRpm !== null
+      ? [
+          fanMode !== "-" ? `模式 ${fanMode}` : null,
+          cpuTemp !== null ? `核心温度 ${cpuTemp}°C` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ") || "实时转速"
+      : cpuTemp !== null
+      ? `核心温度 · ${fanMode !== "-" ? fanMode : "未读取到风扇转速"}`
+      : "风扇状态";
 
   // Storage pools & disks (supports `/zspool/info` `pool_list` + `total_size` / `usage_size`)
   const pools = asArr(overview?.storage, [
@@ -348,9 +480,12 @@ export function NasStatusView({ settings, onSettingsChanged, onToast }: Props) {
         <div>
           <h1 className="text-lg font-semibold tracking-tight text-slate-900">NAS 状态与消息</h1>
           <p className="text-[11px] text-slate-400">
-            设备：{pickFrom(basicObjs, ["device_name", "name", "model", "hostname", "product"])} ·
-            系统：
-            {pickFrom(basicObjs, ["version", "os_version", "zos_version", "firmware", "rom_version"])}
+            设备：{deviceName}
+            {sysVersion !== "-"
+              ? ` · 系统：${sysVersion}`
+              : nasId !== "-"
+              ? ` · NAS ID：${nasId}`
+              : ""}
           </p>
         </div>
 
@@ -392,8 +527,8 @@ export function NasStatusView({ settings, onSettingsChanged, onToast }: Props) {
           <StatCard
             icon={<Thermometer className="h-4 w-4 text-amber-500" />}
             label="散热 / 风扇"
-            value={fanRpm !== null ? `${Math.round(fanRpm)} RPM` : fanMode}
-            sub={cpuTemp !== null ? `核心温度 ${cpuTemp}°C` : "风扇状态"}
+            value={fanValue}
+            sub={fanSub}
           />
           <StatCard
             icon={<Activity className="h-4 w-4 text-violet-600" />}
@@ -454,9 +589,22 @@ export function NasStatusView({ settings, onSettingsChanged, onToast }: Props) {
 
         {/* Raw JSON Inspector */}
         {showRaw && overview && (
-          <pre className="max-h-60 overflow-auto rounded-2xl border border-slate-200 bg-slate-900 p-4 text-[11px] text-slate-100">
-            {JSON.stringify(overview, null, 2)}
-          </pre>
+          <div className="overflow-hidden rounded-2xl border border-slate-700 bg-slate-900">
+            <div className="flex items-center justify-between border-b border-slate-800 px-4 py-2 text-[11px] text-slate-300">
+              <span>原始系统遥测 JSON</span>
+              <button
+                type="button"
+                onClick={() => void copyRawJson()}
+                className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
+              >
+                {copiedRaw ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                {copiedRaw ? "已复制" : "复制 JSON"}
+              </button>
+            </div>
+            <pre className="select-text max-h-72 overflow-auto p-4 font-mono text-[11px] text-slate-100">
+              {JSON.stringify(overview, null, 2)}
+            </pre>
+          </div>
         )}
 
         {/* NAS Events & Notification Bridge */}

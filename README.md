@@ -29,18 +29,18 @@
   - 支持直接从桌面/资源管理器**拖拽本地文件**上传至 NAS 指定目录，或通过文件选择器多文件批量上传。
   - 支持浏览 NAS 目录、新建文件夹、按文件名极速搜索、以及一键下载到本地保存位置。
 - **NAS 状态看板与消息（`Alt + 5`）**
-  - 实时展示 NAS 硬件概览、CPU 负载、内存占用、风扇转速、磁盘温度与存储池容量使用情况。
+  - 实时展示 NAS 硬件概览、CPU 负载、内存占用、风扇转速/核心温度、磁盘温度与存储池容量使用情况（兼容 Z4 等机型 `detail.list` 与 `polling` 结构）；原始 JSON 支持选中文本与一键复制。
   - 对接极空间 `system events` 消息通知流（默认展示「通知」），支持筛选、单条已读、全部已读；**自动将新产生的 NAS 告警桥接弹出为 Windows / macOS 系统原生通知**（SQLite 去重，首次启动静默建档不刷屏）。
 - **Docker 看板（`Alt + 6`）**
   - 展示 NAS 上所有 Docker 容器运行状态与实时 CPU/内存占用。
-  - 支持启动、停止、重启容器及查看最近 100 行容器日志。
+  - 支持启动、停止、重启容器及查看/复制最近 100 行容器日志。
 
 ### 2. 桌面原生体验
 
 - **官方 OAuth2 授权，零服务端部署**：内置官方 `zspace-nas-agent-toolkit`（`zspace-cli` v0.3.11），应用内一键发起浏览器授权，全程不接触、不保存 NAS 账号密码，access token 自动刷新。
-- **待办悬浮窄窗**：全局快捷键 `Ctrl+Shift+M` / `Cmd+Shift+M` 随时呼出并聚焦快速输入框（支持自然语言如 `明天 18:00 续费 eSIM !高 #个人`）；展示全部待办并按「已逾期 / 今天 / 本周 / 以后 / 无日期」分组；拖到屏幕边缘自动收起为书签后，**鼠标指向即贴边展开、移开自动折叠，按住顶栏拖离边缘或点「移开固定」即可常驻保留**。
-- **系统原生通知与补提醒**：依托本地后台调度器，按时触发 Windows / macOS 系统通知（支持多提醒、全天固定时刻、提示音开关）；关机或休眠错过的任务提醒会在下次启动后自动补发通知。
-- **桌面端细节打磨**：支持关闭隐藏到托盘、开机自启、单实例保护（重复打开自动唤起并聚焦主窗），并屏蔽非输入区/非选区的浏览器原生右键菜单。
+- **待办悬浮窄窗**：全局快捷键 `Ctrl+Shift+M` / `Cmd+Shift+M` 随时呼出并聚焦快速输入框（支持自然语言如 `明天 18:00 续费 eSIM !高 #个人`）；展示全部待办并按「已逾期 / 今天 / 本周 / 以后 / 无日期」分组；拖到屏幕边缘自动收起为书签后，**鼠标指向即贴边展开、移开自动折叠，按住顶栏拖离边缘或点「移开固定」即可常驻保留**，且窗口位置与停靠状态跨重启持久保存。
+- **系统原生通知与补提醒**：依托本地后台调度器，按时触发 Windows / macOS 系统通知（Windows 自动注册应用 AUMID 保障通知直达；支持多提醒、全天固定时刻、提示音开关）；关机或休眠错过的任务提醒会在下次启动后自动补发通知。
+- **桌面端细节打磨**：支持关闭隐藏到托盘（托盘右键支持「立即同步」与工作区直达，Tooltip 动态显示待办计数）、开机自启、单实例保护、脱敏滚动诊断日志与 GitHub Releases 更新检查，并记住主窗与独立便利贴的窗口位置/尺寸。
 
 ---
 
@@ -51,12 +51,12 @@ flowchart LR
   subgraph App["ZSpace Kit 桌面客户端（Tauri 2 · Windows / macOS）"]
     UI["React + TypeScript + Tailwind v4<br/>主窗口（ToolRail + 6大模块）<br/>待办悬浮窗 · 独立便利贴窗"]
     CORE["Rust 核心库（crates/core）<br/>TaskService · StickyService · ToolboxService<br/>Codec(ZSM1/ZSK1) · 重复引擎 · 提醒计算"]
-    DB[("本地 SQLite<br/>设置 · 可重建索引缓存<br/>提醒作业 · NAS 已读告警去重")]
+    DB[("本地 SQLite<br/>设置 · 窗口几何记忆 · 缓存<br/>提醒作业 · NAS 已读告警去重")]
     CLI["官方 zspace-cli（sidecar）<br/>OAuth2 · file/notes/search<br/>system/storage/docker"]
   end
   NAS[("极空间 NAS<br/>原生记事本(location=2) · 文件 · 系统 · Docker")]
 
-  UI <-->|57 个 Tauri IPC 命令 / Events| CORE
+  UI <-->|59 个 Tauri IPC 命令 / Events| CORE
   CORE --> DB
   CORE -->|OfficialCliNotebookProvider| CLI -->|HTTPS OAuth / LAN| NAS
 ```
@@ -137,11 +137,12 @@ ZSpaceMemo/
 │   │   ├── nas/                # NAS 硬件状态看板与消息中心
 │   │   └── docker/             # Docker 容器监控、启停与日志查看
 │   ├── components/             # 待办业务组件（Auth / MonthCalendar / Floating / Detail / Settings 等）
-│   └── utils/                  # 日期自然语言解析、农历节假日、UI 偏好设置
+│   └── utils/                  # 日期自然语言解析、农历节假日、UI 偏好设置、版本检查
 ├── src-tauri/                  # Tauri 2 桌面壳（Windows / macOS）
 │   ├── src/
 │   │   ├── main.rs             # 入口
-│   │   ├── lib.rs              # 57 个 IPC 命令、托盘、快捷键、贴边停靠/悬停展开、单实例、开机自启
+│   │   ├── logging.rs          # 2 MiB 脱敏滚动文件日志（Token/密码自动擦除）
+│   │   ├── lib.rs              # 59 个 IPC 命令、托盘、快捷键、窗口几何记忆、贴边展开、AUMID
 │   │   └── scheduler.rs        # 后台同步、15 秒原生提醒调度与 NAS 告警桥接循环
 │   ├── capabilities/           # Tauri 2 权限声明（notification / dialog / sticky-* 等）
 │   ├── icons/                  # ZSpace Kit 跨平台应用与托盘图标（.ico / .icns / PNG）
@@ -150,7 +151,7 @@ ZSpaceMemo/
 ├── scripts/
 │   └── fetch-sidecar.sh        # 本地开发一键下载并校验官方 zspace-cli 二进制
 ├── docs/                       # 设计、兼容验证、原型与需求归档
-│   ├── DESIGN.md               # 产品与技术设计（v0.3）
+│   ├── DESIGN.md               # 产品与技术设计（v0.4）
 │   ├── COMPATIBILITY.md        # M0 真机兼容性与 CLI 实测适配记录
 │   ├── prototype/index.html    # 早期待办交互原型（单文件 HTML）
 │   └── requirements/           # 原始调研与需求文档归档

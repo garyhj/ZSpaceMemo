@@ -1,10 +1,11 @@
-# ZSpace Kit（极空工具箱）产品与技术设计（v0.3）
+# ZSpace Kit（极空工具箱）产品与技术设计（v0.4）
 
-> 状态：**v0.3.1 已实现并发布**（Windows / macOS 双端）。
+> 状态：**v0.4.0 已实现并发布**（Windows / macOS 双端）。
 > 变更记录：
 > - v0.1：初始设计（FastAPI 服务端 + `zspace_skill` + 多端）。
 > - v0.2：采用官方 `zspace-nas-agent-toolkit`（`zspace-cli` v0.3.11）OAuth2 授权与 `file notes` 契约；简化为**纯桌面客户端架构（Tauri 2 + 内置 `zspace-cli`）**，开机自启常驻托盘，零服务端部署；时间模型简化为**截止日期 + 截止时间 + 全天**。
 > - v0.3：定位由单一 Todo 扩展为**极空工具箱（ZSpace Kit）**：加入模块化主工作台（ToolRail + `TOOLBOX_MODULES`）、月视图（农历/节假日/拖拽/右键快建）、云便签与桌面便利贴（`ZSpace Sticky` / `ZSK1`）、文件快传箱、NAS 状态看板与告警桥接、Docker 容器看板；并用 **OS 系统原生通知**全面替代应用内通知中心。
+> - v0.4：桌面体验打磨与 Z4 硬件遥测适配：Windows Toast AUMID 自动注册、`detail.list` 遥测解析与日志/JSON 复制、主窗/悬浮窗/便利贴窗口几何与贴边记忆持久化、托盘动态计数与工作区直达、2 MiB 脱敏滚动诊断日志及 GitHub Releases 更新检测。
 
 本项目的核心技术支柱有三项（外加 v0.3 引入的可扩展工具箱集成层）：
 
@@ -58,7 +59,7 @@ flowchart LR
   NAS[("极空间 NAS<br/>记事本 · 文件 · 系统 · Docker")]
 
   RAIL --> MODS
-  MODS & FLOAT & STICKY_W <-->|57 个 Tauri IPC 命令 / Events| Core
+  MODS & FLOAT & STICKY_W <-->|59 个 Tauri IPC 命令 / Events| Core
   TS --> RE
   TS & SS --> NP --> CLI -->|HTTPS OAuth / LAN| NAS
   TB --> NP
@@ -143,12 +144,13 @@ flowchart LR
 - 通过 Tauri 2 WebView `onDragDropEvent` 捕获系统原生态文件拖入事件，直接获取本机真实文件路径批量上传到 NAS 当前目录或预设快传目录（`nas_drop_dir`）；同时支持 `tauri-plugin-dialog` 选择本地文件上传或选择本地保存路径下载。
 
 ### 4.4 NAS 状态看板与消息（`NasStatusView`）
-- 并发聚合 `system info`（含 `include_polling: true` 实时指标：基础信息/CPU/内存/风扇/网络）、`storage info`（存储池 `pool_list` 与容量）与 `system disk`（磁盘健康与挂载状态）。
+- 并发聚合 `system info`（含 `include_polling: true` 实时指标，深度穿透 `detail.list[0]` / `polling` / `polling2` 等结构并兼容 Z4 `cpu.used` 比例与 `-1` 传感器占位数）、`storage info`（存储池 `pool_list` 与容量）与 `system disk`（磁盘健康与挂载状态）。
+- 「原始数据」JSON 与日志区允许文本选中并配备一键复制按钮。
 - 下方集成 `system events` 消息中心，默认聚焦「**通知**」分类（可选「日志 / 全部」），支持单条已读与全部已读（`--yes`）。
 
 ### 4.5 Docker 看板（`DockerBoardView`）
 - 调用 `zspace-cli docker containers` 查询容器列表（`action=list`）与实时资源占用（`action=stats`）。
-- 支持对容器执行 `start` / `stop` / `restart` 操作，以及弹窗/抽屉查看容器最近 100 行日志（`action=logs`）。
+- 支持对容器执行 `start` / `stop` / `restart` 操作，以及弹窗查看并一键复制容器最近 100 行日志（`action=logs`）。
 
 ---
 
@@ -158,7 +160,7 @@ flowchart LR
 flowchart LR
   M0["M0 真机兼容性验证 ✅<br/>官方 OAuth · file notes<br/>ZSM1 格式定稿"] --> M1["M1 核心引擎 + CLI 适配 ✅<br/>Rust Codec · 重复引擎 · 提醒计算<br/>OfficialCli + SQLite"]
   M1 --> M2["M2 / M3 桌面待办完成 ✅<br/>三栏主窗 · 悬浮窗 · 月视图<br/>双端 CI 自动发布"]
-  M2 --> V030["v0.3.0 工具箱壳 + 云便签 ✅<br/>ZSpace Kit · ZSK1 便签<br/>OS 原生通知"]
-  V030 --> V031["v0.3.1 工具箱能力补全 ✅<br/>快传箱 · NAS 状态/消息<br/>Docker · 单实例与体验优化"]
-  V031 --> NEXT["后续演进<br/>法定调休/农历重复<br/>附件 · 更多工具模块"]
+  M2 --> V030["v0.3.0 ~ v0.3.6 工具箱成型 ✅<br/>ZSK1 便签 · 快传/NAS/Docker<br/>QQ 式贴边 · Windows AUMID"]
+  V030 --> V040["v0.4.0 桌面体验与 Z4 适配 ✅<br/>窗口几何/贴边记忆 · 托盘增强<br/>脱敏日志 · 更新检查 · Z4 遥测"]
+  V040 --> NEXT["后续演进（v0.4.1+）<br/>LAN 直连 · 文件夹上传<br/>下载管理 · 法定调休重复"]
 ```

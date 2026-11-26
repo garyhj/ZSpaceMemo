@@ -1,24 +1,43 @@
-import { BellRing, LogOut, RefreshCw, X } from "lucide-react";
+import { getVersion } from "@tauri-apps/api/app";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { BellRing, FolderOpen, LogOut, RefreshCw, Sparkles, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { AppSettings, AuthStatus } from "../types";
 import { setPrefs, usePrefs } from "../utils/prefs";
+import { checkLatestRelease, type ReleaseUpdateInfo } from "../utils/updater";
 import { TimePicker } from "./TimePicker";
 
 interface Props {
   auth: AuthStatus;
+  updateInfo?: ReleaseUpdateInfo | null;
+  onUpdateChecked?: (info: ReleaseUpdateInfo) => void;
   onClose: () => void;
   onLogout: () => Promise<void>;
   onSettingsChanged: (settings: AppSettings) => void;
 }
 
-export function SettingsModal({ auth, onClose, onLogout, onSettingsChanged }: Props) {
+export function SettingsModal({
+  auth,
+  updateInfo,
+  onUpdateChecked,
+  onClose,
+  onLogout,
+  onSettingsChanged,
+}: Props) {
   const prefs = usePrefs();
   const [tab, setTab] = useState<"general" | "shortcuts">("general");
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [notifPerm, setNotifPerm] = useState<"granted" | "denied" | "prompt" | "unknown">("unknown");
+  const [appVersion, setAppVersion] = useState("0.4.0");
+  const [localUpdate, setLocalUpdate] = useState<ReleaseUpdateInfo | null>(updateInfo ?? null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    setLocalUpdate(updateInfo ?? null);
+  }, [updateInfo]);
 
   useEffect(() => {
     api
@@ -29,6 +48,9 @@ export function SettingsModal({ auth, onClose, onLogout, onSettingsChanged }: Pr
       .notificationPermissionState()
       .then(setNotifPerm)
       .catch(() => setNotifPerm("unknown"));
+    getVersion()
+      .then(setAppVersion)
+      .catch(() => {});
   }, []);
 
   if (!settings) return null;
@@ -342,6 +364,77 @@ export function SettingsModal({ auth, onClose, onLogout, onSettingsChanged }: Pr
                   <option value={600}>每 10 分钟</option>
                 </select>
               </div>
+            </div>
+
+            {/* Version & Diagnostics */}
+            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-2.5 text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="font-medium text-slate-800">版本与诊断日志</div>
+                  <div className="text-xs text-slate-400">
+                    当前版本 v{appVersion} · 日志自动脱敏保存于本地
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={checkingUpdate}
+                    onClick={async () => {
+                      setCheckingUpdate(true);
+                      setMsg("");
+                      try {
+                        const info = await checkLatestRelease(appVersion);
+                        setLocalUpdate(info);
+                        onUpdateChecked?.(info);
+                        setMsg(
+                          info.hasUpdate
+                            ? `发现新版本 v${info.latestVersion}，可点击前往 GitHub Releases 下载`
+                            : `当前 v${appVersion} 已是最新版本`
+                        );
+                      } catch (e) {
+                        setMsg(`检查更新失败：${String(e)}`);
+                      } finally {
+                        setCheckingUpdate(false);
+                      }
+                    }}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+                  >
+                    <RefreshCw className={`h-3 w-3 ${checkingUpdate ? "animate-spin" : ""}`} />
+                    检查更新
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const dir = await api.openLogsDir();
+                        setMsg(`已打开日志目录：${dir}`);
+                      } catch (e) {
+                        setMsg(`打开日志目录失败：${String(e)}`);
+                      }
+                    }}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
+                  >
+                    <FolderOpen className="h-3 w-3" />
+                    打开日志目录
+                  </button>
+                </div>
+              </div>
+
+              {localUpdate?.hasUpdate && (
+                <div className="flex items-center justify-between rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+                  <span className="inline-flex items-center gap-1.5 font-medium">
+                    <Sparkles className="h-3.5 w-3.5" />
+                    新版本 v{localUpdate.latestVersion} 已发布
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void openUrl(localUpdate.url)}
+                    className="rounded-md bg-blue-600 px-2.5 py-1 font-medium text-white hover:bg-blue-700"
+                  >
+                    前往下载
+                  </button>
+                </div>
+              )}
             </div>
 
             {msg && <div className="text-xs text-blue-600">{msg}</div>}

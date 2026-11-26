@@ -96,6 +96,18 @@ pub struct DueReminderJob {
     pub kind: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowGeometryRecord {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dock_edge: Option<String>,
+    #[serde(default)]
+    pub visible: bool,
+}
+
 /// Local SQLite store (settings, rebuildable task index cache, reminder jobs, notifications).
 pub struct LocalStorage {
     conn: Mutex<Connection>,
@@ -546,5 +558,71 @@ impl LocalStorage {
             params![event_id, Utc::now().timestamp()],
         )?;
         Ok(())
+    }
+
+    pub fn get_kv(&self, key: &str) -> AppResult<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row("SELECT value FROM settings WHERE key = ?1", params![key], |r| {
+            r.get(0)
+        })
+        .optional()
+        .map_err(Into::into)
+    }
+
+    pub fn set_kv(&self, key: &str, value: &str) -> AppResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_kv(&self, key: &str) -> AppResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
+        Ok(())
+    }
+
+    pub fn load_window_geometry(&self, label: &str) -> AppResult<Option<WindowGeometryRecord>> {
+        let Some(raw) = self.get_kv(&format!("win_geom:{label}"))? else {
+            return Ok(None);
+        };
+        Ok(serde_json::from_str(&raw).ok())
+    }
+
+    pub fn save_window_geometry(&self, label: &str, geom: &WindowGeometryRecord) -> AppResult<()> {
+        let json = serde_json::to_string(geom)?;
+        self.set_kv(&format!("win_geom:{label}"), &json)
+    }
+
+    pub fn delete_window_geometry(&self, label: &str) -> AppResult<()> {
+        self.delete_kv(&format!("win_geom:{label}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_geometry_persistence_round_trips_and_deletes() {
+        let store = LocalStorage::open_in_memory().unwrap();
+        assert_eq!(store.load_window_geometry("floating").unwrap(), None);
+
+        let rec = WindowGeometryRecord {
+            x: 1080,
+            y: 120,
+            width: 360,
+            height: 540,
+            dock_edge: Some("right".to_string()),
+            visible: true,
+        };
+        store.save_window_geometry("floating", &rec).unwrap();
+        assert_eq!(store.load_window_geometry("floating").unwrap(), Some(rec));
+
+        store.delete_window_geometry("floating").unwrap();
+        assert_eq!(store.load_window_geometry("floating").unwrap(), None);
     }
 }

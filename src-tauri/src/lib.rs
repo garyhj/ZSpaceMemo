@@ -1,12 +1,14 @@
+mod logging;
 mod scheduler;
 
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State, WebviewUrl,
     WebviewWindow, WebviewWindowBuilder, WindowEvent,
@@ -25,7 +27,9 @@ use zspace_memo_core::recurrence::{
 };
 use zspace_memo_core::service::{SyncSummary, TaskService};
 use zspace_memo_core::sticky::{CreateStickyInput, StickyNote, StickyService, UpdateStickyInput};
-use zspace_memo_core::storage::{AppSettings, LocalStorage, NotificationRecord};
+use zspace_memo_core::storage::{
+    AppSettings, LocalStorage, NotificationRecord, WindowGeometryRecord,
+};
 use zspace_memo_core::toolbox::{SystemOverview, ToolboxService};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -34,6 +38,25 @@ enum DockEdge {
     Left,
     Right,
     Top,
+}
+
+impl DockEdge {
+    fn as_str(self) -> &'static str {
+        match self {
+            DockEdge::Left => "left",
+            DockEdge::Right => "right",
+            DockEdge::Top => "top",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "left" => Some(DockEdge::Left),
+            "right" => Some(DockEdge::Right),
+            "top" => Some(DockEdge::Top),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,7 +84,11 @@ struct AppState {
     service: Arc<TaskService<OfficialCliNotebookProvider>>,
     sticky: Arc<StickyService<OfficialCliNotebookProvider>>,
     toolbox: Arc<ToolboxService>,
+    storage: Arc<LocalStorage>,
     dock: Mutex<FloatingDockState>,
+    tray: Mutex<Option<TrayIcon>>,
+    geom_seqs: Mutex<HashMap<String, u64>>,
+    geom_ignore_until_ms: Mutex<HashMap<String, u64>>,
 }
 
 #[derive(Serialize)]
@@ -83,6 +110,7 @@ fn map_err(e: zspace_memo_core::error::AppError) -> String {
 
 fn emit_changed(app: &AppHandle, source_window: &WebviewWindow) {
     let _ = app.emit("tasks:changed", source_window.label());
+    refresh_tray_tooltip(app);
 }
 
 fn emit_sticky_changed(app: &AppHandle, source_window: &WebviewWindow) {
@@ -95,6 +123,199 @@ fn permission_label(st: PermissionState) -> &'static str {
         PermissionState::Denied => "denied",
         PermissionState::Prompt | PermissionState::PromptWithRationale => "prompt",
     }
+}
+
+pub fn refresh_tray_tooltip(app: &AppHandle) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let today = state
+        .service
+        .list_tasks(TaskView::Today, None, TaskSort::Date)
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let overdue = state
+        .service
+        .list_tasks(TaskView::Overdue, None, TaskSort::Date)
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let all = state
+        .service
+        .list_tasks(TaskView::All, None, TaskSort::Date)
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let tip = if all == 0 {
+        "ZSpace Kit · 极空工具箱（暂无待办）".to_string()
+    } else if overdue > 0 {
+        format!("ZSpace Kit · 待办 {all} 项（含逾期 {overdue}）")
+    } else {
+        format!("ZSpace Kit · 今日 {today} · 待办 {all} 项")
+    };
+    if let Ok(guard) = state.tray.lock() {
+        if let Some(tray) = guard.as_ref() {
+            let _ = tray.set_tooltip(Some(&tip));
+        }
+    }
+}
+
+fn clamp_physical_rect_to_monitors(
+    win: &WebviewWindow,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    min_w: u32,
+    min_h: u32,
+) -> Option<(i32, i32, u32, u32)> {
+    let monitors = win.available_monitors().ok()?;
+    let fallback_wa = win
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| monitors.first().cloned())?
+        .work_area()
+        .clone();
+
+    let mut chosen_wa = None;
+    let cx = x.saturating_add(width as i32 / 2);
+    let cy = y.saturating_add(height as i32 / 2);
+    for m in &monitors {
+        let wa = m.work_area();
+        let left = wa.position.x;
+        let top = wa.position.y;
+        let right = left + wa.size.width as i32;
+        let bottom = top + wa.size.height as i32;
+        if cx >= left && cx <= right && cy >= top && cy <= bottom {
+            chosen_wa = Some(wa.clone());
+            break;
+        }
+    }
+    if chosen_wa.is_none() {
+        let mut best_area = 0i64;
+        for m in &monitors {
+            let wa = m.work_area();
+            let ox = (x + width as i32).min(wa.position.x + wa.size.width as i32) - x.max(wa.position.x);
+            let oy =
+                (y + height as i32).min(wa.position.y + wa.size.height as i32) - y.max(wa.position.y);
+            if ox > 60 && oy > 60 {
+                let area = ox as i64 * oy as i64;
+                if area > best_area {
+                    best_area = area;
+                    chosen_wa = Some(wa.clone());
+                }
+            }
+        }
+    }
+    let wa = chosen_wa.unwrap_or(fallback_wa);
+    let wa_left = wa.position.x;
+    let wa_top = wa.position.y;
+    let wa_w = wa.size.width.max(min_w);
+    let wa_h = wa.size.height.max(min_h);
+    let w = width.clamp(min_w, wa_w);
+    let h = height.clamp(min_h, wa_h);
+    let max_x = wa_left + (wa_w as i32 - w as i32).max(0);
+    let max_y = wa_top + (wa_h as i32 - h as i32).max(0);
+    let nx = x.clamp(wa_left, max_x);
+    let ny = y.clamp(wa_top, max_y);
+    Some((nx, ny, w, h))
+}
+
+fn persist_floating_state(app: &AppHandle, override_visible: Option<bool>) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let Some(win) = app.get_webview_window("floating") else {
+        return;
+    };
+    let visible = override_visible.unwrap_or_else(|| win.is_visible().unwrap_or(false));
+    let mut dock = state.dock.lock().unwrap();
+    if dock.docked.is_none() && !dock.peeked {
+        if let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) {
+            if pos.x > -10000 && pos.y > -10000 && size.width >= 260 && size.height >= 260 {
+                dock.saved_pos = Some(pos);
+                dock.saved_size = Some(size);
+            }
+        }
+    }
+    let (Some(pos), Some(size)) = (dock.saved_pos, dock.saved_size) else {
+        return;
+    };
+    let rec = WindowGeometryRecord {
+        x: pos.x,
+        y: pos.y,
+        width: size.width,
+        height: size.height,
+        dock_edge: dock.docked.map(DockEdge::as_str).map(str::to_string),
+        visible,
+    };
+    drop(dock);
+    let _ = state.storage.save_window_geometry("floating", &rec);
+}
+
+fn mark_geom_ignore(app: &AppHandle, label: &str, ms: u64) {
+    if let Some(state) = app.try_state::<AppState>() {
+        let mut map = state.geom_ignore_until_ms.lock().unwrap();
+        map.insert(label.to_string(), now_ms() + ms);
+    }
+}
+
+fn schedule_persist_window_geometry(app: AppHandle, label: String) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    if let Ok(guard) = state.geom_ignore_until_ms.lock() {
+        if let Some(&until) = guard.get(&label) {
+            if now_ms() < until {
+                return;
+            }
+        }
+    }
+    let seq = {
+        let mut seqs = state.geom_seqs.lock().unwrap();
+        let next = seqs.get(&label).copied().unwrap_or(0).wrapping_add(1);
+        seqs.insert(label.clone(), next);
+        next
+    };
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(450)).await;
+        let Some(state) = app.try_state::<AppState>() else {
+            return;
+        };
+        let still_latest = state
+            .geom_seqs
+            .lock()
+            .unwrap()
+            .get(&label)
+            .copied()
+            == Some(seq);
+        if !still_latest {
+            return;
+        }
+        let Some(win) = app.get_webview_window(&label) else {
+            return;
+        };
+        if win.is_minimized().unwrap_or(false) {
+            return;
+        }
+        if label == "main" && win.is_maximized().unwrap_or(false) {
+            return;
+        }
+        let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
+            return;
+        };
+        if pos.x <= -10000 || pos.y <= -10000 || size.width < 150 || size.height < 150 {
+            return;
+        }
+        let rec = WindowGeometryRecord {
+            x: pos.x,
+            y: pos.y,
+            width: size.width,
+            height: size.height,
+            dock_edge: None,
+            visible: true,
+        };
+        let _ = state.storage.save_window_geometry(&label, &rec);
+    });
 }
 
 fn monitor_work_area(win: &WebviewWindow) -> Option<(i32, i32, i32, i32, f64)> {
@@ -185,6 +406,7 @@ fn dock_floating(app: &AppHandle, edge_hint: Option<DockEdge>) {
             peeked: false,
         },
     );
+    persist_floating_state(app, Some(true));
 }
 
 fn is_cursor_inside_floating(win: &WebviewWindow) -> Option<bool> {
@@ -455,6 +677,7 @@ fn undock_floating(app: &AppHandle) {
         },
     );
     let _ = win.emit("floating:focus-input", ());
+    persist_floating_state(app, Some(true));
 }
 
 async fn ensure_sticky_window(app: &AppHandle, id: i64) -> Result<(), String> {
@@ -465,9 +688,9 @@ async fn ensure_sticky_window(app: &AppHandle, id: i64) -> Result<(), String> {
         return Ok(());
     }
     let offset = ((id.abs() % 5) as f64) * 28.0;
-    WebviewWindowBuilder::new(
+    let win = WebviewWindowBuilder::new(
         app,
-        label,
+        label.clone(),
         WebviewUrl::App(format!("/?mode=sticky&id={id}").into()),
     )
     .title("ZSpace Kit · 便签")
@@ -481,6 +704,18 @@ async fn ensure_sticky_window(app: &AppHandle, id: i64) -> Result<(), String> {
     .position(920.0 + offset, 120.0 + offset)
     .build()
     .map_err(|e| e.to_string())?;
+
+    if let Some(state) = app.try_state::<AppState>() {
+        if let Ok(Some(rec)) = state.storage.load_window_geometry(&label) {
+            if let Some((nx, ny, w, h)) =
+                clamp_physical_rect_to_monitors(&win, rec.x, rec.y, rec.width, rec.height, 220, 220)
+            {
+                mark_geom_ignore(app, &label, 700);
+                let _ = win.set_size(PhysicalSize::new(w, h));
+                let _ = win.set_position(PhysicalPosition::new(nx, ny));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -533,6 +768,7 @@ async fn initialize_category(
 async fn sync_tasks(app: AppHandle, state: State<'_, AppState>) -> Result<SyncSummary, String> {
     let summary = state.service.sync().await.map_err(map_err)?;
     let _ = app.emit("tasks:synced", &summary);
+    refresh_tray_tooltip(&app);
     Ok(summary)
 }
 
@@ -925,6 +1161,7 @@ async fn delete_sticky_note(
     id: i64,
 ) -> Result<(), String> {
     state.sticky.delete_note(id).await.map_err(map_err)?;
+    let _ = state.storage.delete_window_geometry(&format!("sticky-{id}"));
     if let Some(win) = app.get_webview_window(&format!("sticky-{id}")) {
         let _ = win.close();
     }
@@ -1100,10 +1337,35 @@ fn toggle_floating_window(app: AppHandle) -> Result<(), String> {
             undock_floating(&app);
         } else if visible {
             let _ = win.hide();
+            persist_floating_state(&app, Some(false));
         } else {
+            let saved = {
+                let state = app.state::<AppState>();
+                let dock = state.dock.lock().unwrap();
+                match (dock.saved_pos, dock.saved_size) {
+                    (Some(p), Some(s)) => Some((p.x, p.y, s.width, s.height)),
+                    _ => state
+                        .storage
+                        .load_window_geometry("floating")
+                        .ok()
+                        .flatten()
+                        .map(|r| (r.x, r.y, r.width, r.height)),
+                }
+            };
+            if let Some((rx, ry, rw, rh)) = saved {
+                if let Some((nx, ny, w, h)) =
+                    clamp_physical_rect_to_monitors(&win, rx, ry, rw, rh, 300, 360)
+                {
+                    let state = app.state::<AppState>();
+                    state.dock.lock().unwrap().ignore_moves_until_ms = now_ms() + 600;
+                    let _ = win.set_size(PhysicalSize::new(w, h));
+                    let _ = win.set_position(PhysicalPosition::new(nx, ny));
+                }
+            }
             let _ = win.show();
             let _ = win.set_focus();
             let _ = win.emit("floating:focus-input", ());
+            persist_floating_state(&app, Some(true));
         }
     }
     Ok(())
@@ -1157,6 +1419,33 @@ fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+fn get_logs_dir(app: AppHandle) -> Result<String, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("logs");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn open_logs_dir(app: AppHandle) -> Result<String, String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("logs");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path_str = dir.to_string_lossy().to_string();
+    app.opener()
+        .open_path(path_str.clone(), None::<&str>)
+        .map_err(|e| e.to_string())?;
+    Ok(path_str)
+}
+
 fn resolve_cli_path(app: &AppHandle) -> PathBuf {
     if let Ok(env_path) = std::env::var("ZSPACE_CLI_BIN") {
         return PathBuf::from(env_path);
@@ -1180,7 +1469,7 @@ fn resolve_cli_path(app: &AppHandle) -> PathBuf {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let _ = tracing_subscriber::fmt::try_init();
+    logging::init_subscriber();
     ensure_windows_aumid(None);
 
     tauri::Builder::default()
@@ -1201,6 +1490,7 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .expect("failed to resolve app data dir");
+            logging::attach_log_dir(data_dir.join("logs"));
             let db_path = data_dir.join("zspace_memo.db");
             let cli_home = data_dir.join("zspace-cli");
             let cli_path = resolve_cli_path(app.handle());
@@ -1213,7 +1503,7 @@ pub fn run() {
             ));
             let service = Arc::new(TaskService::new(provider.clone(), storage.clone()));
             let sticky = Arc::new(StickyService::new(provider.clone(), storage.clone()));
-            let toolbox = Arc::new(ToolboxService::new(provider.clone(), storage));
+            let toolbox = Arc::new(ToolboxService::new(provider.clone(), storage.clone()));
 
             scheduler::spawn_background_scheduler(
                 app.handle().clone(),
@@ -1223,10 +1513,14 @@ pub fn run() {
             );
             app.manage(AppState {
                 provider,
-                service,
+                service: service.clone(),
                 sticky: sticky.clone(),
                 toolbox,
+                storage: storage.clone(),
                 dock: Mutex::new(FloatingDockState::default()),
+                tray: Mutex::new(None),
+                geom_seqs: Mutex::new(HashMap::new()),
+                geom_ignore_until_ms: Mutex::new(HashMap::new()),
             });
 
             if let Some(icon) = app.default_window_icon().cloned() {
@@ -1234,6 +1528,57 @@ pub fn run() {
                     if let Some(win) = app.get_webview_window(label) {
                         let _ = win.set_icon(icon.clone());
                     }
+                }
+            }
+
+            // Restore main window size & position safely inside active monitors.
+            if let Ok(Some(rec)) = storage.load_window_geometry("main") {
+                if let Some(win) = app.get_webview_window("main") {
+                    if let Some((nx, ny, w, h)) =
+                        clamp_physical_rect_to_monitors(&win, rec.x, rec.y, rec.width, rec.height, 820, 560)
+                    {
+                        mark_geom_ignore(app.handle(), "main", 800);
+                        let _ = win.set_size(PhysicalSize::new(w, h));
+                        let _ = win.set_position(PhysicalPosition::new(nx, ny));
+                    }
+                }
+            }
+
+            // Restore floating window saved geometry and dock state if previously open.
+            if let Ok(Some(rec)) = storage.load_window_geometry("floating") {
+                let state = app.state::<AppState>();
+                {
+                    let mut dock = state.dock.lock().unwrap();
+                    dock.saved_pos = Some(PhysicalPosition::new(rec.x, rec.y));
+                    dock.saved_size = Some(PhysicalSize::new(rec.width.max(300), rec.height.max(360)));
+                }
+                if rec.visible {
+                    let app_float = app.handle().clone();
+                    let dock_edge = rec.dock_edge.as_deref().and_then(DockEdge::parse);
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(350)).await;
+                        if let Some(win) = app_float.get_webview_window("floating") {
+                            if let Some((nx, ny, w, h)) = clamp_physical_rect_to_monitors(
+                                &win, rec.x, rec.y, rec.width, rec.height, 300, 360,
+                            ) {
+                                {
+                                    let state = app_float.state::<AppState>();
+                                    let mut dock = state.dock.lock().unwrap();
+                                    dock.saved_pos = Some(PhysicalPosition::new(nx, ny));
+                                    dock.saved_size = Some(PhysicalSize::new(w, h));
+                                    dock.ignore_moves_until_ms = now_ms() + 800;
+                                }
+                                let _ = win.set_size(PhysicalSize::new(w, h));
+                                let _ = win.set_position(PhysicalPosition::new(nx, ny));
+                            }
+                            if let Some(edge) = dock_edge {
+                                dock_floating(&app_float, Some(edge));
+                                let _ = win.show();
+                            } else {
+                                let _ = win.show();
+                            }
+                        }
+                    });
                 }
             }
 
@@ -1255,26 +1600,66 @@ pub fn run() {
                 }
             });
 
-            // System tray menu & icon (fixes invisible Windows tray icon).
+            // System tray menu & icon with direct actions and workspace switches.
             let show_main = MenuItem::with_id(app, "show_main", "打开 ZSpace Kit", true, None::<&str>)?;
             let toggle_float =
                 MenuItem::with_id(app, "toggle_float", "悬浮待办窗", true, None::<&str>)?;
+            let sync_now = MenuItem::with_id(app, "sync_now", "立即同步", true, None::<&str>)?;
+            let sep1 = PredefinedMenuItem::separator(app)?;
+            let nav_tasks = MenuItem::with_id(app, "nav:tasks", "待办清单", true, None::<&str>)?;
+            let nav_cal = MenuItem::with_id(app, "nav:calendar", "月视图与农历", true, None::<&str>)?;
+            let nav_sticky = MenuItem::with_id(app, "nav:sticky", "便签墙", true, None::<&str>)?;
+            let nav_files = MenuItem::with_id(app, "nav:files", "快传箱", true, None::<&str>)?;
+            let nav_nas = MenuItem::with_id(app, "nav:nas", "NAS 状态", true, None::<&str>)?;
+            let nav_docker = MenuItem::with_id(app, "nav:docker", "Docker 管理", true, None::<&str>)?;
+            let sep2 = PredefinedMenuItem::separator(app)?;
             let quit = MenuItem::with_id(app, "quit", "退出 ZSpace Kit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_main, &toggle_float, &quit])?;
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &show_main,
+                    &toggle_float,
+                    &sync_now,
+                    &sep1,
+                    &nav_tasks,
+                    &nav_cal,
+                    &nav_sticky,
+                    &nav_files,
+                    &nav_nas,
+                    &nav_docker,
+                    &sep2,
+                    &quit,
+                ],
+            )?;
 
             let mut tray_builder = TrayIconBuilder::new()
                 .menu(&menu)
                 .tooltip("ZSpace Kit · 极空工具箱")
                 .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show_main" => {
+                .on_menu_event(|app, event| {
+                    let id = event.id.as_ref();
+                    if id == "show_main" {
                         let _ = open_main_window(app.clone(), None);
-                    }
-                    "toggle_float" => {
+                    } else if id == "toggle_float" {
                         let _ = toggle_floating_window(app.clone());
+                    } else if id == "sync_now" {
+                        let app_sync = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let state = app_sync.state::<AppState>();
+                            if let Ok(summary) = state.service.sync().await {
+                                let _ = app_sync.emit("tasks:synced", &summary);
+                                refresh_tray_tooltip(&app_sync);
+                            }
+                            if let Ok(fetched) = state.sticky.sync().await {
+                                let _ = app_sync.emit("sticky:synced", fetched);
+                            }
+                        });
+                    } else if let Some(ws) = id.strip_prefix("nav:") {
+                        let _ = open_main_window(app.clone(), None);
+                        let _ = app.emit("workspace:navigate", ws.to_string());
+                    } else if id == "quit" {
+                        app.exit(0);
                     }
-                    "quit" => app.exit(0),
-                    _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {
@@ -1289,7 +1674,9 @@ pub fn run() {
             if let Some(icon) = app.default_window_icon().cloned() {
                 tray_builder = tray_builder.icon(icon);
             }
-            let _tray = tray_builder.build(app)?;
+            let tray = tray_builder.build(app)?;
+            *app.state::<AppState>().tray.lock().unwrap() = Some(tray);
+            refresh_tray_tooltip(app.handle());
 
             // Global shortcut: Ctrl/Cmd + Shift + M toggles the floating quick window.
             let handle = app.handle().clone();
@@ -1309,6 +1696,7 @@ pub fn run() {
                 if window.label() == "floating" {
                     api.prevent_close();
                     let _ = window.hide();
+                    persist_floating_state(window.app_handle(), Some(false));
                     return;
                 }
                 if window.label().starts_with("sticky-") {
@@ -1367,6 +1755,7 @@ pub fn run() {
                             },
                         );
                     }
+                    persist_floating_state(&app, Some(true));
                 }
                 if let Some(seq) = seq_opt {
                     tauri::async_runtime::spawn(async move {
@@ -1390,6 +1779,7 @@ pub fn run() {
                         let Some((wa_left, wa_top, wa_right, _wa_bottom, scale)) =
                             monitor_work_area(&win)
                         else {
+                            persist_floating_state(&app, None);
                             return;
                         };
                         let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
@@ -1407,8 +1797,54 @@ pub fn run() {
                         };
                         if let Some(e) = edge {
                             dock_floating(&app, Some(e));
+                        } else {
+                            persist_floating_state(&app, None);
                         }
                     });
+                }
+            }
+            WindowEvent::Moved(_)
+                if window.label() == "main" || window.label().starts_with("sticky-") =>
+            {
+                schedule_persist_window_geometry(
+                    window.app_handle().clone(),
+                    window.label().to_string(),
+                );
+            }
+            WindowEvent::Resized(_) => {
+                if window.label() == "floating" {
+                    let app = window.app_handle().clone();
+                    let seq_opt = {
+                        let state = app.state::<AppState>();
+                        let mut dock = state.dock.lock().unwrap();
+                        if dock.docked.is_none()
+                            && !dock.peeked
+                            && now_ms() >= dock.ignore_moves_until_ms
+                        {
+                            dock.move_seq += 1;
+                            Some(dock.move_seq)
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(seq) = seq_opt {
+                        tauri::async_runtime::spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(450)).await;
+                            let still = {
+                                let state = app.state::<AppState>();
+                                let dock = state.dock.lock().unwrap();
+                                dock.move_seq == seq && dock.docked.is_none() && !dock.peeked
+                            };
+                            if still {
+                                persist_floating_state(&app, None);
+                            }
+                        });
+                    }
+                } else if window.label() == "main" || window.label().starts_with("sticky-") {
+                    schedule_persist_window_geometry(
+                        window.app_handle().clone(),
+                        window.label().to_string(),
+                    );
                 }
             }
             WindowEvent::Focused(false) if window.label() == "floating" => {
@@ -1493,6 +1929,8 @@ pub fn run() {
             set_floating_peek_hold,
             undock_floating_window,
             set_autostart,
+            get_logs_dir,
+            open_logs_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ZSpace Kit");

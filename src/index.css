@@ -80,6 +80,9 @@ body {
 
 input,
 textarea,
+pre,
+code,
+.select-text,
 [contenteditable="true"] {
   user-select: text;
 }

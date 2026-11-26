@@ -37,6 +37,7 @@ pub fn spawn_background_scheduler(
                             "background task sync ok"
                         );
                         let _ = app.emit("tasks:synced", &summary);
+                        crate::refresh_tray_tooltip(&app);
                     }
                     Err(e) => {
                         warn!(error = %e, "background task sync skipped/failed");

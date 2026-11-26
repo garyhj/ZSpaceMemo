@@ -1,3 +1,4 @@
+import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import {
   AlertCircle,
@@ -32,6 +33,7 @@ import { FileDropView } from "./modules/files/FileDropView";
 import { NasStatusView } from "./modules/nas/NasStatusView";
 import { StickyBoard } from "./modules/sticky/StickyBoard";
 import { StickyFloatingCard } from "./modules/sticky/StickyFloatingCard";
+import { checkLatestRelease, type ReleaseUpdateInfo } from "./utils/updater";
 import type {
   AppSettings,
   AuthStatus,
@@ -72,7 +74,8 @@ export default function App() {
             (target.tagName === "INPUT" ||
               target.tagName === "TEXTAREA" ||
               target.tagName === "SELECT" ||
-              target.isContentEditable)
+              target.isContentEditable ||
+              target.closest("pre, code, .select-text"))
         ) || Boolean(window.getSelection()?.toString());
       if (!allow) e.preventDefault();
     };
@@ -114,6 +117,7 @@ function MainWindow() {
   const [allActive, setAllActive] = useState<Task[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<ReleaseUpdateInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<ToastState | null>(null);
   const [conflictMsg, setConflictMsg] = useState<string | null>(null);
@@ -257,11 +261,28 @@ function MainWindow() {
       setView("all");
       setActiveList(null);
     });
+    const unNavigate = listen<string>("workspace:navigate", (ev) => {
+      const ws = ev.payload as WorkspaceId;
+      if (TOOLBOX_MODULES.some((m) => m.id === ws)) {
+        setWorkspace(ws);
+      }
+    });
+
+    const updateTimer = window.setTimeout(() => {
+      getVersion()
+        .then((ver) => checkLatestRelease(ver))
+        .then((info) => {
+          setUpdateInfo(info);
+        })
+        .catch(() => {});
+    }, 2500);
 
     return () => {
+      window.clearTimeout(updateTimer);
       void unSynced.then((f) => f());
       void unChanged.then((f) => f());
       void unSelect.then((f) => f());
+      void unNavigate.then((f) => f());
     };
   }, []);
 
@@ -791,11 +812,18 @@ function MainWindow() {
 
           <button
             type="button"
-            title="设置"
+            title={
+              updateInfo?.hasUpdate
+                ? `设置 · 发现新版本 v${updateInfo.latestVersion}`
+                : "设置"
+            }
             onClick={() => setShowSettings(true)}
-            className="flex h-9 w-9 items-center justify-center rounded-xl text-slate-500 hover:bg-slate-200/70"
+            className="relative flex h-9 w-9 items-center justify-center rounded-xl text-slate-500 hover:bg-slate-200/70"
           >
             <Settings className="h-4.5 w-4.5" />
+            {updateInfo?.hasUpdate && (
+              <span className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-blue-600 ring-2 ring-slate-100" />
+            )}
           </button>
         </div>
       </nav>
@@ -1206,6 +1234,8 @@ function MainWindow() {
       {showSettings && (
         <SettingsModal
           auth={auth}
+          updateInfo={updateInfo}
+          onUpdateChecked={setUpdateInfo}
           onClose={() => setShowSettings(false)}
           onLogout={async () => {
             await api.logout();

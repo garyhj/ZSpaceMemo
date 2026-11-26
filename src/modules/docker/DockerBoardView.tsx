@@ -1,4 +1,4 @@
-import { Box, Play, RefreshCw, RotateCw, Search, Square, Terminal, X } from "lucide-react";
+import { Box, Check, Copy, Play, RefreshCw, RotateCw, Search, Square, Terminal, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../../api";
 
@@ -62,6 +62,19 @@ export function DockerBoardView({ onToast }: Props) {
   const [loading, setLoading] = useState(false);
   const [actingId, setActingId] = useState<string | null>(null);
   const [logsTarget, setLogsTarget] = useState<{ name: string; text: string } | null>(null);
+  const [copiedLogs, setCopiedLogs] = useState(false);
+
+  async function copyLogs() {
+    if (!logsTarget) return;
+    try {
+      await navigator.clipboard.writeText(logsTarget.text);
+      setCopiedLogs(true);
+      onToast("已复制容器日志");
+      window.setTimeout(() => setCopiedLogs(false), 1600);
+    } catch (e) {
+      onToast(`复制失败：${String(e)}`);
+    }
+  }
 
   async function refresh() {
     setLoading(true);
@@ -302,15 +315,29 @@ export function DockerBoardView({ onToast }: Props) {
           >
             <div className="flex items-center justify-between border-b border-slate-800 px-4 py-2.5">
               <span className="text-xs font-semibold">容器日志 · {logsTarget.name}</span>
-              <button
-                type="button"
-                onClick={() => setLogsTarget(null)}
-                className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
-              >
-                <X className="h-4 w-4" />
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => void copyLogs()}
+                  className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
+                >
+                  {copiedLogs ? (
+                    <Check className="h-3 w-3 text-emerald-400" />
+                  ) : (
+                    <Copy className="h-3 w-3" />
+                  )}
+                  {copiedLogs ? "已复制" : "复制日志"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLogsTarget(null)}
+                  className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
             </div>
-            <pre className="flex-1 overflow-auto p-4 font-mono text-[11px] leading-relaxed text-slate-200 whitespace-pre-wrap">
+            <pre className="select-text flex-1 overflow-auto p-4 font-mono text-[11px] leading-relaxed text-slate-200 whitespace-pre-wrap">
               {logsTarget.text}
             </pre>
           </div>

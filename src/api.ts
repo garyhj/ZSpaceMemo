@@ -137,4 +137,6 @@ export const api = {
   setFloatingPeekHold: (hold: boolean) => invoke<void>("set_floating_peek_hold", { hold }),
   undockFloatingWindow: () => invoke<void>("undock_floating_window"),
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
+  getLogsDir: () => invoke<string>("get_logs_dir"),
+  openLogsDir: () => invoke<string>("open_logs_dir"),
 };
