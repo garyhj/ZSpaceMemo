@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 
 /**
  * Local-only UI preferences (never written to the NAS).
  * Stored in localStorage so the main window and the floating window share them;
- * cross-window changes propagate through the `storage` event.
+ * cross-window changes propagate through a single module-level `storage` listener.
  */
 export interface UiPrefs {
   timeFormat: "24h" | "12h";
@@ -15,7 +15,6 @@ export interface UiPrefs {
 }
 
 const KEY = "zsm.ui-prefs.v1";
-const EVENT = "zsm:prefs-changed";
 
 const DEFAULTS: UiPrefs = {
   timeFormat: "24h",
@@ -27,12 +26,60 @@ const DEFAULTS: UiPrefs = {
 };
 
 let cache: UiPrefs | null = null;
+const listeners = new Set<() => void>();
+let windowBound = false;
+
+function sanitizePrefs(raw: unknown): UiPrefs {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ...DEFAULTS };
+  }
+  const obj = raw as Record<string, unknown>;
+  return {
+    timeFormat: obj.timeFormat === "12h" ? "12h" : "24h",
+    weekStart: obj.weekStart === "sun" ? "sun" : "mon",
+    showCompletedGroup:
+      typeof obj.showCompletedGroup === "boolean"
+        ? obj.showCompletedGroup
+        : DEFAULTS.showCompletedGroup,
+    sidebarCollapsed:
+      typeof obj.sidebarCollapsed === "boolean"
+        ? obj.sidebarCollapsed
+        : DEFAULTS.sidebarCollapsed,
+    listsCollapsed:
+      typeof obj.listsCollapsed === "boolean" ? obj.listsCollapsed : DEFAULTS.listsCollapsed,
+    labelsCollapsed:
+      typeof obj.labelsCollapsed === "boolean" ? obj.labelsCollapsed : DEFAULTS.labelsCollapsed,
+  };
+}
+
+function notifySubscribers() {
+  for (const fn of listeners) fn();
+}
+
+function ensureWindowStorageHook() {
+  if (windowBound || typeof window === "undefined") return;
+  windowBound = true;
+  window.addEventListener("storage", (e: StorageEvent) => {
+    if (e.key === KEY || e.key === null) {
+      cache = null;
+      notifySubscribers();
+    }
+  });
+}
+
+function subscribePrefs(listener: () => void): () => void {
+  ensureWindowStorageHook();
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
 
 export function getPrefs(): UiPrefs {
   if (cache) return cache;
   try {
     const raw = localStorage.getItem(KEY);
-    cache = { ...DEFAULTS, ...(raw ? (JSON.parse(raw) as Partial<UiPrefs>) : {}) };
+    cache = raw ? sanitizePrefs(JSON.parse(raw)) : { ...DEFAULTS };
   } catch {
     cache = { ...DEFAULTS };
   }
@@ -40,33 +87,17 @@ export function getPrefs(): UiPrefs {
 }
 
 export function setPrefs(patch: Partial<UiPrefs>) {
-  cache = { ...getPrefs(), ...patch };
+  cache = sanitizePrefs({ ...getPrefs(), ...patch });
   try {
     localStorage.setItem(KEY, JSON.stringify(cache));
   } catch {
     // ignore quota / privacy errors
   }
-  window.dispatchEvent(new Event(EVENT));
+  notifySubscribers();
 }
 
 export function usePrefs(): UiPrefs {
-  const [prefs, set] = useState<UiPrefs>(getPrefs);
-  useEffect(() => {
-    const onLocal = () => set(getPrefs());
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === KEY) {
-        cache = null;
-        set(getPrefs());
-      }
-    };
-    window.addEventListener(EVENT, onLocal);
-    window.addEventListener("storage", onStorage);
-    return () => {
-      window.removeEventListener(EVENT, onLocal);
-      window.removeEventListener("storage", onStorage);
-    };
-  }, []);
-  return prefs;
+  return useSyncExternalStore(subscribePrefs, getPrefs, getPrefs);
 }
 
 /** Format a stored 24h "HH:MM" string according to the user's time-format preference. */

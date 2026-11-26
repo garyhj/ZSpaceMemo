@@ -748,10 +748,29 @@ fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
     state.service.get_settings().map_err(map_err)
 }
 
+fn sync_os_autostart(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    let mgr = app.autolaunch();
+    if mgr.is_enabled().ok() == Some(enabled) {
+        return Ok(());
+    }
+    if enabled {
+        mgr.enable().map_err(|e| format!("启用开机自启失败：{e}"))
+    } else {
+        mgr.disable().map_err(|e| format!("关闭开机自启失败：{e}"))
+    }
+}
+
 #[tauri::command]
-async fn save_settings(state: State<'_, AppState>, settings: AppSettings) -> Result<(), String> {
+async fn save_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    settings: AppSettings,
+) -> Result<(), String> {
     let prev = state.storage.load_settings().ok();
     let normalized = settings.normalized_and_validated().map_err(map_err)?;
+    if prev.as_ref().is_some_and(|p| p.autostart != normalized.autostart) {
+        sync_os_autostart(&app, normalized.autostart)?;
+    }
     state.service.save_settings(&normalized).map_err(map_err)?;
 
     let should_clear_host = prev.as_ref().is_some_and(|p| {
@@ -1093,7 +1112,14 @@ fn request_notification_permission(app: AppHandle) -> Result<String, String> {
 const WINDOWS_AUMID: &str = "com.garyhj.zspacememo";
 
 #[cfg(windows)]
+static WINDOWS_AUMID_DONE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(windows)]
 fn ensure_windows_aumid(app: Option<&AppHandle>) {
+    if app.is_some() && WINDOWS_AUMID_DONE.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
     unsafe {
         let _ = windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(
             windows::core::h!("com.garyhj.zspacememo"),
@@ -1115,6 +1141,7 @@ fn ensure_windows_aumid(app: Option<&AppHandle>) {
                     let _ = key.set_string("IconUri", s);
                 }
             }
+            WINDOWS_AUMID_DONE.store(true, std::sync::atomic::Ordering::Release);
         }
     }
 }
@@ -1577,13 +1604,15 @@ fn undock_floating_window(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
-    let mgr = app.autolaunch();
-    if enabled {
-        mgr.enable().map_err(|e| e.to_string())
-    } else {
-        mgr.disable().map_err(|e| e.to_string())
+fn set_autostart(app: AppHandle, state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    sync_os_autostart(&app, enabled)?;
+    if let Ok(mut cfg) = state.storage.load_settings() {
+        if cfg.autostart != enabled {
+            cfg.autostart = enabled;
+            state.service.save_settings(&cfg).map_err(map_err)?;
+        }
     }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1668,6 +1697,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             ensure_windows_aumid(Some(app.handle()));
+            updater::cleanup_stale_updates(app.handle());
             let data_dir = app
                 .path()
                 .app_data_dir()
@@ -1685,6 +1715,9 @@ pub fn run() {
             ));
             if let Ok(saved_cfg) = storage.load_settings() {
                 provider.set_connection_config(CliConnectionConfig::from(&saved_cfg), false);
+                if let Err(e) = sync_os_autostart(app.handle(), saved_cfg.autostart) {
+                    tracing::warn!(error = %e, "failed reconciling autostart on startup");
+                }
             }
             let service = Arc::new(TaskService::new(provider.clone(), storage.clone()));
             let sticky = Arc::new(StickyService::new(provider.clone(), storage.clone()));
@@ -1896,6 +1929,8 @@ pub fn run() {
                 if close_to_tray {
                     api.prevent_close();
                     let _ = window.hide();
+                } else {
+                    window.app_handle().exit(0);
                 }
             }
             WindowEvent::Moved(new_pos) if window.label() == "floating" => {
@@ -2129,6 +2164,16 @@ pub fn run() {
             check_app_update,
             install_app_update,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running ZSpace Kit");
+        .build(tauri::generate_context!())
+        .expect("error while building ZSpace Kit")
+        .run(|_app, _event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } = _event
+            {
+                let _ = open_main_window(_app.clone(), None);
+            }
+        });
 }

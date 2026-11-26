@@ -309,20 +309,33 @@ impl ToolboxService {
         dest_dir: &str,
         rename_on_conflict: bool,
     ) -> AppResult<Value> {
+        let base_dir = dest_dir.trim().trim_end_matches('/');
+        if base_dir.is_empty()
+            || base_dir.chars().any(|c| c.is_control())
+            || base_dir.split('/').any(|seg| seg == "..")
+        {
+            return Err(AppError::Validation("无效的目标上传目录".into()));
+        }
         let path = Path::new(local_path);
-        if !path.is_file() {
+        let meta = std::fs::symlink_metadata(path).map_err(|e| {
+            AppError::Validation(format!("本地文件不可访问 {local_path}: {e}"))
+        })?;
+        if meta.file_type().is_symlink() {
+            return Err(AppError::Validation(format!(
+                "出于安全限制，暂不支持直接上传符号链接：{local_path}"
+            )));
+        }
+        if !meta.is_file() {
             return Err(AppError::Validation(format!(
                 "仅支持上传单个文件（不支持文件夹）：{local_path}"
             )));
         }
-        let parent = path
-            .parent()
-            .ok_or_else(|| AppError::Validation("无法解析本地文件所在目录".into()))?;
-        let file_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| AppError::Validation("无效的文件名".into()))?;
-        let dest_path = format!("{}/{}", dest_dir.trim_end_matches('/'), file_name);
+        let (parent, file_name) = crate::provider::official_cli::split_local_root_and_name(
+            path,
+            "无法解析本地文件所在目录",
+            "无效的文件名",
+        )?;
+        let dest_path = format!("{base_dir}/{file_name}");
 
         let mut obj = json!({
             "local_path": file_name,
@@ -333,8 +346,28 @@ impl ToolboxService {
         }
         let params = serde_json::to_string(&obj)?;
         self.provider
-            .run_cli_with_timeout(&["file", "upload", "--params", &params, "--yes"], Some(parent), Some(300))
+            .run_cli_with_timeout(
+                &["file", "upload", "--params", &params, "--yes"],
+                Some(&parent),
+                Some(300),
+            )
             .await
+    }
+
+    async fn list_all_dir_children(&self, dir: &str) -> AppResult<HashMap<String, String>> {
+        let mut all: HashMap<String, String> = HashMap::new();
+        let mut start = 0u32;
+        const PAGE: u32 = 200;
+        loop {
+            let v = self.file_list(dir, start, PAGE).await?;
+            let batch_len = extract_array(&v, &["list", "items", "files"]).len();
+            all.extend(extract_dir_children(&v, dir));
+            if batch_len < PAGE as usize || start >= 10_000 {
+                break;
+            }
+            start += PAGE;
+        }
+        Ok(all)
     }
 
     /// Upload any mix of local files and folders into `dest_dir`, creating remote subdirectories
@@ -361,10 +394,7 @@ impl ToolboxService {
                 .cloned()
                 .unwrap_or_else(|| op.parent.clone());
             if !existing_children.contains_key(&actual_parent) {
-                let children = match self.file_list(&actual_parent, 0, 200).await {
-                    Ok(v) => extract_dir_children(&v, &actual_parent),
-                    Err(_) => HashMap::new(),
-                };
+                let children = self.list_all_dir_children(&actual_parent).await?;
                 existing_children.insert(actual_parent.clone(), children);
             }
             if let Some(existing_path) = existing_children
@@ -454,23 +484,32 @@ impl ToolboxService {
     }
 
     pub async fn download_file(&self, nas_path: &str, local_dest: &str) -> AppResult<Value> {
+        let clean_nas = nas_path.trim();
+        if clean_nas.is_empty()
+            || clean_nas.chars().any(|c| c.is_control())
+            || clean_nas.split('/').any(|seg| seg == "..")
+        {
+            return Err(AppError::Validation("无效的极空间源文件路径".into()));
+        }
         let dest = Path::new(local_dest);
-        let parent = dest
-            .parent()
-            .ok_or_else(|| AppError::Validation("无法解析目标保存目录".into()))?;
-        let file_name = dest
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| AppError::Validation("无效的保存文件名".into()))?;
+        let (parent, file_name) = crate::provider::official_cli::split_local_root_and_name(
+            dest,
+            "无法解析目标保存目录",
+            "无效的保存文件名",
+        )?;
+        if !parent.exists() {
+            std::fs::create_dir_all(&parent)
+                .map_err(|e| AppError::Storage(format!("创建保存目录失败: {e}")))?;
+        }
         let params = serde_json::to_string(&json!({
-            "path": nas_path,
+            "path": clean_nas,
             "local_path": file_name,
             "overwrite": true
         }))?;
         self.provider
             .run_cli_with_timeout(
                 &["file", "download", "--params", &params, "--yes"],
-                Some(parent),
+                Some(&parent),
                 Some(300),
             )
             .await
@@ -604,12 +643,12 @@ impl ToolboxService {
                 // Seed initial unread backlog silently so first startup does not flood.
                 continue;
             }
-            let title = pick_str(&item, &["title", "event_name", "group", "action"])
+            let title = pick_str(item, &["title", "event_name", "group", "action"])
                 .unwrap_or_else(|| "极空间 NAS 消息".into());
-            let body = pick_str(&item, &["content", "message", "msg", "desc", "detail"])
+            let body = pick_str(item, &["content", "message", "msg", "desc", "detail"])
                 .unwrap_or_else(|| title.clone());
-            let level = pick_str(&item, &["level", "severity"]).unwrap_or_else(|| "info".into());
-            let time = pick_str(&item, &["created_at", "time", "ctime", "create_time"])
+            let level = pick_str(item, &["level", "severity"]).unwrap_or_else(|| "info".into());
+            let time = pick_str(item, &["created_at", "time", "ctime", "create_time"])
                 .unwrap_or_default();
             out.push(NasEventNotice {
                 id,
@@ -722,6 +761,9 @@ impl ToolboxService {
             "uri": clean_uri
         });
         if let Some(d) = dir.map(str::trim).filter(|s| !s.is_empty()) {
+            if d.chars().any(|c| c.is_control()) || d.split('/').any(|seg| seg == "..") {
+                return Err(AppError::Validation("无效的目标保存目录路径".into()));
+            }
             obj["dir"] = json!(d);
         }
         let params = serde_json::to_string(&obj)?;
@@ -767,16 +809,59 @@ pub fn validate_download_uri(raw: &str) -> AppResult<String> {
     if trimmed.is_empty() {
         return Err(AppError::Validation("请输入下载链接（HTTP/HTTPS/Magnet/ed2k）".into()));
     }
+    if trimmed.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err(AppError::Validation("下载链接不能包含空格或控制字符".into()));
+    }
     let lower = trimmed.to_ascii_lowercase();
-    if !(lower.starts_with("http://")
-        || lower.starts_with("https://")
-        || lower.starts_with("magnet:")
-        || lower.starts_with("ed2k://")
-        || lower.starts_with("ftp://"))
-    {
+    if lower.starts_with("magnet:") || lower.starts_with("ed2k://") {
+        if (lower.starts_with("magnet:") && trimmed.len() <= "magnet:".len())
+            || (lower.starts_with("ed2k://") && trimmed.len() <= "ed2k://".len())
+        {
+            return Err(AppError::Validation("下载链接内容不完整".into()));
+        }
+        return Ok(trimmed.to_string());
+    }
+    let rest = if let Some(r) = lower.strip_prefix("https://") {
+        r
+    } else if let Some(r) = lower.strip_prefix("http://") {
+        r
+    } else if let Some(r) = lower.strip_prefix("ftp://") {
+        r
+    } else {
         return Err(AppError::Validation(
             "仅支持 HTTP(S)、Magnet 磁力链、ed2k 或 FTP 下载链接".into(),
         ));
+    };
+
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host_port = authority.rsplit('@').next().unwrap_or("");
+    let host = if let Some(stripped) = host_port.strip_prefix('[') {
+        stripped.split(']').next().unwrap_or("")
+    } else {
+        host_port.split(':').next().unwrap_or("")
+    };
+    if host.is_empty() {
+        return Err(AppError::Validation("下载链接缺少有效主机名".into()));
+    }
+    if host == "localhost" || host.ends_with(".localhost") {
+        return Err(AppError::Validation(
+            "安全限制：不允许向 NAS 本机环回地址发起远程下载".into(),
+        ));
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        let blocked = match ip {
+            std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_unspecified() || v4.is_link_local(),
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback()
+                    || v6.is_unspecified()
+                    || (v6.segments()[0] & 0xffc0) == 0xfe80
+            }
+        };
+        if blocked {
+            return Err(AppError::Validation(
+                "安全限制：不允许向环回或链路本地 IP 发起远程下载".into(),
+            ));
+        }
     }
     Ok(trimmed.to_string())
 }
@@ -891,7 +976,26 @@ mod tests {
             validate_download_uri("  magnet:?xt=urn:btih:12345  ").unwrap(),
             "magnet:?xt=urn:btih:12345"
         );
+        assert_eq!(
+            validate_download_uri("https://example.com/file.iso").unwrap(),
+            "https://example.com/file.iso"
+        );
         assert!(validate_download_uri("/local/file.iso").is_err());
+        assert!(validate_download_uri("https://").is_err());
+        assert!(validate_download_uri("http://127.0.0.1:8080/secret").is_err());
+        assert!(validate_download_uri("http://localhost/admin").is_err());
+        assert!(validate_download_uri("http://169.254.169.254/latest").is_err());
+        assert!(validate_download_uri("https://example.com/a\nb").is_err());
+
+        let (root, name) = crate::provider::official_cli::split_local_root_and_name(
+            Path::new("foo.txt"),
+            "err dir",
+            "err name",
+        )
+        .unwrap();
+        assert_eq!(root, Path::new("."));
+        assert_eq!(name, "foo.txt");
+
         assert_eq!(normalize_download_task_type("downloading"), "loading");
         assert_eq!(normalize_download_task_type("DONE"), "complete");
         assert_eq!(normalize_download_task_type("unknown"), "all");

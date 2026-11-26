@@ -1,4 +1,12 @@
 import { HolidayUtil, Solar } from "lunar-javascript";
+import {
+  formatLunarDay,
+  formatLunarMonth,
+  LUNAR_DAY_NAMES,
+  LUNAR_MONTH_NAMES,
+} from "./lunar-names";
+
+export { formatLunarDay, formatLunarMonth, LUNAR_DAY_NAMES, LUNAR_MONTH_NAMES };
 
 export interface DayCalendarMeta {
   lunarText: string;
@@ -6,7 +14,18 @@ export interface DayCalendarMeta {
   holidayBadge: "休" | "班" | null;
 }
 
+const MAX_CACHE_ENTRIES = 2000;
 const cache = new Map<string, DayCalendarMeta>();
+
+function parseValidYmd(dateStr: string): [number, number, number] | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr.trim());
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || y < 1900 || y > 2100) return null;
+  return [y, mo, d];
+}
 
 /**
  * Compute offline Chinese lunar day / solar term / traditional festival / statutory holiday badge
@@ -16,7 +35,11 @@ export function getDayCalendarMeta(dateStr: string): DayCalendarMeta {
   const hit = cache.get(dateStr);
   if (hit) return hit;
 
-  const [y, m, d] = dateStr.split("-").map(Number);
+  const ymd = parseValidYmd(dateStr);
+  if (!ymd) {
+    return { lunarText: "", isHighlight: false, holidayBadge: null };
+  }
+  const [y, m, d] = ymd;
   const solar = Solar.fromYmd(y, m, d);
   const lunar = solar.getLunar();
 
@@ -47,65 +70,12 @@ export function getDayCalendarMeta(dateStr: string): DayCalendarMeta {
   }
 
   const meta: DayCalendarMeta = { lunarText, isHighlight, holidayBadge };
+  if (cache.size >= MAX_CACHE_ENTRIES) {
+    const firstKey = cache.keys().next().value;
+    if (firstKey !== undefined) cache.delete(firstKey);
+  }
   cache.set(dateStr, meta);
   return meta;
-}
-
-export const LUNAR_MONTH_NAMES = [
-  "正月",
-  "二月",
-  "三月",
-  "四月",
-  "五月",
-  "六月",
-  "七月",
-  "八月",
-  "九月",
-  "十月",
-  "冬月",
-  "腊月",
-];
-
-export const LUNAR_DAY_NAMES = [
-  "初一",
-  "初二",
-  "初三",
-  "初四",
-  "初五",
-  "初六",
-  "初七",
-  "初八",
-  "初九",
-  "初十",
-  "十一",
-  "十二",
-  "十三",
-  "十四",
-  "十五",
-  "十六",
-  "十七",
-  "十八",
-  "十九",
-  "二十",
-  "廿一",
-  "廿二",
-  "廿三",
-  "廿四",
-  "廿五",
-  "廿六",
-  "廿七",
-  "廿八",
-  "廿九",
-  "三十",
-];
-
-export function formatLunarMonth(month: number, isLeap = false): string {
-  const base = LUNAR_MONTH_NAMES[Math.max(0, Math.min(11, month - 1))] ?? "正月";
-  return isLeap ? `闰${base}` : base;
-}
-
-export function formatLunarDay(day: number): string {
-  return LUNAR_DAY_NAMES[Math.max(0, Math.min(29, day - 1))] ?? `${day}日`;
 }
 
 export function getLunarCoords(dateStr: string): {
@@ -115,7 +85,11 @@ export function getLunarCoords(dateStr: string): {
   isLeap: boolean;
   label: string;
 } {
-  const [y, m, d] = dateStr.split("-").map(Number);
+  const ymd = parseValidYmd(dateStr);
+  if (!ymd) {
+    return { year: 2026, month: 1, day: 1, isLeap: false, label: "正月初一" };
+  }
+  const [y, m, d] = ymd;
   const lunar = Solar.fromYmd(y, m, d).getLunar();
   const rawMonth = lunar.getMonth();
   const month = Math.abs(rawMonth);

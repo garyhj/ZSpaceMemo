@@ -15,8 +15,9 @@ use crate::storage::{AppSettings, DueReminderJob, LocalStorage, NotificationReco
 use chrono::{Duration, NaiveDateTime, Utc};
 use chrono_tz::Tz;
 use serde::Serialize;
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{Arc, Mutex as StdMutex};
+use tokio::sync::Mutex as AsyncMutex;
 use tracing::{info, warn};
 
 const MAX_HISTORY_ENTRIES: usize = 200;
@@ -42,11 +43,51 @@ pub struct FiredNotification {
 pub struct TaskService<P: NotebookProvider> {
     provider: Arc<P>,
     storage: Arc<LocalStorage>,
+    sync_lock: AsyncMutex<()>,
+    task_locks: StdMutex<HashMap<i64, Arc<AsyncMutex<()>>>>,
+    dirty_during_sync: StdMutex<HashSet<i64>>,
+    deleted_during_sync: StdMutex<HashSet<i64>>,
 }
 
 impl<P: NotebookProvider> TaskService<P> {
     pub fn new(provider: Arc<P>, storage: Arc<LocalStorage>) -> Self {
-        Self { provider, storage }
+        Self {
+            provider,
+            storage,
+            sync_lock: AsyncMutex::new(()),
+            task_locks: StdMutex::new(HashMap::new()),
+            dirty_during_sync: StdMutex::new(HashSet::new()),
+            deleted_during_sync: StdMutex::new(HashSet::new()),
+        }
+    }
+
+    fn task_lock(&self, id: i64) -> Arc<AsyncMutex<()>> {
+        let mut map = self.task_locks.lock().unwrap_or_else(|p| p.into_inner());
+        map.entry(id)
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
+    }
+
+    fn mark_dirty(&self, id: i64) {
+        self.dirty_during_sync
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id);
+        self.deleted_during_sync
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&id);
+    }
+
+    fn mark_deleted(&self, id: i64) {
+        self.deleted_during_sync
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id);
+        self.dirty_during_sync
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&id);
     }
 
     pub fn storage(&self) -> &LocalStorage {
@@ -121,6 +162,18 @@ impl<P: NotebookProvider> TaskService<P> {
 
     /// Incremental sync from NAS into local SQLite index cache + reminder job reconciliation.
     pub async fn sync(&self) -> AppResult<SyncSummary> {
+        let _sync_guard = self.sync_lock.lock().await;
+        {
+            self.dirty_during_sync
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
+            self.deleted_during_sync
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
+        }
+
         let cat_id = self.initialize_todo_category(false).await?;
         let mut all_summaries = Vec::new();
         let mut start = 0u32;
@@ -136,13 +189,13 @@ impl<P: NotebookProvider> TaskService<P> {
             start += PAGE;
         }
 
-        let keep_ids: Vec<i64> = all_summaries.iter().map(|s| s.id).collect();
+        let mut keep_set: HashSet<i64> = all_summaries.iter().map(|s| s.id).collect();
         let mut fetched_details = 0usize;
         let mut recovered_count = 0usize;
 
         for summary in &all_summaries {
             let cached = self.storage.get_cached_task(summary.id)?;
-            let unchanged = cached.as_ref().map_or(false, |c| {
+            let unchanged = cached.as_ref().is_some_and(|c| {
                 c.updated_at_unix == summary.updated_at
                     && c.length == summary.length
                     && c.task.title == summary.title
@@ -156,8 +209,34 @@ impl<P: NotebookProvider> TaskService<P> {
                 continue;
             }
 
-            let raw = self.provider.get_note(summary.id).await?;
+            let raw = match self.provider.get_note(summary.id).await {
+                Ok(r) => r,
+                Err(AppError::TaskNotFound(_)) => {
+                    keep_set.remove(&summary.id);
+                    continue;
+                }
+                Err(e) => {
+                    warn!(task_id = summary.id, error = %e, "task fetch skipped during sync");
+                    continue;
+                }
+            };
             fetched_details += 1;
+
+            let concurrently_touched = {
+                let dirty = self
+                    .dirty_during_sync
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                let deleted = self
+                    .deleted_during_sync
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                dirty.contains(&summary.id) || deleted.contains(&summary.id)
+            };
+            if concurrently_touched {
+                continue;
+            }
+
             let mut decoded = decode_task_note(
                 raw.id,
                 &raw.title,
@@ -165,6 +244,8 @@ impl<P: NotebookProvider> TaskService<P> {
                 raw.pin_flag != 0,
                 raw.updated_at,
             );
+            let was_corrupted = decoded.meta_corrupted;
+            let mut wrote_back_recovery = false;
 
             if decoded.meta_corrupted {
                 if let Some(recovered) = self
@@ -177,20 +258,36 @@ impl<P: NotebookProvider> TaskService<P> {
                     recovered_count += 1;
                     // Write recovered metadata back to NAS while keeping user's new title & description.
                     let enc = encode_task_note(&decoded.task);
-                    let _ = self
+                    match self
                         .provider
                         .update_note(raw.id, &enc.title, &enc.body, &enc.in_brief)
-                        .await;
-                    decoded.task.etag = enc.etag;
+                        .await
+                    {
+                        Ok(()) => {
+                            decoded.task.etag = enc.etag;
+                            wrote_back_recovery = true;
+                        }
+                        Err(e) => {
+                            warn!(task_id = raw.id, error = %e, "failed writing recovered metadata to NAS; will retry next sync");
+                        }
+                    }
                 }
             }
 
-            self.storage.upsert_cached_task(
-                &decoded.task,
-                raw.updated_at,
-                raw.length,
-                decoded.meta_present && !decoded.meta_corrupted,
-            )?;
+            let valid_for_cache =
+                decoded.meta_present && !decoded.meta_corrupted && (!was_corrupted || wrote_back_recovery);
+            let ts = if wrote_back_recovery {
+                Utc::now().timestamp()
+            } else {
+                raw.updated_at
+            };
+            let len = if wrote_back_recovery {
+                encode_task_note(&decoded.task).body.len() as i64
+            } else {
+                raw.length
+            };
+            self.storage
+                .upsert_cached_task(&decoded.task, ts, len, valid_for_cache)?;
 
             // Only reconcile reminders when metadata is valid; if corrupted & unrecovered,
             // keep existing reminder jobs intact per DESIGN §4.3.
@@ -199,6 +296,23 @@ impl<P: NotebookProvider> TaskService<P> {
             }
         }
 
+        {
+            let dirty = self
+                .dirty_during_sync
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let deleted = self
+                .deleted_during_sync
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            for id in dirty.iter() {
+                keep_set.insert(*id);
+            }
+            for id in deleted.iter() {
+                keep_set.remove(id);
+            }
+        }
+        let keep_ids: Vec<i64> = keep_set.into_iter().collect();
         self.storage.remove_cached_tasks_except(&keep_ids)?;
 
         Ok(SyncSummary {
@@ -306,6 +420,7 @@ impl<P: NotebookProvider> TaskService<P> {
             meta_state: MetaState::Ok,
             rev: 1,
             etag: String::new(),
+            meta_extra: BTreeMap::new(),
         };
 
         let encoded = encode_task_note(&task);
@@ -315,7 +430,7 @@ impl<P: NotebookProvider> TaskService<P> {
             .await?;
 
         if task.pinned {
-            let _ = self.provider.pin_note(created_raw.id, true).await;
+            self.provider.pin_note(created_raw.id, true).await?;
         }
 
         // Verify returned note directly when NAS returns full body (confirmed in M0);
@@ -339,6 +454,7 @@ impl<P: NotebookProvider> TaskService<P> {
         }
 
         task = decoded.task;
+        self.mark_dirty(task.id);
         self.storage
             .upsert_cached_task(&task, verified.updated_at, verified.length, true)?;
         self.reconcile_reminders(&task)?;
@@ -353,6 +469,8 @@ impl<P: NotebookProvider> TaskService<P> {
         }
         let raw = self.provider.get_note(id).await?;
         let decoded = decode_task_note(raw.id, &raw.title, &raw.body, raw.pin_flag != 0, raw.updated_at);
+        let locked = self.task_lock(id);
+        let _guard = locked.lock().await;
         self.storage.upsert_cached_task(
             &decoded.task,
             raw.updated_at,
@@ -362,17 +480,24 @@ impl<P: NotebookProvider> TaskService<P> {
         Ok(decoded.task)
     }
 
+    async fn load_fresh_for_mutation(&self, id: i64) -> AppResult<Task> {
+        let raw = self.provider.get_note(id).await?;
+        let decoded = decode_task_note(
+            raw.id,
+            &raw.title,
+            &raw.body,
+            raw.pin_flag != 0,
+            raw.updated_at,
+        );
+        Ok(decoded.task)
+    }
+
     /// Update a task with optimistic concurrency check (ETag).
     pub async fn update_task(&self, id: i64, patch: UpdateTaskInput) -> AppResult<Task> {
-        let latest_raw = self.provider.get_note(id).await?;
-        let decoded = decode_task_note(
-            latest_raw.id,
-            &latest_raw.title,
-            &latest_raw.body,
-            latest_raw.pin_flag != 0,
-            latest_raw.updated_at,
-        );
-        let mut task = decoded.task;
+        let lock = self.task_lock(id);
+        let _guard = lock.lock().await;
+
+        let mut task = self.load_fresh_for_mutation(id).await?;
 
         if !patch.force {
             if let Some(expected) = &patch.etag {
@@ -478,6 +603,7 @@ impl<P: NotebookProvider> TaskService<P> {
         let now = Utc::now();
         task.etag = encoded.etag;
         task.updated_at = Some(now.to_rfc3339());
+        self.mark_dirty(task.id);
         self.storage.upsert_cached_task(
             &task,
             now.timestamp(),
@@ -495,7 +621,9 @@ impl<P: NotebookProvider> TaskService<P> {
         occurrence_key: Option<&str>,
         action: OccurrenceActionStatus,
     ) -> AppResult<Task> {
-        let mut task = self.get_task(id, false).await?;
+        let lock = self.task_lock(id);
+        let _guard = lock.lock().await;
+        let mut task = self.load_fresh_for_mutation(id).await?;
         let now = Utc::now();
         let now_iso = now.to_rfc3339();
         let today = self.today_in_tz(&task.schedule.timezone);
@@ -555,12 +683,17 @@ impl<P: NotebookProvider> TaskService<P> {
     }
 
     pub async fn reopen_task(&self, id: i64, occurrence_key: Option<&str>) -> AppResult<Task> {
-        let mut task = self.get_task(id, false).await?;
+        let lock = self.task_lock(id);
+        let _guard = lock.lock().await;
+        let mut task = self.load_fresh_for_mutation(id).await?;
         if let (Some(_rule), Some(series)) = (&task.repeat, &mut task.series) {
-            if let Some(key) = occurrence_key {
+            let target_key = occurrence_key
+                .map(str::to_string)
+                .or_else(|| series.history.first().map(|h| h.key.clone()));
+            if let Some(key) = target_key {
                 series.history.retain(|h| h.key != key);
-                if key < series.cursor.as_str() {
-                    series.cursor = key.to_string();
+                if key < series.cursor {
+                    series.cursor = key;
                 }
                 series.ended_at = None;
                 task.status = TaskStatus::Active;
@@ -573,7 +706,9 @@ impl<P: NotebookProvider> TaskService<P> {
     }
 
     pub async fn end_series(&self, id: i64) -> AppResult<Task> {
-        let mut task = self.get_task(id, false).await?;
+        let lock = self.task_lock(id);
+        let _guard = lock.lock().await;
+        let mut task = self.load_fresh_for_mutation(id).await?;
         if let Some(series) = &mut task.series {
             series.ended_at = Some(Utc::now().to_rfc3339());
             task.status = TaskStatus::Ended;
@@ -582,6 +717,9 @@ impl<P: NotebookProvider> TaskService<P> {
     }
 
     pub async fn delete_task(&self, id: i64) -> AppResult<()> {
+        let lock = self.task_lock(id);
+        let _guard = lock.lock().await;
+        self.mark_deleted(id);
         self.provider.delete_note(id).await?;
         self.storage.delete_cached_task(id)?;
         Ok(())
@@ -590,12 +728,17 @@ impl<P: NotebookProvider> TaskService<P> {
     /// Upload a local file as a native ZSpace note attachment (`attachment_upload`) and record it in ZSM1.
     pub async fn upload_task_attachment(&self, id: i64, local_path: &str) -> AppResult<Task> {
         let path = std::path::Path::new(local_path);
-        if !path.is_file() {
+        let meta = std::fs::symlink_metadata(path).map_err(|e| {
+            AppError::Validation(format!("附件路径不可访问 {local_path}: {e}"))
+        })?;
+        if meta.file_type().is_symlink() || !meta.is_file() {
             return Err(AppError::Validation(format!(
-                "附件路径不存在或不是文件：{local_path}"
+                "附件路径无效或不是常规文件：{local_path}"
             )));
         }
-        let mut task = self.get_task(id, false).await?;
+        let lock = self.task_lock(id);
+        let _guard = lock.lock().await;
+        let mut task = self.load_fresh_for_mutation(id).await?;
         let att = self.provider.upload_note_attachment(id, path).await?;
         task.attachments.retain(|existing| existing.file_id != att.file_id);
         task.attachments.push(att);
@@ -625,7 +768,9 @@ impl<P: NotebookProvider> TaskService<P> {
 
     /// Unlink an attachment entry from this task's ZSM1 metadata (does not purge NAS notepad file storage).
     pub async fn remove_task_attachment(&self, id: i64, file_id: &str) -> AppResult<Task> {
-        let mut task = self.get_task(id, false).await?;
+        let lock = self.task_lock(id);
+        let _guard = lock.lock().await;
+        let mut task = self.load_fresh_for_mutation(id).await?;
         let prev_len = task.attachments.len();
         task.attachments.retain(|a| a.file_id != file_id);
         if task.attachments.len() == prev_len {
@@ -657,7 +802,9 @@ impl<P: NotebookProvider> TaskService<P> {
         new_title: Option<&str>,
     ) -> AppResult<Task> {
         let _ = parse_date(new_due_date)?;
-        let mut task = self.get_task(id, false).await?;
+        let lock = self.task_lock(id);
+        let _guard = lock.lock().await;
+        let mut task = self.load_fresh_for_mutation(id).await?;
         if let Some(series) = &mut task.series {
             let entry = series
                 .overrides
@@ -714,7 +861,9 @@ impl<P: NotebookProvider> TaskService<P> {
         id: i64,
         occurrence_key: &str,
     ) -> AppResult<Task> {
-        let mut task = self.get_task(id, false).await?;
+        let lock = self.task_lock(id);
+        let _guard = lock.lock().await;
+        let mut task = self.load_fresh_for_mutation(id).await?;
         if let Some(series) = &mut task.series {
             if series.overrides.remove(occurrence_key).is_some() {
                 return self.persist_task_update(task, None).await;
@@ -1136,6 +1285,19 @@ impl<P: NotebookProvider> TaskService<P> {
         self.storage
             .add_snooze_job(task_id, occurrence_key, fire_at, title, body)
     }
+
+    /// Re-materialize 48h reminders for all cached active tasks without touching NAS (offline safety).
+    pub fn reconcile_all_cached_reminders(&self) -> AppResult<usize> {
+        let tasks = self.storage.list_cached_tasks()?;
+        let mut count = 0usize;
+        for t in tasks {
+            if !t.status.is_done() && !t.reminders.is_empty() {
+                self.reconcile_reminders(&t)?;
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
 }
 
 #[cfg(test)]
@@ -1368,5 +1530,69 @@ mod tests {
 
         let removed = svc.remove_task_attachment(task.id, &fid).await.unwrap();
         assert!(removed.attachments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn sync_cancels_pending_reminders_for_remotely_deleted_task_and_recovers_stale_firing() {
+        let (svc, provider) = setup().await;
+        let past_due = (Utc::now() - Duration::minutes(1)).to_rfc3339();
+        let task = svc
+            .create_task(CreateTaskInput {
+                title: "会被远端删除的提醒".into(),
+                description: String::new(),
+                priority: Priority::Normal,
+                list: None,
+                labels: vec![],
+                pinned: false,
+                schedule: Schedule {
+                    all_day: false,
+                    due: Some(due_point(&format_date(Utc::now().date_naive()), None)),
+                    timezone: "UTC".into(),
+                },
+                reminders: vec![Reminder::Absolute {
+                    id: "abs1".into(),
+                    at: past_due,
+                }],
+                repeat: None,
+            })
+            .await
+            .unwrap();
+
+        // Delete directly on NAS provider (bypassing local TaskService::delete_task).
+        provider.delete_note(task.id).await.unwrap();
+        svc.sync().await.unwrap();
+
+        // Remote delete must cancel pending jobs so no zombie reminder fires.
+        let fired = svc.process_due_reminders().await.unwrap();
+        assert!(fired.is_empty());
+
+        // Snooze + simulate stale 'firing' job from a crash/update exit -> recover_stale_firing_jobs restores it.
+        let job_key = svc
+            .storage()
+            .add_snooze_job(
+                999_999,
+                "single",
+                Utc::now() - Duration::minutes(1),
+                "Crash test",
+                "Body",
+            )
+            .unwrap();
+        let claimed = svc
+            .storage()
+            .claim_due_jobs(Utc::now().timestamp())
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].job_key, job_key);
+
+        let recovered = svc
+            .storage()
+            .recover_stale_firing_jobs(Utc::now().timestamp() + 1)
+            .unwrap();
+        assert_eq!(recovered, 1);
+        let re_claimed = svc
+            .storage()
+            .claim_due_jobs(Utc::now().timestamp())
+            .unwrap();
+        assert_eq!(re_claimed.len(), 1);
     }
 }

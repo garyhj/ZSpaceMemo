@@ -14,7 +14,7 @@ import {
   Wifi,
   X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { AppSettings, AuthStatus, ConnectionMode, NasDoctorReport } from "../types";
 import { setPrefs, usePrefs } from "../utils/prefs";
@@ -58,8 +58,11 @@ export function SettingsModal({
     updateInfo?.has_update ? "connection" : "general"
   );
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const settingsRef = useRef<AppSettings | null>(null);
+  const saveQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const [notifPerm, setNotifPerm] = useState<"granted" | "denied" | "prompt" | "unknown">("unknown");
-  const [appVersion, setAppVersion] = useState("0.7.1");
+  const [appVersion, setAppVersion] = useState("0.7.2");
   const [localUpdate, setLocalUpdate] = useState<ReleaseUpdateInfo | null>(updateInfo ?? null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
 
@@ -77,21 +80,31 @@ export function SettingsModal({
     setLocalUpdate(updateInfo ?? null);
   }, [updateInfo]);
 
-  function syncConnectionDraft(cfg: AppSettings) {
+  const syncConnectionDraft = useCallback((cfg: AppSettings) => {
     setConnMode(cfg.connection_mode ?? "auto");
     setLanHost(cfg.lan_host ?? "");
     setAllowHttp(Boolean(cfg.allow_insecure_http));
     setCliTimeout(cfg.cli_timeout_secs ?? 30);
-  }
+  }, []);
 
-  useEffect(() => {
+  const loadInitialSettings = useCallback(() => {
+    setLoadError(null);
     api
       .getSettings()
       .then((cfg) => {
+        settingsRef.current = cfg;
         setSettings(cfg);
         syncConnectionDraft(cfg);
       })
-      .catch((e) => setMsg(String(e)));
+      .catch((e) => {
+        const err = String(e);
+        setLoadError(err);
+        setMsg(`读取设置失败：${err}`);
+      });
+  }, [syncConnectionDraft]);
+
+  useEffect(() => {
+    loadInitialSettings();
     api
       .notificationPermissionState()
       .then(setNotifPerm)
@@ -99,32 +112,98 @@ export function SettingsModal({
     getVersion()
       .then(setAppVersion)
       .catch(() => {});
-  }, []);
+  }, [loadInitialSettings]);
 
-  if (!settings) return null;
-
-  async function save(next: AppSettings, successMsg = "设置已保存"): Promise<AppSettings | null> {
-    setBusy(true);
-    setMsg("");
-    try {
-      await api.saveSettings(next);
-      if (next.autostart !== settings?.autostart) {
-        await api.setAutostart(next.autostart).catch(() => {});
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !installingUpdate) {
+        onClose();
       }
-      const refreshed = await api.getSettings().catch(() => next);
-      setSettings(refreshed);
-      syncConnectionDraft(refreshed);
-      onSettingsChanged(refreshed);
-      const nextAuth = await api.authStatus().catch(() => null);
-      if (nextAuth) onAuthRefreshed?.(nextAuth);
-      setMsg(successMsg);
-      return refreshed;
-    } catch (e) {
-      setMsg(`保存失败：${String(e)}`);
-      return null;
-    } finally {
-      setBusy(false);
-    }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [installingUpdate, onClose]);
+
+  function handleRequestClose() {
+    if (!installingUpdate) onClose();
+  }
+
+  function saveSettingsPatch(
+    updater: (cur: AppSettings) => AppSettings,
+    successMsg = "设置已保存"
+  ): Promise<AppSettings | null> {
+    const run = async (): Promise<AppSettings | null> => {
+      const current = settingsRef.current;
+      if (!current) return null;
+      const next = updater(current);
+      setBusy(true);
+      setMsg("");
+      try {
+        await api.saveSettings(next);
+        const refreshed = await api.getSettings().catch(() => next);
+        settingsRef.current = refreshed;
+        setSettings(refreshed);
+        syncConnectionDraft(refreshed);
+        onSettingsChanged(refreshed);
+        const nextAuth = await api.authStatus().catch(() => null);
+        if (nextAuth) onAuthRefreshed?.(nextAuth);
+        setMsg(successMsg);
+        return refreshed;
+      } catch (e) {
+        setMsg(`保存失败：${String(e)}`);
+        return null;
+      } finally {
+        setBusy(false);
+      }
+    };
+    const nextTask = saveQueueRef.current.then(run, run);
+    saveQueueRef.current = nextTask;
+    return nextTask;
+  }
+
+  if (!settings) {
+    return (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 p-4"
+        onClick={handleRequestClose}
+      >
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="设置"
+          className="flex w-full max-w-md flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
+            <h2 className="text-base font-semibold text-slate-900">设置</h2>
+            <button
+              type="button"
+              onClick={handleRequestClose}
+              aria-label="关闭设置"
+              className="rounded-lg p-1 text-slate-500 hover:bg-slate-100"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="p-6 text-center text-xs text-slate-500 space-y-3">
+            {loadError ? (
+              <>
+                <div className="text-red-500">读取配置失败：{loadError}</div>
+                <button
+                  type="button"
+                  onClick={loadInitialSettings}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-slate-700 hover:bg-slate-50"
+                >
+                  重试
+                </button>
+              </>
+            ) : (
+              <div>正在加载配置…</div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
   }
 
   const connDirty =
@@ -134,17 +213,18 @@ export function SettingsModal({
     cliTimeout !== (settings.cli_timeout_secs ?? 30);
 
   async function saveConnectionSettings(): Promise<boolean> {
-    if (!settings) return false;
-    const saved = await save(
-      {
-        ...settings,
+    if (!settingsRef.current) return false;
+    const trimmedHost = lanHost.trim();
+    const saved = await saveSettingsPatch(
+      (cur) => ({
+        ...cur,
         connection_mode: connMode,
-        lan_host: lanHost.trim() || null,
+        lan_host: trimmedHost || null,
         allow_insecure_http: allowHttp,
         cli_timeout_secs: cliTimeout,
-      },
+      }),
       connMode === "lan"
-        ? `已启用 LAN 内网直连：${lanHost.trim()}`
+        ? `已启用 LAN 内网直连：${trimmedHost}`
         : connMode === "cloud"
         ? "已切换为云代理模式 (cloud)"
         : "已切换为自动连接模式 (auto)"
@@ -153,7 +233,7 @@ export function SettingsModal({
   }
 
   async function handleDoctor() {
-    if (!settings) return;
+    if (!settingsRef.current) return;
     setDiagnosing(true);
     setMsg("");
     try {
@@ -183,7 +263,9 @@ export function SettingsModal({
       const id = await api.initializeCategory(true);
       await api.initStickyCategory(true).catch(() => 0);
       const refreshed = await api.getSettings();
+      settingsRef.current = refreshed;
       setSettings(refreshed);
+      syncConnectionDraft(refreshed);
       onSettingsChanged(refreshed);
       setMsg(`待办与便签分类已就绪（待办分类 ID: ${id}）`);
     } catch (e) {
@@ -221,9 +303,12 @@ export function SettingsModal({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 p-4"
-      onClick={onClose}
+      onClick={handleRequestClose}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="设置"
         className="flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
@@ -243,8 +328,11 @@ export function SettingsModal({
           </div>
           <button
             type="button"
-            onClick={onClose}
-            className="rounded-lg p-1 text-slate-500 hover:bg-slate-100"
+            disabled={installingUpdate}
+            title={installingUpdate ? "正在下载/安装更新，请稍候" : "关闭"}
+            aria-label="关闭设置"
+            onClick={handleRequestClose}
+            className="rounded-lg p-1 text-slate-500 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <X className="h-4 w-4" />
           </button>
@@ -412,12 +500,17 @@ export function SettingsModal({
                     <span className="font-mono text-[11px] text-slate-500">v{appVersion}</span>
                   </div>
 
-                  {localUpdate?.has_update ? (
+                  {localUpdate?.has_update && (
                     <div className="space-y-1.5 rounded-lg border border-blue-200 bg-blue-50 p-2.5 text-blue-800">
                       <div className="flex items-center justify-between gap-2">
                         <span className="inline-flex items-center gap-1 font-medium">
                           <Sparkles className="h-3.5 w-3.5 text-blue-600" />
                           发现新版 v{localUpdate.latest_version}
+                          {(localUpdate.asset_size ?? 0) > 0 && (
+                            <span className="text-[11px] font-normal text-blue-600">
+                              （{formatBytesCompact(localUpdate.asset_size)}）
+                            </span>
+                          )}
                         </span>
                         <div className="flex items-center gap-1">
                           {localUpdate.auto_install_supported && onInstallUpdate && (
@@ -441,60 +534,72 @@ export function SettingsModal({
                         </div>
                       </div>
                       {updateProgress && installingUpdate && (
-                        <div className="h-1.5 overflow-hidden rounded-full bg-blue-200">
-                          <div
-                            className="h-full rounded-full bg-blue-600 transition-all duration-150"
-                            style={{ width: `${Math.max(4, updateProgress.percent)}%` }}
-                          />
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between gap-2 text-[11px] text-blue-700">
+                            <span className="truncate">{updateProgress.message}</span>
+                            <span className="shrink-0 tabular-nums font-medium">
+                              {Math.round(updateProgress.percent)}%
+                            </span>
+                          </div>
+                          <div className="h-1.5 overflow-hidden rounded-full bg-blue-200">
+                            <div
+                              className="h-full rounded-full bg-blue-600 transition-all duration-150"
+                              style={{ width: `${Math.max(4, updateProgress.percent)}%` }}
+                            />
+                          </div>
                         </div>
                       )}
                       {updateError && <div className="text-[11px] text-red-600">{updateError}</div>}
                     </div>
-                  ) : (
-                    <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50/70 p-2">
-                      <button
-                        type="button"
-                        disabled={checkingUpdate || installingUpdate}
-                        onClick={async () => {
-                          setCheckingUpdate(true);
-                          setMsg("");
-                          try {
-                            const info = await checkLatestRelease();
-                            setLocalUpdate(info);
-                            onUpdateChecked?.(info);
-                            setMsg(
-                              info.has_update
-                                ? `发现新版本 v${info.latest_version}（${formatBytesCompact(info.asset_size)}）`
-                                : `当前 v${appVersion} 已是最新版本`
-                            );
-                          } catch (e) {
-                            setMsg(`检查更新失败：${String(e)}`);
-                          } finally {
-                            setCheckingUpdate(false);
-                          }
-                        }}
-                        className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-slate-700 hover:bg-slate-100 disabled:opacity-50"
-                      >
-                        <RefreshCw className={`h-3 w-3 ${checkingUpdate ? "animate-spin" : ""}`} />
-                        检查更新
-                      </button>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          try {
-                            const dir = await api.openLogsDir();
-                            setMsg(`已打开日志目录：${dir}`);
-                          } catch (e) {
-                            setMsg(`打开日志目录失败：${String(e)}`);
-                          }
-                        }}
-                        className="ml-auto inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-slate-700 hover:bg-slate-100"
-                      >
-                        <FolderOpen className="h-3 w-3" />
-                        日志目录
-                      </button>
-                    </div>
                   )}
+
+                  <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50/70 p-2">
+                    <button
+                      type="button"
+                      disabled={checkingUpdate || installingUpdate}
+                      onClick={async () => {
+                        setCheckingUpdate(true);
+                        setMsg("");
+                        try {
+                          const info = await checkLatestRelease();
+                          setLocalUpdate(info);
+                          onUpdateChecked?.(info);
+                          setMsg(
+                            info.has_update
+                              ? `发现新版本 v${info.latest_version}${
+                                  (info.asset_size ?? 0) > 0
+                                    ? `（${formatBytesCompact(info.asset_size)}）`
+                                    : ""
+                                }`
+                              : `当前 v${appVersion} 已是最新版本`
+                          );
+                        } catch (e) {
+                          setMsg(`检查更新失败：${String(e)}`);
+                        } finally {
+                          setCheckingUpdate(false);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                    >
+                      <RefreshCw className={`h-3 w-3 ${checkingUpdate ? "animate-spin" : ""}`} />
+                      检查更新
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          const dir = await api.openLogsDir();
+                          setMsg(`已打开日志目录：${dir}`);
+                        } catch (e) {
+                          setMsg(`打开日志目录失败：${String(e)}`);
+                        }
+                      }}
+                      className="ml-auto inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-slate-700 hover:bg-slate-100"
+                    >
+                      <FolderOpen className="h-3 w-3" />
+                      日志目录
+                    </button>
+                  </div>
 
                   {/* Diagnostic / Category summary box (constant slot, no height jump) */}
                   <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-2.5 space-y-1.5">
@@ -596,9 +701,13 @@ export function SettingsModal({
                     <input
                       type="checkbox"
                       checked={settings.default_auto_remind}
-                      onChange={(e) =>
-                        void save({ ...settings, default_auto_remind: e.target.checked })
-                      }
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        void saveSettingsPatch((cur) => ({
+                          ...cur,
+                          default_auto_remind: checked,
+                        }));
+                      }}
                       className="h-4 w-4 accent-blue-600"
                     />
                   </label>
@@ -611,9 +720,13 @@ export function SettingsModal({
                     <input
                       type="checkbox"
                       checked={settings.notification_sound}
-                      onChange={(e) =>
-                        void save({ ...settings, notification_sound: e.target.checked })
-                      }
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        void saveSettingsPatch((cur) => ({
+                          ...cur,
+                          notification_sound: checked,
+                        }));
+                      }}
                       className="h-4 w-4 accent-blue-600"
                     />
                   </label>
@@ -626,9 +739,13 @@ export function SettingsModal({
                     <input
                       type="checkbox"
                       checked={settings.bridge_nas_events}
-                      onChange={(e) =>
-                        void save({ ...settings, bridge_nas_events: e.target.checked })
-                      }
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        void saveSettingsPatch((cur) => ({
+                          ...cur,
+                          bridge_nas_events: checked,
+                        }));
+                      }}
                       className="h-4 w-4 accent-blue-600"
                     />
                   </label>
@@ -638,9 +755,13 @@ export function SettingsModal({
                     <input
                       type="checkbox"
                       checked={settings.show_overdue_in_today}
-                      onChange={(e) =>
-                        void save({ ...settings, show_overdue_in_today: e.target.checked })
-                      }
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        void saveSettingsPatch((cur) => ({
+                          ...cur,
+                          show_overdue_in_today: checked,
+                        }));
+                      }}
                       className="h-4 w-4 accent-blue-600"
                     />
                   </label>
@@ -686,7 +807,12 @@ export function SettingsModal({
                       value={settings.default_all_day_reminder_time}
                       allowClear={false}
                       onChange={(t) => {
-                        if (t) void save({ ...settings, default_all_day_reminder_time: t });
+                        if (t) {
+                          void saveSettingsPatch((cur) => ({
+                            ...cur,
+                            default_all_day_reminder_time: t,
+                          }));
+                        }
                       }}
                     />
                   </div>
@@ -695,9 +821,13 @@ export function SettingsModal({
                     <span className="text-slate-700">后台同步间隔</span>
                     <select
                       value={settings.sync_interval_secs}
-                      onChange={(e) =>
-                        void save({ ...settings, sync_interval_secs: Number(e.target.value) })
-                      }
+                      onChange={(e) => {
+                        const secs = Number(e.target.value);
+                        void saveSettingsPatch((cur) => ({
+                          ...cur,
+                          sync_interval_secs: secs,
+                        }));
+                      }}
                       className="rounded-lg border border-slate-200 px-2 py-1 text-xs"
                     >
                       <option value={60}>每 1 分钟</option>
@@ -712,7 +842,13 @@ export function SettingsModal({
                       <input
                         type="checkbox"
                         checked={settings.autostart}
-                        onChange={(e) => void save({ ...settings, autostart: e.target.checked })}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          void saveSettingsPatch((cur) => ({
+                            ...cur,
+                            autostart: checked,
+                          }));
+                        }}
                         className="h-3.5 w-3.5 accent-blue-600"
                       />
                       开机自启动
@@ -721,7 +857,13 @@ export function SettingsModal({
                       <input
                         type="checkbox"
                         checked={settings.close_to_tray}
-                        onChange={(e) => void save({ ...settings, close_to_tray: e.target.checked })}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          void saveSettingsPatch((cur) => ({
+                            ...cur,
+                            close_to_tray: checked,
+                          }));
+                        }}
                         className="h-3.5 w-3.5 accent-blue-600"
                       />
                       关闭时隐藏到托盘

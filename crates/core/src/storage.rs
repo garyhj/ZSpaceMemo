@@ -1,4 +1,4 @@
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::models::Task;
 use crate::reminder::ComputedReminderJob;
 use chrono::{DateTime, Utc};
@@ -214,11 +214,19 @@ impl LocalStorage {
         Ok(store)
     }
 
+    fn lock_conn(&self) -> AppResult<std::sync::MutexGuard<'_, Connection>> {
+        self.conn
+            .lock()
+            .map_err(|_| AppError::Storage("本地数据库互斥锁异常".into()))
+    }
+
     fn init_schema(&self) -> AppResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         conn.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA busy_timeout = 5000;
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -271,7 +279,7 @@ impl LocalStorage {
     }
 
     pub fn load_settings(&self) -> AppResult<AppSettings> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         let val: Option<String> = conn
             .query_row(
                 "SELECT value FROM settings WHERE key = 'app_settings'",
@@ -286,7 +294,7 @@ impl LocalStorage {
     }
 
     pub fn save_settings(&self, settings: &AppSettings) -> AppResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         let json = serde_json::to_string(settings)?;
         conn.execute(
             "INSERT INTO settings(key, value) VALUES('app_settings', ?1)
@@ -297,7 +305,7 @@ impl LocalStorage {
     }
 
     pub fn get_cached_task(&self, id: i64) -> AppResult<Option<CachedTaskRow>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         let row = conn
             .query_row(
                 "SELECT id, updated_at_unix, length, task_json, last_valid_task_json FROM task_index WHERE id = ?1",
@@ -329,7 +337,7 @@ impl LocalStorage {
     }
 
     pub fn list_cached_tasks(&self) -> AppResult<Vec<Task>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         let mut stmt = conn.prepare("SELECT task_json FROM task_index")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         let mut out = Vec::new();
@@ -346,7 +354,7 @@ impl LocalStorage {
         length: i64,
         update_last_valid: bool,
     ) -> AppResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         let task_json = serde_json::to_string(task)?;
         if update_last_valid {
             conn.execute(
@@ -374,56 +382,85 @@ impl LocalStorage {
     }
 
     pub fn remove_cached_tasks_except(&self, keep_ids: &[i64]) -> AppResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let mut conn = self.lock_conn()?;
+        let tx = conn.transaction()?;
+        let now_unix = Utc::now().timestamp();
         if keep_ids.is_empty() {
-            conn.execute("DELETE FROM task_index", [])?;
-            return Ok(());
+            tx.execute("DELETE FROM task_index", [])?;
+            tx.execute(
+                "UPDATE reminder_jobs SET status = 'cancelled', updated_at_unix = ?1 WHERE status = 'pending'",
+                params![now_unix],
+            )?;
+        } else {
+            tx.execute_batch(
+                "CREATE TEMP TABLE IF NOT EXISTS _zsm_keep_ids(id INTEGER PRIMARY KEY);
+                 DELETE FROM _zsm_keep_ids;",
+            )?;
+            {
+                let mut ins = tx.prepare("INSERT OR IGNORE INTO _zsm_keep_ids(id) VALUES(?1)")?;
+                for id in keep_ids {
+                    ins.execute(params![id])?;
+                }
+            }
+            tx.execute(
+                "DELETE FROM task_index WHERE id NOT IN (SELECT id FROM _zsm_keep_ids)",
+                [],
+            )?;
+            tx.execute(
+                "UPDATE reminder_jobs SET status = 'cancelled', updated_at_unix = ?1
+                 WHERE status = 'pending' AND task_id NOT IN (SELECT id FROM _zsm_keep_ids)",
+                params![now_unix],
+            )?;
         }
-        let placeholders = keep_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!("DELETE FROM task_index WHERE id NOT IN ({placeholders})");
-        let mut stmt = conn.prepare(&sql)?;
-        stmt.execute(rusqlite::params_from_iter(keep_ids.iter()))?;
+        tx.commit()?;
         Ok(())
     }
 
     pub fn delete_cached_task(&self, id: i64) -> AppResult<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM task_index WHERE id = ?1", params![id])?;
-        conn.execute(
-            "UPDATE reminder_jobs SET status = 'cancelled' WHERE task_id = ?1 AND status = 'pending'",
-            params![id],
+        let mut conn = self.lock_conn()?;
+        let tx = conn.transaction()?;
+        let now_unix = Utc::now().timestamp();
+        tx.execute("DELETE FROM task_index WHERE id = ?1", params![id])?;
+        tx.execute(
+            "UPDATE reminder_jobs SET status = 'cancelled', updated_at_unix = ?1 WHERE task_id = ?2 AND status = 'pending'",
+            params![now_unix, id],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
     /// Reconcile rule-based reminder jobs for a task (preserves already-sent jobs and snoozes).
     pub fn reconcile_task_jobs(&self, task_id: i64, jobs: &[ComputedReminderJob]) -> AppResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let mut conn = self.lock_conn()?;
+        let tx = conn.transaction()?;
         let now_unix = Utc::now().timestamp();
-        let active_keys: Vec<&str> = jobs.iter().map(|j| j.job_key.as_str()).collect();
 
-        if active_keys.is_empty() {
-            conn.execute(
+        if jobs.is_empty() {
+            tx.execute(
                 "UPDATE reminder_jobs SET status = 'cancelled', updated_at_unix = ?1
                  WHERE task_id = ?2 AND kind = 'rule' AND status = 'pending'",
                 params![now_unix, task_id],
             )?;
         } else {
-            let placeholders = active_keys.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            let sql = format!(
-                "UPDATE reminder_jobs SET status = 'cancelled', updated_at_unix = ?1
-                 WHERE task_id = ?2 AND kind = 'rule' AND status = 'pending' AND job_key NOT IN ({placeholders})"
-            );
-            let mut stmt = conn.prepare(&sql)?;
-            let mut p: Vec<rusqlite::types::Value> = vec![now_unix.into(), task_id.into()];
-            for k in &active_keys {
-                p.push((*k).to_string().into());
+            tx.execute_batch(
+                "CREATE TEMP TABLE IF NOT EXISTS _zsm_active_keys(job_key TEXT PRIMARY KEY);
+                 DELETE FROM _zsm_active_keys;",
+            )?;
+            {
+                let mut ins =
+                    tx.prepare("INSERT OR IGNORE INTO _zsm_active_keys(job_key) VALUES(?1)")?;
+                for j in jobs {
+                    ins.execute(params![j.job_key])?;
+                }
             }
-            stmt.execute(rusqlite::params_from_iter(p))?;
-        }
+            tx.execute(
+                "UPDATE reminder_jobs SET status = 'cancelled', updated_at_unix = ?1
+                 WHERE task_id = ?2 AND kind = 'rule' AND status = 'pending'
+                   AND job_key NOT IN (SELECT job_key FROM _zsm_active_keys)",
+                params![now_unix, task_id],
+            )?;
 
-        for j in jobs {
-            conn.execute(
+            let mut upsert = tx.prepare(
                 "INSERT INTO reminder_jobs(job_key, task_id, occurrence_key, reminder_id, fire_at_unix, title, body, kind, status, updated_at_unix)
                  VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 'rule', 'pending', ?8)
                  ON CONFLICT(job_key) DO UPDATE SET
@@ -431,7 +468,9 @@ impl LocalStorage {
                    body = excluded.body,
                    updated_at_unix = excluded.updated_at_unix
                  WHERE reminder_jobs.status = 'pending'",
-                params![
+            )?;
+            for j in jobs {
+                upsert.execute(params![
                     j.job_key,
                     j.task_id,
                     j.occurrence_key,
@@ -440,10 +479,52 @@ impl LocalStorage {
                     j.title,
                     j.body,
                     now_unix
-                ],
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn recover_stale_firing_jobs(&self, stale_before_unix: i64) -> AppResult<usize> {
+        let conn = self.lock_conn()?;
+        let now_unix = Utc::now().timestamp();
+        let count = conn.execute(
+            "UPDATE reminder_jobs SET status = 'pending', updated_at_unix = ?1
+             WHERE status = 'firing' AND updated_at_unix <= ?2",
+            params![now_unix, stale_before_unix],
+        )?;
+        Ok(count)
+    }
+
+    pub fn prune_old_records(&self, older_than_days: i64) -> AppResult<usize> {
+        let mut conn = self.lock_conn()?;
+        let tx = conn.transaction()?;
+        let cutoff = Utc::now().timestamp() - older_than_days.max(7) * 86_400;
+        let mut removed = tx.execute(
+            "DELETE FROM reminder_jobs WHERE status IN ('sent', 'cancelled') AND updated_at_unix < ?1",
+            params![cutoff],
+        )?;
+        let cutoff_iso = DateTime::<Utc>::from_timestamp(cutoff, 0)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_default();
+        if !cutoff_iso.is_empty() {
+            removed += tx.execute(
+                "DELETE FROM notifications WHERE read = 1 AND fired_at_utc < ?1",
+                params![cutoff_iso],
             )?;
         }
-        Ok(())
+        // Keep at least the latest 500 seen NAS event IDs so initial baseline seeding is never reset.
+        removed += tx.execute(
+            "DELETE FROM nas_seen_events
+             WHERE seen_at_unix < ?1
+               AND event_id NOT IN (
+                   SELECT event_id FROM nas_seen_events ORDER BY seen_at_unix DESC LIMIT 500
+               )",
+            params![cutoff],
+        )?;
+        tx.commit()?;
+        Ok(removed)
     }
 
     pub fn add_snooze_job(
@@ -454,7 +535,7 @@ impl LocalStorage {
         title: &str,
         body: &str,
     ) -> AppResult<String> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         let now_unix = Utc::now().timestamp();
         let job_key = format!("snooze-{task_id}-{occurrence_key}-{}", fire_at_utc.timestamp());
         conn.execute(
@@ -467,7 +548,7 @@ impl LocalStorage {
 
     /// Atomically claim all pending jobs whose `fire_at_unix <= now_unix` (marks them `firing`).
     pub fn claim_due_jobs(&self, now_unix: i64) -> AppResult<Vec<DueReminderJob>> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.lock_conn()?;
         let tx = conn.transaction()?;
         let jobs: Vec<DueReminderJob> = {
             let mut stmt = tx.prepare(
@@ -504,7 +585,7 @@ impl LocalStorage {
     }
 
     pub fn mark_job_status(&self, job_key: &str, status: &str) -> AppResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         conn.execute(
             "UPDATE reminder_jobs SET status = ?1, updated_at_unix = ?2 WHERE job_key = ?3",
             params![status, Utc::now().timestamp(), job_key],
@@ -521,7 +602,7 @@ impl LocalStorage {
         body: &str,
         late: bool,
     ) -> AppResult<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         conn.execute(
             "INSERT INTO notifications(job_key, task_id, occurrence_key, title, body, fired_at_utc, late, read)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
@@ -539,7 +620,7 @@ impl LocalStorage {
     }
 
     pub fn list_notifications(&self, limit: u32) -> AppResult<Vec<NotificationRecord>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, job_key, task_id, occurrence_key, title, body, fired_at_utc, late, read
              FROM notifications ORDER BY id DESC LIMIT ?1",
@@ -565,13 +646,13 @@ impl LocalStorage {
     }
 
     pub fn mark_notification_read(&self, id: i64) -> AppResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         conn.execute("UPDATE notifications SET read = 1 WHERE id = ?1", params![id])?;
         Ok(())
     }
 
     pub fn get_sticky(&self, id: i64) -> AppResult<Option<(i64, i64, String)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         conn.query_row(
             "SELECT updated_at_unix, length, note_json FROM sticky_index WHERE id = ?1",
             params![id],
@@ -582,7 +663,7 @@ impl LocalStorage {
     }
 
     pub fn list_stickies(&self) -> AppResult<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         let mut stmt = conn.prepare("SELECT note_json FROM sticky_index")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         let mut out = Vec::new();
@@ -593,7 +674,7 @@ impl LocalStorage {
     }
 
     pub fn upsert_sticky(&self, id: i64, updated_at_unix: i64, length: i64, note_json: &str) -> AppResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         conn.execute(
             "INSERT INTO sticky_index(id, updated_at_unix, length, note_json)
              VALUES(?1, ?2, ?3, ?4)
@@ -607,19 +688,19 @@ impl LocalStorage {
     }
 
     pub fn delete_sticky(&self, id: i64) -> AppResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         conn.execute("DELETE FROM sticky_index WHERE id = ?1", params![id])?;
         Ok(())
     }
 
     pub fn has_any_seen_nas_events(&self) -> AppResult<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         let cnt: i64 = conn.query_row("SELECT COUNT(*) FROM nas_seen_events", [], |r| r.get(0))?;
         Ok(cnt > 0)
     }
 
     pub fn is_nas_event_seen(&self, event_id: &str) -> AppResult<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         let found: Option<i64> = conn
             .query_row(
                 "SELECT 1 FROM nas_seen_events WHERE event_id = ?1",
@@ -631,7 +712,7 @@ impl LocalStorage {
     }
 
     pub fn mark_nas_event_seen(&self, event_id: &str) -> AppResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         conn.execute(
             "INSERT OR IGNORE INTO nas_seen_events(event_id, seen_at_unix) VALUES(?1, ?2)",
             params![event_id, Utc::now().timestamp()],
@@ -640,7 +721,7 @@ impl LocalStorage {
     }
 
     pub fn get_kv(&self, key: &str) -> AppResult<Option<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         conn.query_row("SELECT value FROM settings WHERE key = ?1", params![key], |r| {
             r.get(0)
         })
@@ -649,7 +730,7 @@ impl LocalStorage {
     }
 
     pub fn set_kv(&self, key: &str, value: &str) -> AppResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         conn.execute(
             "INSERT INTO settings(key, value) VALUES(?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -659,7 +740,7 @@ impl LocalStorage {
     }
 
     pub fn delete_kv(&self, key: &str) -> AppResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         conn.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
         Ok(())
     }

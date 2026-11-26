@@ -22,7 +22,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type {
   OccurrenceView,
@@ -46,15 +46,22 @@ import {
 } from "../utils/date";
 import { formatTime, usePrefs } from "../utils/prefs";
 import { formatBytesCompact } from "../utils/updater";
-import { DatePickerModal } from "./DatePickerModal";
-import { ReminderModal } from "./ReminderModal";
-import { RepeatModal } from "./RepeatModal";
+
+const DatePickerModal = lazy(() =>
+  import("./DatePickerModal").then((m) => ({ default: m.DatePickerModal }))
+);
+const ReminderModal = lazy(() =>
+  import("./ReminderModal").then((m) => ({ default: m.ReminderModal }))
+);
+const RepeatModal = lazy(() =>
+  import("./RepeatModal").then((m) => ({ default: m.RepeatModal }))
+);
 
 interface Props {
   task: Task | null;
   lists?: string[];
   defaultAllDayTime?: string;
-  onUpdate: (id: number, patch: UpdateTaskInput) => Promise<void>;
+  onUpdate: (id: number, patch: UpdateTaskInput) => Promise<Task | void>;
   onToggle: (task: Task) => Promise<void>;
   onSkip: (task: Task, key?: string) => Promise<void>;
   onReopenOccurrence: (task: Task, key: string) => Promise<void>;
@@ -110,6 +117,188 @@ export function TaskDetail({
   const [topPop, setTopPop] = useState<"pri" | "more" | null>(null);
   const topPopRef = useRef<HTMLDivElement>(null);
 
+  const onUpdateRef = useRef(onUpdate);
+  onUpdateRef.current = onUpdate;
+
+  const taskIdRef = useRef<number | null>(task?.id ?? null);
+  const etagByTaskRef = useRef<Map<number, string | null | undefined>>(new Map());
+  const saveQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const savedTimerRef = useRef<number | null>(null);
+  const debounceTimerRef = useRef<number | null>(null);
+  const deletedTaskIdRef = useRef<number | null>(null);
+  const dirtyFieldsRef = useRef({
+    title: false,
+    description: false,
+    list: false,
+    labels: false,
+  });
+  const draftRef = useRef({
+    taskId: 0,
+    title: "",
+    description: "",
+    list: "",
+    labelsText: "",
+    baseTitle: "",
+    baseDescription: "",
+    baseList: null as string | null,
+    baseLabels: [] as string[],
+    richProtected: false,
+  });
+
+  function clearDebounceTimer() {
+    if (debounceTimerRef.current !== null) {
+      window.clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+  }
+
+  function enqueuePatch(
+    targetId: number,
+    patch: UpdateTaskInput,
+    sentSnapshot?: {
+      title?: string;
+      description?: string;
+      list?: string | null;
+      labels?: string[];
+    }
+  ): Promise<void> {
+    const run = async () => {
+      if (taskIdRef.current === targetId) {
+        setSaving("saving");
+        setPendingPatch(patch);
+      }
+      const etag = etagByTaskRef.current.get(targetId);
+      try {
+        const updated = await onUpdateRef.current(targetId, {
+          ...patch,
+          ...(patch.force ? {} : etag ? { etag } : {}),
+        });
+        if (updated) {
+          etagByTaskRef.current.set(targetId, updated.etag);
+          if (draftRef.current.taskId === targetId) {
+            draftRef.current.baseTitle = updated.title;
+            draftRef.current.baseDescription = updated.description;
+            draftRef.current.baseList = updated.list ?? null;
+            draftRef.current.baseLabels = updated.labels;
+            draftRef.current.richProtected = updated.rich_body_protected;
+          }
+        }
+        if (taskIdRef.current === targetId && sentSnapshot) {
+          if (sentSnapshot.title !== undefined && draftRef.current.title.trim() === sentSnapshot.title) {
+            dirtyFieldsRef.current.title = false;
+          }
+          if (
+            sentSnapshot.description !== undefined &&
+            draftRef.current.description === sentSnapshot.description
+          ) {
+            dirtyFieldsRef.current.description = false;
+          }
+          if (
+            sentSnapshot.list !== undefined &&
+            (draftRef.current.list.trim() || null) === sentSnapshot.list
+          ) {
+            dirtyFieldsRef.current.list = false;
+          }
+          if (sentSnapshot.labels !== undefined) {
+            const currentParsed = draftRef.current.labelsText
+              .split(/[,，]/)
+              .map((x) => x.trim())
+              .filter(Boolean);
+            if (JSON.stringify(currentParsed) === JSON.stringify(sentSnapshot.labels)) {
+              dirtyFieldsRef.current.labels = false;
+            }
+          }
+        }
+        if (taskIdRef.current === targetId) {
+          setPendingPatch(null);
+          setSaving("saved");
+          if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current);
+          savedTimerRef.current = window.setTimeout(() => {
+            setSaving("idle");
+            savedTimerRef.current = null;
+          }, 1500);
+        }
+      } catch {
+        if (taskIdRef.current === targetId) {
+          setSaving("idle");
+        }
+      }
+    };
+    const next = saveQueueRef.current.then(run, run);
+    saveQueueRef.current = next;
+    return next;
+  }
+
+  function flushDraftSnapshot(targetId = draftRef.current.taskId) {
+    clearDebounceTimer();
+    const d = draftRef.current;
+    const dirty = dirtyFieldsRef.current;
+    if (!targetId || d.taskId !== targetId || deletedTaskIdRef.current === targetId) {
+      return;
+    }
+    const patch: UpdateTaskInput = {};
+    const sentSnapshot: {
+      title?: string;
+      description?: string;
+      list?: string | null;
+      labels?: string[];
+    } = {};
+
+    if (dirty.title) {
+      const nextTitle = d.title.trim();
+      if (nextTitle && nextTitle !== d.baseTitle) {
+        patch.title = nextTitle;
+        sentSnapshot.title = nextTitle;
+      } else if (nextTitle === d.baseTitle) {
+        dirty.title = false;
+      }
+    }
+    if (dirty.description) {
+      if (!d.richProtected && d.description !== d.baseDescription) {
+        patch.description = d.description;
+        sentSnapshot.description = d.description;
+      } else {
+        dirty.description = false;
+      }
+    }
+    if (dirty.list) {
+      const nextList = d.list.trim() || null;
+      if (nextList !== (d.baseList ?? null)) {
+        patch.list = nextList;
+        sentSnapshot.list = nextList;
+      } else {
+        dirty.list = false;
+      }
+    }
+    if (dirty.labels) {
+      const parsed = d.labelsText
+        .split(/[,，]/)
+        .map((x) => x.trim())
+        .filter(Boolean);
+      if (JSON.stringify(parsed) !== JSON.stringify(d.baseLabels)) {
+        patch.labels = parsed;
+        sentSnapshot.labels = parsed;
+      } else {
+        dirty.labels = false;
+      }
+    }
+
+    if (Object.keys(patch).length > 0) {
+      void enqueuePatch(targetId, patch, sentSnapshot);
+    }
+  }
+
+  const flushRef = useRef<() => void>(() => {});
+  flushRef.current = () => flushDraftSnapshot();
+
+  function scheduleDraftFlush() {
+    clearDebounceTimer();
+    debounceTimerRef.current = window.setTimeout(() => {
+      debounceTimerRef.current = null;
+      flushRef.current();
+    }, 600);
+  }
+
   useEffect(() => {
     if (!topPop) return;
     const onDown = (e: MouseEvent) => {
@@ -120,20 +309,93 @@ export function TaskDetail({
   }, [topPop]);
 
   useEffect(() => {
-    if (!task) return;
-    setTitle(task.title);
-    setDescription(task.description);
-    setList(task.list ?? "");
-    setLabelsText(task.labels.join(", "));
-    setChecklistMode(
-      task.description
-        .split("\n")
-        .some((l) => /^\s*-\s*\[[ xX]\]\s+/.test(l))
-    );
-    setTab("detail");
-    setPendingPatch(null);
-    setTopPop(null);
-    setEditingOcc(null);
+    return () => {
+      if (savedTimerRef.current !== null) {
+        window.clearTimeout(savedTimerRef.current);
+        savedTimerRef.current = null;
+      }
+      clearDebounceTimer();
+      flushRef.current();
+    };
+  }, []);
+
+  useEffect(() => {
+    const prevId = taskIdRef.current;
+    const nextId = task?.id ?? null;
+
+    if (prevId && prevId !== nextId) {
+      flushRef.current();
+    }
+
+    taskIdRef.current = nextId;
+    if (!task) {
+      dirtyFieldsRef.current = { title: false, description: false, list: false, labels: false };
+      draftRef.current.taskId = 0;
+      return;
+    }
+
+    deletedTaskIdRef.current = null;
+    etagByTaskRef.current.set(task.id, task.etag);
+    const switchedTask = prevId !== task.id;
+    const dirty = dirtyFieldsRef.current;
+
+    if (switchedTask) {
+      dirtyFieldsRef.current = { title: false, description: false, list: false, labels: false };
+      setTitle(task.title);
+      setDescription(task.description);
+      setList(task.list ?? "");
+      setLabelsText(task.labels.join(", "));
+      setChecklistMode(
+        task.description
+          .split("\n")
+          .some((l) => /^\s*-\s*\[[ xX]\]\s+/.test(l))
+      );
+      setTab("detail");
+      setPendingPatch(null);
+      setSaving("idle");
+      setTopPop(null);
+      setEditingOcc(null);
+      draftRef.current = {
+        taskId: task.id,
+        title: task.title,
+        description: task.description,
+        list: task.list ?? "",
+        labelsText: task.labels.join(", "),
+        baseTitle: task.title,
+        baseDescription: task.description,
+        baseList: task.list ?? null,
+        baseLabels: task.labels,
+        richProtected: task.rich_body_protected,
+      };
+    } else {
+      if (!dirty.title) {
+        setTitle(task.title);
+        draftRef.current.title = task.title;
+      }
+      if (!dirty.description) {
+        setDescription(task.description);
+        draftRef.current.description = task.description;
+        setChecklistMode(
+          task.description
+            .split("\n")
+            .some((l) => /^\s*-\s*\[[ xX]\]\s+/.test(l))
+        );
+      }
+      if (!dirty.list) {
+        setList(task.list ?? "");
+        draftRef.current.list = task.list ?? "";
+      }
+      if (!dirty.labels) {
+        const nextLabels = task.labels.join(", ");
+        setLabelsText(nextLabels);
+        draftRef.current.labelsText = nextLabels;
+      }
+      draftRef.current.baseTitle = task.title;
+      draftRef.current.baseDescription = task.description;
+      draftRef.current.baseList = task.list ?? null;
+      draftRef.current.baseLabels = task.labels;
+      draftRef.current.richProtected = task.rich_body_protected;
+    }
 
     if (task.repeat) {
       api
@@ -160,25 +422,32 @@ export function TaskDetail({
   const isToday = due?.date === todayStr();
   const pri = PRIORITY_META[task.priority];
 
-  async function savePatch(patch: UpdateTaskInput) {
-    if (!task) return;
-    setSaving("saving");
-    setPendingPatch(patch);
-    try {
-      await onUpdate(task.id, { ...patch, etag: task.etag });
-      setPendingPatch(null);
-      setSaving("saved");
-      setTimeout(() => setSaving("idle"), 1500);
-    } catch {
-      setSaving("idle");
-    }
+  function savePatch(patch: UpdateTaskInput) {
+    if (!task) return Promise.resolve();
+    const sentSnapshot =
+      patch.description !== undefined ? { description: patch.description } : undefined;
+    return enqueuePatch(task.id, patch, sentSnapshot);
   }
 
   async function handleForceOverwrite() {
     if (!task || !pendingPatch) return;
-    await onUpdate(task.id, { ...pendingPatch, force: true });
-    setPendingPatch(null);
-    onClearConflict?.();
+    setSaving("saving");
+    try {
+      const updated = await onUpdateRef.current(task.id, { ...pendingPatch, force: true });
+      if (updated) {
+        etagByTaskRef.current.set(task.id, updated.etag);
+      }
+      setPendingPatch(null);
+      onClearConflict?.();
+      setSaving("saved");
+      if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current);
+      savedTimerRef.current = window.setTimeout(() => {
+        setSaving("idle");
+        savedTimerRef.current = null;
+      }, 1500);
+    } catch {
+      setSaving("idle");
+    }
   }
 
   async function handleDelete() {
@@ -187,6 +456,9 @@ export function TaskDetail({
       `确定删除「${task.title}」吗？\n\n这会删除对应的极空间原生笔记（先进入「最近删除」，再次删除将永久删除）。\n如果是完成任务，请点击左侧勾选框。`
     );
     if (ok) {
+      deletedTaskIdRef.current = task.id;
+      clearDebounceTimer();
+      dirtyFieldsRef.current = { title: false, description: false, list: false, labels: false };
       await onDelete(task);
     }
   }
@@ -442,11 +714,22 @@ export function TaskDetail({
           {/* Borderless large title */}
           <input
             value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            onChange={(e) => {
+              const val = e.target.value;
+              setTitle(val);
+              draftRef.current.title = val;
+              dirtyFieldsRef.current.title = true;
+              scheduleDraftFlush();
+            }}
             onBlur={() => {
-              if (title.trim() && title.trim() !== task.title) {
-                void savePatch({ title: title.trim() });
+              if (!title.trim()) {
+                setTitle(task.title);
+                draftRef.current.title = task.title;
+                dirtyFieldsRef.current.title = false;
+                clearDebounceTimer();
+                return;
               }
+              flushDraftSnapshot(task.id);
             }}
             onKeyDown={(e) => {
               if (e.key === "Enter") (e.target as HTMLInputElement).blur();
@@ -496,7 +779,10 @@ export function TaskDetail({
                             const nextLines = [...allLines];
                             nextLines[idx] = `${checked ? "- [ ]" : "- [x]"} ${text}`;
                             const nextDesc = nextLines.join("\n");
+                            clearDebounceTimer();
                             setDescription(nextDesc);
+                            draftRef.current.description = nextDesc;
+                            dirtyFieldsRef.current.description = true;
                             void savePatch({ description: nextDesc });
                           }}
                           className="h-3.5 w-3.5 accent-blue-600"
@@ -508,7 +794,10 @@ export function TaskDetail({
                           type="button"
                           onClick={() => {
                             const nextDesc = allLines.filter((_, i) => i !== idx).join("\n");
+                            clearDebounceTimer();
                             setDescription(nextDesc);
+                            draftRef.current.description = nextDesc;
+                            dirtyFieldsRef.current.description = true;
                             void savePatch({ description: nextDesc });
                           }}
                           className="text-xs text-slate-300 hover:text-red-500"
@@ -530,7 +819,10 @@ export function TaskDetail({
                           .filter((l) => l.trim().length > 0);
                         existing.push(`- [ ] ${newCheckItem.trim()}`);
                         const nextDesc = existing.join("\n");
+                        clearDebounceTimer();
                         setDescription(nextDesc);
+                        draftRef.current.description = nextDesc;
+                        dirtyFieldsRef.current.description = true;
                         setNewCheckItem("");
                         void savePatch({ description: nextDesc });
                       }
@@ -545,11 +837,15 @@ export function TaskDetail({
                 rows={4}
                 readOnly={task.rich_body_protected}
                 value={description}
-                onChange={(e) => setDescription(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setDescription(val);
+                  draftRef.current.description = val;
+                  dirtyFieldsRef.current.description = true;
+                  scheduleDraftFlush();
+                }}
                 onBlur={() => {
-                  if (!task.rich_body_protected && description !== task.description) {
-                    void savePatch({ description });
-                  }
+                  flushDraftSnapshot(task.id);
                 }}
                 placeholder="添加描述、链接或补充信息…"
                 className="w-full resize-y rounded-lg border border-transparent bg-slate-50/60 p-2.5 text-sm outline-none transition focus:border-blue-300 focus:bg-white read-only:bg-slate-50"
@@ -602,12 +898,15 @@ export function TaskDetail({
               <input
                 list="zsm-lists-datalist"
                 value={list}
-                onChange={(e) => setList(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setList(val);
+                  draftRef.current.list = val;
+                  dirtyFieldsRef.current.list = true;
+                  scheduleDraftFlush();
+                }}
                 onBlur={() => {
-                  const trimmed = list.trim() || null;
-                  if (trimmed !== (task.list ?? null)) {
-                    void savePatch({ list: trimmed });
-                  }
+                  flushDraftSnapshot(task.id);
                 }}
                 placeholder="未分类（如：工作、个人）"
                 className="flex-1 bg-transparent text-xs outline-none placeholder:text-slate-400"
@@ -626,15 +925,15 @@ export function TaskDetail({
               <span className="w-12 text-xs text-slate-500">标签</span>
               <input
                 value={labelsText}
-                onChange={(e) => setLabelsText(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setLabelsText(val);
+                  draftRef.current.labelsText = val;
+                  dirtyFieldsRef.current.labels = true;
+                  scheduleDraftFlush();
+                }}
                 onBlur={() => {
-                  const parsed = labelsText
-                    .split(/[,，]/)
-                    .map((x) => x.trim())
-                    .filter(Boolean);
-                  if (JSON.stringify(parsed) !== JSON.stringify(task.labels)) {
-                    void savePatch({ labels: parsed });
-                  }
+                  flushDraftSnapshot(task.id);
                 }}
                 placeholder="逗号分隔（如：续费, eSIM）"
                 className="flex-1 bg-transparent text-xs outline-none placeholder:text-slate-400"
@@ -659,18 +958,20 @@ export function TaskDetail({
                   type="button"
                   disabled={attBusy}
                   onClick={async () => {
-                    const picked = await open({
-                      multiple: true,
-                      title: "选择要上传到当前待办的附件",
-                    });
-                    if (!picked) return;
-                    const paths = Array.isArray(picked) ? picked : [picked];
-                    if (paths.length === 0) return;
-                    setAttBusy(true);
                     try {
+                      const picked = await open({
+                        multiple: true,
+                        title: "选择要上传到当前待办的附件",
+                      });
+                      if (!picked) return;
+                      const paths = Array.isArray(picked) ? picked : [picked];
+                      if (paths.length === 0) return;
+                      setAttBusy(true);
                       for (const p of paths) {
                         await onUploadAttachment(task, p);
                       }
+                    } catch (e) {
+                      console.error("Upload attachment dialog failed:", e);
                     } finally {
                       setAttBusy(false);
                     }
@@ -705,14 +1006,16 @@ export function TaskDetail({
                         type="button"
                         disabled={attBusy}
                         onClick={async () => {
-                          const dest = await save({
-                            defaultPath: att.name,
-                            title: `保存附件「${att.name}」`,
-                          });
-                          if (!dest) return;
-                          setAttBusy(true);
                           try {
+                            const dest = await save({
+                              defaultPath: att.name,
+                              title: `保存附件「${att.name}」`,
+                            });
+                            if (!dest) return;
+                            setAttBusy(true);
                             await onDownloadAttachment(task, att, dest);
+                          } catch (e) {
+                            console.error("Download attachment dialog failed:", e);
                           } finally {
                             setAttBusy(false);
                           }
@@ -859,63 +1162,65 @@ export function TaskDetail({
         </div>
       )}
 
-      {modal === "date" && (
-        <DatePickerModal
-          schedule={task.schedule}
-          onClose={() => setModal(null)}
-          onSave={(next: Schedule) => {
-            setModal(null);
-            void savePatch({ schedule: next });
-          }}
-          onSaveAndOpenReminder={(next: Schedule) => {
-            void savePatch({ schedule: next });
-            setModal("reminder");
-          }}
-          onSaveAndOpenRepeat={(next: Schedule) => {
-            void savePatch({ schedule: next });
-            setModal("repeat");
-          }}
-        />
-      )}
+      <Suspense fallback={null}>
+        {modal === "date" && (
+          <DatePickerModal
+            schedule={task.schedule}
+            onClose={() => setModal(null)}
+            onSave={(next: Schedule) => {
+              setModal(null);
+              void savePatch({ schedule: next });
+            }}
+            onSaveAndOpenReminder={(next: Schedule) => {
+              void savePatch({ schedule: next });
+              setModal("reminder");
+            }}
+            onSaveAndOpenRepeat={(next: Schedule) => {
+              void savePatch({ schedule: next });
+              setModal("repeat");
+            }}
+          />
+        )}
 
-      {editingOcc && onOverrideOccurrence && (
-        <DatePickerModal
-          schedule={editingOcc.schedule}
-          singleOccurrence
-          titleText={`单独调整「${dateLabel(editingOcc.key)}」这一期（不影响系列后续）`}
-          onClose={() => setEditingOcc(null)}
-          onSave={(next: Schedule) => {
-            const key = editingOcc.key;
-            setEditingOcc(null);
-            void onOverrideOccurrence(task, key, next);
-          }}
-        />
-      )}
+        {editingOcc && onOverrideOccurrence && (
+          <DatePickerModal
+            schedule={editingOcc.schedule}
+            singleOccurrence
+            titleText={`单独调整「${dateLabel(editingOcc.key)}」这一期（不影响系列后续）`}
+            onClose={() => setEditingOcc(null)}
+            onSave={(next: Schedule) => {
+              const key = editingOcc.key;
+              setEditingOcc(null);
+              void onOverrideOccurrence(task, key, next);
+            }}
+          />
+        )}
 
-      {modal === "reminder" && (
-        <ReminderModal
-          schedule={task.schedule}
-          reminders={task.reminders}
-          defaultAllDayTime={defaultAllDayTime}
-          onClose={() => setModal(null)}
-          onSave={(next: Reminder[]) => {
-            setModal(null);
-            void savePatch({ reminders: next });
-          }}
-        />
-      )}
+        {modal === "reminder" && (
+          <ReminderModal
+            schedule={task.schedule}
+            reminders={task.reminders}
+            defaultAllDayTime={defaultAllDayTime}
+            onClose={() => setModal(null)}
+            onSave={(next: Reminder[]) => {
+              setModal(null);
+              void savePatch({ reminders: next });
+            }}
+          />
+        )}
 
-      {modal === "repeat" && (
-        <RepeatModal
-          baseDate={due?.date ?? null}
-          repeat={task.repeat ?? null}
-          onClose={() => setModal(null)}
-          onSave={(rule: RepeatRule | null) => {
-            setModal(null);
-            void savePatch({ repeat: rule });
-          }}
-        />
-      )}
+        {modal === "repeat" && (
+          <RepeatModal
+            baseDate={due?.date ?? null}
+            repeat={task.repeat ?? null}
+            onClose={() => setModal(null)}
+            onSave={(rule: RepeatRule | null) => {
+              setModal(null);
+              void savePatch({ repeat: rule });
+            }}
+          />
+        )}
+      </Suspense>
     </div>
   );
 }

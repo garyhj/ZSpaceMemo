@@ -1,13 +1,17 @@
-use crate::codec::{compute_etag, html_to_markdown, markdown_to_html};
+use crate::codec::{
+    compute_etag, h1_re, hr_split_re, html_to_markdown, markdown_to_html, strip_tags_re,
+    unix_to_iso,
+};
 use crate::error::{AppError, AppResult};
 use crate::provider::{NotebookProvider, RawNote};
 use crate::storage::LocalStorage;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use html_escape::{decode_html_entities, encode_text};
-use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
-use std::sync::{Arc, OnceLock};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex as StdMutex};
+use tokio::sync::Mutex as AsyncMutex;
+use tracing::warn;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -79,28 +83,6 @@ fn default_rev() -> u64 {
     1
 }
 
-fn h1_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?is)^\s*<h1\b[^>]*>.*?</h1>\s*").unwrap())
-}
-
-fn hr_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)<hr\s*/?>").unwrap())
-}
-
-fn strip_tags_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"<[^>]+>").unwrap())
-}
-
-fn unix_to_iso(ts: i64) -> Option<String> {
-    if ts <= 0 {
-        return None;
-    }
-    DateTime::<Utc>::from_timestamp(ts, 0).map(|dt| dt.to_rfc3339())
-}
-
 pub fn encode_sticky_note(note: &StickyNote) -> (String, String, String) {
     let display_title = if note.title.trim().is_empty() {
         note.content
@@ -146,7 +128,7 @@ pub fn decode_sticky_note(raw: &RawNote) -> StickyNote {
     let mut meta: Option<StickyMetaV1> = None;
     let mut content_html = body_no_h1.as_str();
 
-    if let Some(pos) = body_no_h1.find("ZSK1:") {
+    if let Some(pos) = body_no_h1.rfind("ZSK1:") {
         let after = &body_no_h1[pos + 5..];
         let end_tag = after.find("</").unwrap_or(after.len());
         let raw_json_slice = &after[..end_tag];
@@ -158,7 +140,7 @@ pub fn decode_sticky_note(raw: &RawNote) -> StickyNote {
         }
         // Cut off footer starting from the last <hr> before ZSK1:
         let prefix = &body_no_h1[..pos];
-        if let Some(last_hr) = hr_re().find_iter(prefix).last() {
+        if let Some(last_hr) = hr_split_re().find_iter(prefix).last() {
             content_html = &prefix[..last_hr.start()];
         } else {
             content_html = prefix;
@@ -192,11 +174,54 @@ pub fn decode_sticky_note(raw: &RawNote) -> StickyNote {
 pub struct StickyService<P: NotebookProvider> {
     provider: Arc<P>,
     storage: Arc<LocalStorage>,
+    sync_lock: AsyncMutex<()>,
+    note_locks: StdMutex<HashMap<i64, Arc<AsyncMutex<()>>>>,
+    dirty_during_sync: StdMutex<HashSet<i64>>,
+    deleted_during_sync: StdMutex<HashSet<i64>>,
 }
 
 impl<P: NotebookProvider> StickyService<P> {
     pub fn new(provider: Arc<P>, storage: Arc<LocalStorage>) -> Self {
-        Self { provider, storage }
+        Self {
+            provider,
+            storage,
+            sync_lock: AsyncMutex::new(()),
+            note_locks: StdMutex::new(HashMap::new()),
+            dirty_during_sync: StdMutex::new(HashSet::new()),
+            deleted_during_sync: StdMutex::new(HashSet::new()),
+        }
+    }
+
+    fn note_lock(&self, id: i64) -> Arc<AsyncMutex<()>> {
+        let mut map = self
+            .note_locks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        map.entry(id)
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
+    }
+
+    fn mark_dirty(&self, id: i64) {
+        self.dirty_during_sync
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id);
+        self.deleted_during_sync
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&id);
+    }
+
+    fn mark_deleted(&self, id: i64) {
+        self.deleted_during_sync
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id);
+        self.dirty_during_sync
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&id);
     }
 
     pub async fn initialize_category(&self, create_if_missing: bool) -> AppResult<i64> {
@@ -231,6 +256,18 @@ impl<P: NotebookProvider> StickyService<P> {
     }
 
     pub async fn sync(&self) -> AppResult<usize> {
+        let _sync_guard = self.sync_lock.lock().await;
+        {
+            self.dirty_during_sync
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
+            self.deleted_during_sync
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
+        }
+
         let cat_id = self.ensure_category_id().await?;
         let mut start = 0u32;
         let page = 100u32;
@@ -245,29 +282,68 @@ impl<P: NotebookProvider> StickyService<P> {
             start += page;
         }
 
-        let seen_ids: HashSet<i64> = summaries.iter().map(|s| s.id).collect();
-        for raw_cached in self.storage.list_stickies()? {
-            if let Ok(note) = serde_json::from_str::<StickyNote>(&raw_cached) {
-                if !seen_ids.contains(&note.id) {
-                    self.storage.delete_sticky(note.id)?;
-                }
-            }
-        }
-
+        let mut seen_ids: HashSet<i64> = summaries.iter().map(|s| s.id).collect();
         let mut fetched = 0usize;
+
         for s in summaries {
             let need_fetch = match self.storage.get_sticky(s.id)? {
-                Some((u, l, _)) => u != s.updated_at || l != s.length,
+                Some((u, l, raw_json)) => {
+                    let meta_changed = serde_json::from_str::<StickyNote>(&raw_json)
+                        .map(|n| {
+                            n.pinned != (s.pin_flag != 0)
+                                || n.title != decode_html_entities(s.title.trim()).as_ref()
+                        })
+                        .unwrap_or(true);
+                    u != s.updated_at || l != s.length || meta_changed
+                }
                 None => true,
             };
             if need_fetch {
-                let raw = self.provider.get_note(s.id).await?;
+                let raw = match self.provider.get_note(s.id).await {
+                    Ok(r) => r,
+                    Err(AppError::TaskNotFound(_)) => {
+                        seen_ids.remove(&s.id);
+                        continue;
+                    }
+                    Err(e) => {
+                        warn!(sticky_id = s.id, error = %e, "sticky fetch skipped during sync");
+                        continue;
+                    }
+                };
+                let concurrently_touched = {
+                    let dirty = self
+                        .dirty_during_sync
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    let deleted = self
+                        .deleted_during_sync
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    dirty.contains(&s.id) || deleted.contains(&s.id)
+                };
+                if concurrently_touched {
+                    continue;
+                }
                 let note = decode_sticky_note(&raw);
                 let json = serde_json::to_string(&note)?;
                 self.storage.upsert_sticky(s.id, raw.updated_at, s.length, &json)?;
                 fetched += 1;
             }
         }
+
+        let dirty_snapshot: HashSet<i64> = self
+            .dirty_during_sync
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        for raw_cached in self.storage.list_stickies()? {
+            if let Ok(note) = serde_json::from_str::<StickyNote>(&raw_cached) {
+                if !seen_ids.contains(&note.id) && !dirty_snapshot.contains(&note.id) {
+                    self.storage.delete_sticky(note.id)?;
+                }
+            }
+        }
+
         Ok(fetched)
     }
 
@@ -320,12 +396,13 @@ impl<P: NotebookProvider> StickyService<P> {
         let (title, body, in_brief) = encode_sticky_note(&note);
         let raw = self.provider.create_note(&title, &body, cat_id, &in_brief).await?;
         if note.pinned {
-            let _ = self.provider.pin_note(raw.id, true).await;
+            self.provider.pin_note(raw.id, true).await?;
         }
         note.id = raw.id;
         note.title = title;
         note.updated_at = unix_to_iso(raw.updated_at).or(note.updated_at);
         note.etag = compute_etag(note.rev, &body);
+        self.mark_dirty(note.id);
         let json = serde_json::to_string(&note)?;
         self.storage
             .upsert_sticky(note.id, raw.updated_at, body.len() as i64, &json)?;
@@ -333,9 +410,14 @@ impl<P: NotebookProvider> StickyService<P> {
     }
 
     pub async fn update_note(&self, id: i64, patch: UpdateStickyInput) -> AppResult<StickyNote> {
-        let mut note = self
-            .get_note(id)?
-            .ok_or_else(|| AppError::TaskNotFound(id))?;
+        let lock = self.note_lock(id);
+        let _guard = lock.lock().await;
+
+        let mut note = match self.provider.get_note(id).await {
+            Ok(raw) => decode_sticky_note(&raw),
+            Err(AppError::TaskNotFound(_)) => return Err(AppError::TaskNotFound(id)),
+            Err(_) => self.get_note(id)?.ok_or(AppError::TaskNotFound(id))?,
+        };
         let old_pinned = note.pinned;
         if let Some(t) = patch.title {
             note.title = t.trim().to_string();
@@ -362,9 +444,10 @@ impl<P: NotebookProvider> StickyService<P> {
             .update_note(id, &title, &body, &in_brief)
             .await?;
         if note.pinned != old_pinned {
-            let _ = self.provider.pin_note(id, note.pinned).await;
+            self.provider.pin_note(id, note.pinned).await?;
         }
 
+        self.mark_dirty(id);
         let json = serde_json::to_string(&note)?;
         self.storage
             .upsert_sticky(id, Utc::now().timestamp(), body.len() as i64, &json)?;
@@ -372,6 +455,9 @@ impl<P: NotebookProvider> StickyService<P> {
     }
 
     pub async fn delete_note(&self, id: i64) -> AppResult<()> {
+        let lock = self.note_lock(id);
+        let _guard = lock.lock().await;
+        self.mark_deleted(id);
         self.provider.delete_note(id).await?;
         self.storage.delete_sticky(id)?;
         Ok(())

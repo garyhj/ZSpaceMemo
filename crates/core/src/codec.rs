@@ -71,19 +71,27 @@ pub struct DecodedNote {
     pub summary_externally_edited: bool,
 }
 
-fn strip_tags_re() -> &'static Regex {
+pub(crate) fn strip_tags_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"<[^>]+>").unwrap())
 }
 
-fn h1_re() -> &'static Regex {
+pub(crate) fn h1_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"(?is)^\s*<h1\b[^>]*>.*?</h1>\s*").unwrap())
 }
 
-fn hr_split_re() -> &'static Regex {
+pub(crate) fn hr_split_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"(?i)<hr\s*/?>").unwrap())
+}
+
+pub(crate) fn unix_to_iso(ts: i64) -> Option<String> {
+    if ts > 0 {
+        chrono::DateTime::from_timestamp(ts, 0).map(|dt| dt.to_rfc3339())
+    } else {
+        None
+    }
 }
 
 fn rich_html_re() -> &'static Regex {
@@ -93,7 +101,7 @@ fn rich_html_re() -> &'static Regex {
 
 fn md_link_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\[([^\]]+)\]\((https?://[^)\s]+)\)").unwrap())
+    RE.get_or_init(|| Regex::new(r#"\[([^\]]+)\]\((https?://[^)\s"<>]+)\)"#).unwrap())
 }
 
 fn md_bold_re() -> &'static Regex {
@@ -297,7 +305,7 @@ pub fn encode_task_note(task: &Task) -> EncodedNote {
         completed_at: task.completed_at.clone(),
         created_at: task.created_at.clone(),
         sum: Some(sum),
-        extra: BTreeMap::new(),
+        extra: task.meta_extra.clone(),
     };
     let meta_json = serde_json::to_string(&meta).expect("NoteMetaV1 serializes cleanly");
 
@@ -316,7 +324,7 @@ pub fn encode_task_note(task: &Task) -> EncodedNote {
     }
     html.push_str("<hr>");
     html.push_str("<p>⚙ ZSpace Memo 数据（请勿手动修改）</p>");
-    html.push_str(&format!("<p>ZSM1:{meta_json}</p>"));
+    html.push_str(&format!("<p>ZSM1:{}</p>", encode_text(&meta_json)));
 
     let in_brief = summary_lines
         .first()
@@ -335,9 +343,9 @@ pub fn encode_task_note(task: &Task) -> EncodedNote {
     }
 }
 
-/// Extract `NoteMetaV1` from plain text (supporting both `ZSM1:{...}` and `ZSM1b:...`).
-fn extract_meta(plain_text: &str) -> Result<Option<NoteMetaV1>, String> {
-    if let Some(pos) = plain_text.find("ZSM1b:") {
+/// Extract `NoteMetaV1` from plain text using the last `ZSM1b:` or `ZSM1:` marker.
+fn extract_meta_in_text(plain_text: &str) -> Result<Option<NoteMetaV1>, String> {
+    if let Some(pos) = plain_text.rfind("ZSM1b:") {
         let rest = &plain_text[pos + 6..];
         let token: String = rest
             .chars()
@@ -353,7 +361,7 @@ fn extract_meta(plain_text: &str) -> Result<Option<NoteMetaV1>, String> {
             serde_json::from_slice(&bytes).map_err(|e| format!("json parse failed: {e}"))?;
         return Ok(Some(meta));
     }
-    if let Some(pos) = plain_text.find("ZSM1:") {
+    if let Some(pos) = plain_text.rfind("ZSM1:") {
         let rest = plain_text[pos + 5..].trim_start();
         let mut de = serde_json::Deserializer::from_str(rest);
         let meta =
@@ -361,6 +369,18 @@ fn extract_meta(plain_text: &str) -> Result<Option<NoteMetaV1>, String> {
         return Ok(Some(meta));
     }
     Ok(None)
+}
+
+/// Prefer extracting metadata from the final `<hr>` footer section so literal `"ZSM1:"`
+/// strings inside the user description never masquerade as corrupted metadata.
+fn extract_meta_from_sections(sections: &[&str], full_plain: &str) -> Result<Option<NoteMetaV1>, String> {
+    if sections.len() >= 2 {
+        let footer_plain = plain_text_of(sections[sections.len() - 1]);
+        if footer_plain.contains("ZSM1b:") || footer_plain.contains("ZSM1:") {
+            return extract_meta_in_text(&footer_plain);
+        }
+    }
+    extract_meta_in_text(full_plain)
 }
 
 fn plain_text_of(html_fragment: &str) -> String {
@@ -386,17 +406,13 @@ pub fn decode_task_note(
     pinned: bool,
     updated_at_unix: i64,
 ) -> DecodedNote {
-    let updated_at = if updated_at_unix > 0 {
-        chrono::DateTime::from_timestamp(updated_at_unix, 0).map(|dt| dt.to_rfc3339())
-    } else {
-        None
-    };
+    let updated_at = unix_to_iso(updated_at_unix);
 
     let body_without_h1 = h1_re().replace(raw_body, "").into_owned();
     let sections: Vec<&str> = hr_split_re().split(&body_without_h1).collect();
     let full_plain = plain_text_of(&body_without_h1);
 
-    let (meta_opt, meta_corrupted) = match extract_meta(&full_plain) {
+    let (meta_opt, meta_corrupted) = match extract_meta_from_sections(&sections, &full_plain) {
         Ok(m) => (m, false),
         Err(_) => (None, true),
     };
@@ -471,6 +487,7 @@ pub fn decode_task_note(
             meta_state: MetaState::Ok,
             rev: meta.rev,
             etag,
+            meta_extra: meta.extra,
         };
 
         return DecodedNote {
@@ -518,6 +535,7 @@ pub fn decode_task_note(
         meta_state: MetaState::Missing,
         rev: 0,
         etag,
+        meta_extra: BTreeMap::new(),
     };
 
     DecodedNote {
@@ -603,6 +621,7 @@ mod tests {
             meta_state: MetaState::Ok,
             rev: 3,
             etag: String::new(),
+            meta_extra: BTreeMap::new(),
         }
     }
 
@@ -692,5 +711,39 @@ mod tests {
         assert_eq!(decoded.task.attachments[0].file_id, "9001");
         assert_eq!(decoded.task.attachments[0].name, "合同.pdf");
         assert_eq!(decoded.task.attachments[0].size, Some(20480));
+    }
+
+    #[test]
+    fn angle_brackets_ampersands_body_marker_and_extra_round_trip_safely() {
+        let mut task = sample_task();
+        task.list = Some("Work <Core> & R&D".into());
+        task.labels = vec!["<tag&1>".into()];
+        task.description = "说明里提及 ZSM1: 示例文本不应干扰解析。".into();
+        task.attachments = vec![TaskAttachment {
+            file_id: "77".into(),
+            name: "spec<v2>&final.pdf".into(),
+            size: Some(512),
+            resource_path: None,
+            safe_dir: None,
+            uploaded_at: None,
+        }];
+        task.meta_extra
+            .insert("future_flag".into(), serde_json::json!(42));
+
+        let encoded = encode_task_note(&task);
+        assert!(!encoded.body.contains("<Core>"));
+        assert!(encoded.body.contains("&lt;Core&gt;"));
+        assert!(encoded.body.contains("&amp;"));
+
+        let decoded = decode_task_note(12345, &task.title, &encoded.body, false, 1795491160);
+        assert!(decoded.meta_present);
+        assert!(!decoded.meta_corrupted);
+        assert_eq!(decoded.task.list.as_deref(), Some("Work <Core> & R&D"));
+        assert_eq!(decoded.task.labels, vec!["<tag&1>".to_string()]);
+        assert_eq!(decoded.task.attachments[0].name, "spec<v2>&final.pdf");
+        assert_eq!(
+            decoded.task.meta_extra.get("future_flag"),
+            Some(&serde_json::json!(42))
+        );
     }
 }

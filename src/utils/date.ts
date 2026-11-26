@@ -1,5 +1,5 @@
 import type { Priority, Reminder, RepeatRule, Schedule, Task } from "../types";
-import { formatLunarDay, formatLunarMonth, getLunarCoords } from "./lunar";
+import { formatLunarDay, formatLunarMonth } from "./lunar-names";
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const WD = ["日", "一", "二", "三", "四", "五", "六"];
@@ -43,6 +43,7 @@ export function nextMonday(): string {
 
 export function dateLabel(s?: string | null): string {
   if (!s) return "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
   const t = todayStr();
   const dd = diffDays(t, s);
   if (dd === 0) return "今天";
@@ -142,7 +143,9 @@ export function describeRepeatZh(r?: RepeatRule | null): string {
       const isLast = r.by_month_day?.[0] === -1;
       const dayS = isLast
         ? "最后一天"
-        : formatLunarDay(r.lunar?.day ?? getLunarCoords(r.dtstart).day);
+        : r.lunar?.day
+        ? formatLunarDay(r.lunar.day)
+        : "指定农历日";
       const leapHint = r.lunar?.leap === "both" ? "（含闰月）" : "";
       s = `${prefix} ${dayS}${leapHint}`;
     } else {
@@ -159,17 +162,21 @@ export function describeRepeatZh(r?: RepeatRule | null): string {
   } else if (r.freq === "yearly") {
     if (r.calendar === "lunar") {
       const prefix = n === 1 ? "每年" : `每 ${n} 年`;
-      const dtLun = getLunarCoords(r.dtstart);
-      const m = r.lunar?.month ?? dtLun.month;
+      const m = r.lunar?.month;
       const isLast = r.by_month_day?.[0] === -1;
-      const dayS = isLast ? "最后一天" : formatLunarDay(r.lunar?.day ?? dtLun.day);
+      const dayS = isLast
+        ? "最后一天"
+        : r.lunar?.day
+        ? formatLunarDay(r.lunar.day)
+        : "";
+      const monthS = m ? formatLunarMonth(m) : "农历";
       const leapHint =
         r.lunar?.leap === "both"
           ? "（含闰月）"
           : r.lunar?.leap === "only_leap"
           ? "（仅闰月）"
           : "";
-      s = `${prefix} 农历${formatLunarMonth(m)}${dayS}${leapHint}`;
+      s = `${prefix} 农历${monthS}${dayS}${leapHint}`;
     } else {
       const sd = parseDate(r.dtstart);
       const m = r.by_month?.[0] ?? sd.getMonth() + 1;

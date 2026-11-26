@@ -2,6 +2,24 @@
 
 All notable changes to **ZSpace Kit（极空工具箱）** (repository `ZSpaceMemo`) are documented in this file.
 
+## [0.7.2] - 2026-11-26
+
+### Fixed & Hardened
+- **P0 核心可靠性与安全性加固（`A1`–`A7`）**：
+  - **元数据编解码与兼容保留（`A1`）**：`ZSM1` 任务元数据写入统一 HTML 转义，限定解析末尾 `<hr>` 区段，支持 `Task.meta_extra` 保留未来未知字段，并共享 HTML/Regex 工具至便签解析。
+  - **同步互斥与并发竞态消除（`A2`）**：`TaskService` / `StickyService` 新增同步互斥锁、按条目异步锁与同步期间新建/删除防误删追踪；写操作统一拉取最新远端并校验 ETag，恢复失败不再污染远端基线。
+  - **提醒可靠性与 SQLite/调度加固（`A3`）**：事务化 `TEMP TABLE` 裁剪并取消已删任务的挂起提醒；CLI 不存在错误映射 `TaskNotFound`；启动回收超时 `firing` 作业并清理 60 天旧记录；调度器拆离同步以免阻塞提醒并按真实挂钟时间差支持休眠唤醒重同步；全量替换 `lock_conn()` 与启用 `busy_timeout`。
+  - **前端陈旧闭包与乱序保护（`A4`）**：`MainWindow` 改用 `filtersRef` 与请求序号保护，`tasks:synced` 等事件不再将筛选/搜索视图退回“今天”。
+  - **应用内更新安全与原子安装（`A5`）**：Rust 后端按当前系统+架构从官方 Release API 独立核验资产与 64 位 SHA-256（缺 digest 拒绝自动安装）；收窄允许 URL 与跳转；macOS 改 `.bak` 备份回滚与 PID 等待、`.dmg` 改手动；下载用 `.part`、启动清旧包，并在前端锁定安装期间关闭与展示进度/错误。
+  - **进程退出与自启动双向对齐（`A6`）**：取消托盘关闭主窗时调用 `app.exit(0)`；支持 macOS Dock `Reopen`；启动及保存设置双向同步 `autolaunch` 且暴露失败提示；Windows AUMID 注册改为每进程一次。
+  - **快传箱分页与路径/SSRF 加固（`A7`）**：`upload_paths` 分页拉取目录全量子项并透传错误；`upload_file` 禁传软链并修复单文件名相对路径；严格校验下载 URI 拦截控制字符与环回/内网地址；CLI 增加 `kill_on_drop + timeout`、安全字符截断与失败回滚 `pending_clear_host`。
+- **草稿保护、并发队列与清单持久化（`B3`）**：
+  - 自定义清单按 NAS 账户持久化至 `localStorage` 并纳入已完成任务清单；登出完整清理内存状态且保留已存清单；修复添加清单失焦残留草稿。
+  - `TaskDetail`、`StickyBoard`、`StickyFloatingCard` 增加 600–800ms 防抖保存、脏草稿防同步覆写保护与切换/卸载/关窗前 flush；`TaskDetail` 与 `SettingsModal` 均改串行队列并追踪最新 ETag/配置。
+- **前端包体积瘦身与事件监听优化（`C1`）**：
+  - 抽离轻量 `lunar-names.ts` 使 `date.ts` 脱离 `lunar-javascript`，`React.lazy` 懒加载 9 大窗口/模块与 3 个弹窗，配合 Vite `manualChunks` 将主入口 JS 由 `>806 kB` 降至 `~309 kB` 且 `vendor-lunar` 仅按需加载。
+  - `usePrefs` 升级为 `useSyncExternalStore` 全局单监听器实现。
+
 ## [0.7.1] - 2026-11-26
 
 ### Changed & Polished

@@ -166,10 +166,12 @@ impl OfficialCliNotebookProvider {
         timeout_override: Option<u64>,
         local_root: Option<&Path>,
         allow_clear_host: bool,
-    ) -> (Command, bool) {
+    ) -> (Command, bool, u64) {
         let mut cmd = Command::new(&self.cli_path);
         cmd.env("ZSPACE_CLI_HOME", &self.cli_home);
+        cmd.kill_on_drop(true);
         let cfg = self.connection_config();
+        let effective_timeout = cfg.timeout_secs.max(timeout_override.unwrap_or(0)).max(10);
         let clear_host = if allow_clear_host {
             self.pending_clear_host.swap(false, Ordering::AcqRel)
         } else {
@@ -183,7 +185,7 @@ impl OfficialCliNotebookProvider {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
-        (cmd, clear_host)
+        (cmd, clear_host, effective_timeout)
     }
 
     fn base_command(&self) -> Command {
@@ -248,14 +250,29 @@ impl OfficialCliNotebookProvider {
         local_root: Option<&Path>,
         timeout_secs: Option<u64>,
     ) -> AppResult<Value> {
-        let (mut cmd, cleared) = self.build_command(timeout_secs, local_root, true);
-        let output = match cmd.args(args).output().await {
-            Ok(out) => out,
-            Err(e) => {
+        let (mut cmd, cleared, effective_timeout) =
+            self.build_command(timeout_secs, local_root, true);
+        let wait_secs = effective_timeout.saturating_add(15);
+        let output = match tokio::time::timeout(
+            std::time::Duration::from_secs(wait_secs),
+            cmd.args(args).output(),
+        )
+        .await
+        {
+            Ok(Ok(out)) => out,
+            Ok(Err(e)) => {
                 if cleared {
                     self.pending_clear_host.store(true, Ordering::Release);
                 }
                 return Err(AppError::NasUnavailable(format!("无法启动 zspace-cli: {e}")));
+            }
+            Err(_) => {
+                if cleared {
+                    self.pending_clear_host.store(true, Ordering::Release);
+                }
+                return Err(AppError::NasUnavailable(format!(
+                    "zspace-cli 执行超时（超过 {wait_secs} 秒）"
+                )));
             }
         };
 
@@ -269,6 +286,9 @@ impl OfficialCliNotebookProvider {
             if let Ok(val) = serde_json::from_str::<Value>(raw) {
                 if val.get("ok").and_then(|v| v.as_bool()) == Some(true) {
                     return Ok(val);
+                }
+                if cleared {
+                    self.pending_clear_host.store(true, Ordering::Release);
                 }
                 let code = val
                     .pointer("/error/code")
@@ -285,6 +305,10 @@ impl OfficialCliNotebookProvider {
             }
         }
 
+        if cleared {
+            self.pending_clear_host.store(true, Ordering::Release);
+        }
+
         if !output.status.success() {
             return Err(AppError::NasUnavailable(format!(
                 "zspace-cli 执行失败 (code {:?}): {}",
@@ -293,9 +317,9 @@ impl OfficialCliNotebookProvider {
             )));
         }
 
+        let preview: String = stdout.chars().take(200).collect();
         Err(AppError::Internal(format!(
-            "zspace-cli 返回非 JSON 输出: {}",
-            &stdout[..stdout.len().min(200)]
+            "zspace-cli 返回非 JSON 输出: {preview}"
         )))
     }
 
@@ -563,9 +587,16 @@ impl NotebookProvider for OfficialCliNotebookProvider {
     }
 
     async fn get_note(&self, id: i64) -> AppResult<RawNote> {
-        let val = self
+        let val = match self
             .run_file_notes(json!({"action": "info", "location": "2", "id": id}), false)
-            .await?;
+            .await
+        {
+            Ok(v) => v,
+            Err(AppError::NasUnavailable(msg)) if is_note_not_found_msg(&msg) => {
+                return Err(AppError::TaskNotFound(id));
+            }
+            Err(e) => return Err(e),
+        };
         let data = val.get("data").ok_or(AppError::TaskNotFound(id))?;
         parse_raw_note(data)
     }
@@ -693,27 +724,28 @@ impl NotebookProvider for OfficialCliNotebookProvider {
         note_id: i64,
         local_path: &Path,
     ) -> AppResult<TaskAttachment> {
-        if !local_path.is_file() {
+        let meta = std::fs::symlink_metadata(local_path).map_err(|e| {
+            AppError::Validation(format!("附件路径不可访问 {}: {e}", local_path.display()))
+        })?;
+        if meta.file_type().is_symlink() || !meta.is_file() {
             return Err(AppError::Validation(format!(
-                "仅支持上传本地文件作为待办附件：{}",
+                "仅支持上传本地常规文件作为待办附件：{}",
                 local_path.display()
             )));
         }
-        let parent = local_path
-            .parent()
-            .ok_or_else(|| AppError::Validation("无法解析附件所在本地目录".into()))?;
-        let file_name = local_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| AppError::Validation("无效附件文件名".into()))?;
-        let size = std::fs::metadata(local_path).ok().map(|m| m.len());
+        let (parent, file_name) = split_local_root_and_name(
+            local_path,
+            "无法解析附件所在本地目录",
+            "无效附件文件名",
+        )?;
+        let size = Some(meta.len());
 
         let params_str =
-            serde_json::to_string(&build_attachment_upload_params(note_id, file_name))?;
+            serde_json::to_string(&build_attachment_upload_params(note_id, &file_name))?;
         let val = self
             .run_cli_with_timeout(
                 &["file", "notes", "--params", &params_str, "--yes"],
-                Some(parent),
+                Some(&parent),
                 Some(300),
             )
             .await?;
@@ -727,7 +759,7 @@ impl NotebookProvider for OfficialCliNotebookProvider {
 
         Ok(TaskAttachment {
             file_id,
-            name: file_name.to_string(),
+            name: file_name,
             size,
             resource_path,
             safe_dir,
@@ -740,28 +772,61 @@ impl NotebookProvider for OfficialCliNotebookProvider {
         attachment: &TaskAttachment,
         local_dest: &Path,
     ) -> AppResult<()> {
-        let parent = local_dest
-            .parent()
-            .ok_or_else(|| AppError::Validation("无法解析附件保存目录".into()))?;
-        let file_name = local_dest
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| AppError::Validation("无效附件保存文件名".into()))?;
+        let (parent, file_name) = split_local_root_and_name(
+            local_dest,
+            "无法解析附件保存目录",
+            "无效附件保存文件名",
+        )?;
         if !parent.exists() {
-            std::fs::create_dir_all(parent)
+            std::fs::create_dir_all(&parent)
                 .map_err(|e| AppError::Storage(format!("创建保存目录失败: {e}")))?;
         }
         let params_str = serde_json::to_string(&build_attachment_download_params(
-            attachment, file_name, true,
+            attachment, &file_name, true,
         ))?;
         self.run_cli_with_timeout(
             &["file", "notes", "--params", &params_str, "--yes"],
-            Some(parent),
+            Some(&parent),
             Some(300),
         )
         .await?;
         Ok(())
     }
+}
+
+fn is_note_not_found_msg(msg: &str) -> bool {
+    let lower = msg.to_ascii_lowercase();
+    lower.contains("not_found")
+        || lower.contains("not found")
+        || lower.contains("no such")
+        || msg.contains("不存在")
+        || msg.contains("已删除")
+        || msg.contains("找不到")
+}
+
+/// Split a local file path into non-empty `--local-root` directory and basename.
+/// Resolves bare relative paths (e.g. `"foo.txt"`) whose `parent()` is `""` to `"."`.
+pub(crate) fn split_local_root_and_name(
+    path: &Path,
+    dir_err: &str,
+    name_err: &str,
+) -> AppResult<(PathBuf, String)> {
+    let parent_raw = path
+        .parent()
+        .ok_or_else(|| AppError::Validation(dir_err.to_string()))?;
+    let parent = if parent_raw.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        parent_raw.to_path_buf()
+    };
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::Validation(name_err.to_string()))?
+        .to_string();
+    Ok((parent, name))
 }
 
 /// Strictly match the whitelisted `attachment_upload` schema in `zspace-cli`.

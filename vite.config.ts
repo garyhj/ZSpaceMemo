@@ -19,4 +19,20 @@ export default defineConfig({
         }
       : undefined,
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          "vendor-react": ["react", "react-dom"],
+          "vendor-tauri": [
+            "@tauri-apps/api",
+            "@tauri-apps/plugin-dialog",
+            "@tauri-apps/plugin-opener",
+          ],
+          "vendor-icons": ["lucide-react"],
+          "vendor-lunar": ["lunar-javascript"],
+        },
+      },
+    },
+  },
 });

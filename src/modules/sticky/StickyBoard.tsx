@@ -22,9 +22,12 @@ interface Props {
 
 export function StickyBoard({ onConvertToTodo, onToast }: Props) {
   const [notes, setNotes] = useState<StickyNote[]>([]);
+  const notesRef = useRef<StickyNote[]>([]);
+  notesRef.current = notes;
   const [query, setQuery] = useState("");
   const [colorFilter, setColorFilter] = useState<StickyColor | "all">("all");
   const [busy, setBusy] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   async function refresh() {
@@ -66,75 +69,79 @@ export function StickyBoard({ onConvertToTodo, onToast }: Props) {
   }
 
   async function handleCreate(color: StickyColor = "yellow") {
-    const tempId = -Date.now();
-    const optimistic: StickyNote = {
-      id: tempId,
-      title: "",
-      content: "",
-      color,
-      pinned: false,
-      floating: false,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      rev: 1,
-      etag: "",
-    };
-    setNotes((prev) => [optimistic, ...prev]);
+    if (creating) return;
+    setCreating(true);
     try {
       const created = await api.createStickyNote({ title: "新便签", content: "", color });
-      setNotes((prev) => prev.map((n) => (n.id === tempId ? created : n)));
+      setNotes((prev) => [created, ...prev.filter((n) => n.id !== created.id)]);
     } catch (e) {
-      setNotes((prev) => prev.filter((n) => n.id !== tempId));
       onToast(`创建便签失败：${String(e)}`);
+    } finally {
+      setCreating(false);
     }
   }
 
   async function handleUpdate(
     id: number,
     patch: { title?: string; content?: string; color?: StickyColor; pinned?: boolean; floating?: boolean }
-  ) {
-    if (id < 0) return;
-    const prev = notes;
+  ): Promise<boolean> {
+    if (id < 0) return false;
+    const prevNote = notesRef.current.find((n) => n.id === id);
     setNotes((cur) => cur.map((n) => (n.id === id ? { ...n, ...patch } : n)));
     try {
       const saved = await api.updateStickyNote(id, patch);
       setNotes((cur) => cur.map((n) => (n.id === id ? saved : n)));
+      return true;
     } catch (e) {
-      setNotes(prev);
+      if (prevNote) {
+        setNotes((cur) => cur.map((n) => (n.id === id ? prevNote : n)));
+      }
       onToast(`保存便签失败：${String(e)}`);
+      return false;
     }
   }
 
   async function handleDelete(note: StickyNote) {
     if (!window.confirm(`确定删除便签「${note.title || "无标题"}」吗？`)) return;
-    const prev = notes;
+    const prev = notesRef.current.find((n) => n.id === note.id);
     setNotes((cur) => cur.filter((n) => n.id !== note.id));
     try {
       await api.deleteStickyNote(note.id);
       onToast("已删除便签（已移入极空间「最近删除」）");
     } catch (e) {
-      setNotes(prev);
+      if (prev) {
+        setNotes((cur) => (cur.some((n) => n.id === prev.id) ? cur : [prev, ...cur]));
+      }
       onToast(`删除便签失败：${String(e)}`);
     }
   }
 
   async function handlePinDesktop(note: StickyNote) {
     if (note.id < 0) return;
-    await api.openStickyWindow(note.id);
-    if (!note.floating) {
-      await handleUpdate(note.id, { floating: true });
+    try {
+      await api.openStickyWindow(note.id);
+      if (!note.floating) {
+        const ok = await handleUpdate(note.id, { floating: true });
+        if (!ok) return;
+      }
+      onToast(`已将「${note.title || "便签"}」钉在桌面`);
+    } catch (e) {
+      onToast(`钉在桌面失败：${String(e)}`);
     }
-    onToast(`已将「${note.title || "便签"}」钉在桌面`);
   }
 
   async function handleToTodo(note: StickyNote) {
     const title = (note.title || note.content.split("\n")[0] || "来自便签的待办").trim().slice(0, 80);
-    await onConvertToTodo({
-      title,
-      description: note.content,
-      priority: "normal",
-    });
-    onToast(`已转为待办：「${title}」`);
+    try {
+      await onConvertToTodo({
+        title,
+        description: note.content,
+        priority: "normal",
+      });
+      onToast(`已转为待办：「${title}」`);
+    } catch (e) {
+      onToast(`转为待办失败：${String(e)}`);
+    }
   }
 
   const filtered = useMemo(() => {
@@ -210,11 +217,12 @@ export function StickyBoard({ onConvertToTodo, onToast }: Props) {
 
           <button
             type="button"
+            disabled={creating}
             onClick={() => void handleCreate(colorFilter === "all" ? "yellow" : colorFilter)}
-            className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white shadow-2xs hover:bg-blue-700"
+            className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white shadow-2xs hover:bg-blue-700 disabled:opacity-60"
           >
             <Plus className="h-3.5 w-3.5" />
-            新建便签
+            {creating ? "创建中…" : "新建便签"}
           </button>
         </div>
       </div>
@@ -271,7 +279,7 @@ function StickyCardItem({
   onUpdate: (
     id: number,
     patch: { title?: string; content?: string; color?: StickyColor; pinned?: boolean }
-  ) => Promise<void>;
+  ) => Promise<boolean | void>;
   onPinDesktop: (note: StickyNote) => Promise<void>;
   onToTodo: (note: StickyNote) => Promise<void>;
   onDelete: (note: StickyNote) => Promise<void>;
@@ -280,34 +288,89 @@ function StickyCardItem({
   const [content, setContent] = useState(note.content);
   const [dirty, setDirty] = useState(false);
   const timerRef = useRef<number | null>(null);
+  const mountedRef = useRef(true);
+  const prevNoteIdRef = useRef(note.id);
+  const noteRef = useRef(note);
+  noteRef.current = note;
+  const onUpdateRef = useRef(onUpdate);
+  onUpdateRef.current = onUpdate;
+  const dirtyRef = useRef(false);
+  const draftRef = useRef({ title: note.title, content: note.content });
   const theme = STICKY_COLORS[note.color] ?? STICKY_COLORS.yellow;
 
+  const flushRef = useRef<() => void>(() => {});
+  flushRef.current = () => {
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    const curNote = noteRef.current;
+    if (curNote.id < 0 || !dirtyRef.current) return;
+    const trimmedTitle = draftRef.current.title.trim();
+    const nextContent = draftRef.current.content;
+    if (trimmedTitle === curNote.title && nextContent === curNote.content) {
+      dirtyRef.current = false;
+      if (mountedRef.current) setDirty(false);
+      return;
+    }
+    void onUpdateRef.current(curNote.id, { title: trimmedTitle, content: nextContent }).then(
+      (ok) => {
+        if (ok === false) return;
+        if (
+          draftRef.current.title.trim() === trimmedTitle &&
+          draftRef.current.content === nextContent
+        ) {
+          dirtyRef.current = false;
+          if (mountedRef.current) setDirty(false);
+        }
+      }
+    );
+  };
+
   useEffect(() => {
-    setTitle(note.title);
-    setContent(note.content);
-    setDirty(false);
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      flushRef.current();
+    };
+  }, []);
+
+  useEffect(() => {
+    const idChanged = prevNoteIdRef.current !== note.id;
+    prevNoteIdRef.current = note.id;
+    if (idChanged) {
+      if (timerRef.current !== null) {
+        window.clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      setTitle(note.title);
+      setContent(note.content);
+      draftRef.current = { title: note.title, content: note.content };
+      dirtyRef.current = false;
+      setDirty(false);
+      return;
+    }
+    if (!dirtyRef.current) {
+      setTitle(note.title);
+      setContent(note.content);
+      draftRef.current = { title: note.title, content: note.content };
+    }
   }, [note.id, note.title, note.content]);
 
-  useEffect(() => {
-    if (!dirty || note.id < 0) return;
-    if (timerRef.current) window.clearTimeout(timerRef.current);
+  function scheduleSave(nextTitle: string, nextContent: string) {
+    draftRef.current = { title: nextTitle, content: nextContent };
+    dirtyRef.current = true;
+    setDirty(true);
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    if (noteRef.current.id < 0) return;
     timerRef.current = window.setTimeout(() => {
-      if (title.trim() !== note.title || content !== note.content) {
-        void onUpdate(note.id, { title: title.trim(), content });
-      }
-      setDirty(false);
+      timerRef.current = null;
+      flushRef.current();
     }, 800);
-    return () => {
-      if (timerRef.current) window.clearTimeout(timerRef.current);
-    };
-  }, [dirty, title, content, note.id]);
+  }
 
   function flushNow() {
-    if (timerRef.current) window.clearTimeout(timerRef.current);
-    if (note.id >= 0 && (title.trim() !== note.title || content !== note.content)) {
-      setDirty(false);
-      void onUpdate(note.id, { title: title.trim(), content });
-    }
+    flushRef.current();
   }
 
   return (
@@ -318,8 +381,9 @@ function StickyCardItem({
         <input
           value={title}
           onChange={(e) => {
-            setTitle(e.target.value);
-            setDirty(true);
+            const val = e.target.value;
+            setTitle(val);
+            scheduleSave(val, content);
           }}
           onBlur={flushNow}
           placeholder="无标题便签"
@@ -353,8 +417,9 @@ function StickyCardItem({
       <textarea
         value={content}
         onChange={(e) => {
-          setContent(e.target.value);
-          setDirty(true);
+          const val = e.target.value;
+          setContent(val);
+          scheduleSave(title, val);
         }}
         onBlur={flushNow}
         placeholder="写点什么…（失去焦点自动同步到极空间）"

@@ -382,6 +382,8 @@ pub struct Task {
     pub rev: u64,
     #[serde(default)]
     pub etag: String,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub meta_extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 fn default_source() -> String {

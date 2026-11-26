@@ -27,8 +27,8 @@ export async function checkLatestRelease(): Promise<ReleaseUpdateInfo> {
 }
 
 export async function startInAppUpdate(info: ReleaseUpdateInfo): Promise<void> {
-  if (!info.download_url || !info.asset_name) {
-    throw new Error("当前平台暂无可自动安装的更新包，请前往 GitHub Releases 手动下载");
+  if (!info.auto_install_supported || !info.download_url || !info.asset_name) {
+    throw new Error("当前安装形态不支持应用内自动更新，请前往 GitHub Releases 手动下载");
   }
   return api.installAppUpdate(
     info.download_url,

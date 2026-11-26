@@ -21,23 +21,42 @@ import {
   Tag,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { AuthScreen } from "./components/AuthScreen";
-import { FloatingWindow } from "./components/FloatingWindow";
-import { MonthCalendarView } from "./components/MonthCalendarView";
 import { QuickAddBar } from "./components/QuickAddBar";
-import { SettingsModal } from "./components/SettingsModal";
 import { TaskContextMenu, type ContextMenuState } from "./components/TaskContextMenu";
 import { TaskDetail } from "./components/TaskDetail";
 import { TaskListItem } from "./components/TaskListItem";
 import { TOOLBOX_MODULES, type WorkspaceId } from "./modules/registry";
-import { DockerBoardView } from "./modules/docker/DockerBoardView";
-import { DownloaderView } from "./modules/downloader/DownloaderView";
-import { FileDropView } from "./modules/files/FileDropView";
-import { NasStatusView } from "./modules/nas/NasStatusView";
-import { StickyBoard } from "./modules/sticky/StickyBoard";
-import { StickyFloatingCard } from "./modules/sticky/StickyFloatingCard";
+
+const FloatingWindow = lazy(() =>
+  import("./components/FloatingWindow").then((m) => ({ default: m.FloatingWindow }))
+);
+const MonthCalendarView = lazy(() =>
+  import("./components/MonthCalendarView").then((m) => ({ default: m.MonthCalendarView }))
+);
+const SettingsModal = lazy(() =>
+  import("./components/SettingsModal").then((m) => ({ default: m.SettingsModal }))
+);
+const DockerBoardView = lazy(() =>
+  import("./modules/docker/DockerBoardView").then((m) => ({ default: m.DockerBoardView }))
+);
+const DownloaderView = lazy(() =>
+  import("./modules/downloader/DownloaderView").then((m) => ({ default: m.DownloaderView }))
+);
+const FileDropView = lazy(() =>
+  import("./modules/files/FileDropView").then((m) => ({ default: m.FileDropView }))
+);
+const NasStatusView = lazy(() =>
+  import("./modules/nas/NasStatusView").then((m) => ({ default: m.NasStatusView }))
+);
+const StickyBoard = lazy(() =>
+  import("./modules/sticky/StickyBoard").then((m) => ({ default: m.StickyBoard }))
+);
+const StickyFloatingCard = lazy(() =>
+  import("./modules/sticky/StickyFloatingCard").then((m) => ({ default: m.StickyFloatingCard }))
+);
 import {
   checkLatestRelease,
   formatBytesCompact,
@@ -98,6 +117,37 @@ interface ToastState {
   onUndo?: () => Promise<void>;
 }
 
+function customListsStorageKey(authStatus: AuthStatus | null): string {
+  const acct = authStatus?.nas_id || authStatus?.profile || "default";
+  return `zsm_custom_lists_v1:${acct}`;
+}
+
+function loadSavedCustomLists(authStatus: AuthStatus | null): string[] {
+  try {
+    const raw = localStorage.getItem(customListsStorageKey(authStatus));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return Array.from(
+      new Set(parsed.filter((x): x is string => typeof x === "string" && x.trim().length > 0))
+    );
+  } catch {
+    return [];
+  }
+}
+
+function WorkspaceLoadingShell({ compact = false }: { compact?: boolean }) {
+  return (
+    <div
+      className={`flex items-center justify-center text-xs text-slate-400 ${
+        compact ? "h-screen w-screen" : "flex-1"
+      }`}
+    >
+      正在加载组件…
+    </div>
+  );
+}
+
 export default function App() {
   useEffect(() => {
     const onCtx = (e: MouseEvent) => {
@@ -121,11 +171,34 @@ export default function App() {
   const mode = params.get("mode");
 
   if (mode === "floating") {
-    return <FloatingWindow />;
+    return (
+      <Suspense fallback={<WorkspaceLoadingShell compact />}>
+        <FloatingWindow />
+      </Suspense>
+    );
   }
   if (mode === "sticky") {
-    const id = Number(params.get("id") || "0");
-    if (id > 0) return <StickyFloatingCard noteId={id} />;
+    const rawId = params.get("id");
+    const id = Number(rawId || "0");
+    if (Number.isInteger(id) && id > 0) {
+      return (
+        <Suspense fallback={<WorkspaceLoadingShell compact />}>
+          <StickyFloatingCard noteId={id} />
+        </Suspense>
+      );
+    }
+    return (
+      <div className="flex h-screen flex-col items-center justify-center gap-2 bg-amber-50 p-4 text-center text-xs text-slate-600">
+        <div>无效的桌面便签参数（id={rawId ?? "空"}）</div>
+        <button
+          type="button"
+          onClick={() => window.close()}
+          className="rounded-lg bg-slate-800 px-3 py-1 text-white hover:bg-slate-700"
+        >
+          关闭窗口
+        </button>
+      </div>
+    );
   }
 
   return <MainWindow />;
@@ -142,11 +215,16 @@ function MainWindow() {
   const [activeList, setActiveList] = useState<string | null>(null);
   const [activeLabel, setActiveLabel] = useState<string | null>(null);
   const [customLists, setCustomLists] = useState<string[]>([]);
+  const customListsAccountRef = useRef<string | null>(null);
   const [addingList, setAddingList] = useState(false);
   const [newListName, setNewListName] = useState("");
 
   const [sort, setSort] = useState<TaskSort>("date");
   const [query, setQuery] = useState("");
+  const filtersRef = useRef({ view, query, sort });
+  filtersRef.current = { view, query, sort };
+  const refreshSeqRef = useRef(0);
+
   const [tasks, setTasks] = useState<Task[]>([]);
   const [allActive, setAllActive] = useState<Task[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -154,11 +232,14 @@ function MainWindow() {
   const [updateInfo, setUpdateInfo] = useState<ReleaseUpdateInfo | null>(null);
   const [updateProgress, setUpdateProgress] = useState<UpdateProgressEvent | null>(null);
   const [installingUpdate, setInstallingUpdate] = useState(false);
+  const installingUpdateRef = useRef(false);
+  installingUpdateRef.current = installingUpdate;
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [updateDismissed, setUpdateDismissed] = useState(false);
   const [busy, setBusy] = useState(false);
 
   async function handleInstallUpdate(info: ReleaseUpdateInfo) {
+    installingUpdateRef.current = true;
     setInstallingUpdate(true);
     setUpdateError(null);
     setUpdateDismissed(false);
@@ -172,6 +253,7 @@ function MainWindow() {
     try {
       await startInAppUpdate(info);
     } catch (e) {
+      installingUpdateRef.current = false;
       setUpdateError(String(e));
       setInstallingUpdate(false);
       setUpdateProgress(null);
@@ -190,6 +272,15 @@ function MainWindow() {
   const quickAddRef = useRef<HTMLInputElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
+  useEffect(() => {
+    if (!auth?.logged_in || !customListsAccountRef.current) return;
+    try {
+      localStorage.setItem(customListsAccountRef.current, JSON.stringify(customLists));
+    } catch {
+      // ignore storage quota errors
+    }
+  }, [customLists, auth?.logged_in]);
+
   const selected = useMemo(
     () =>
       tasks.find((t) => t.id === selectedId) ??
@@ -204,8 +295,11 @@ function MainWindow() {
     for (const t of allActive) {
       if (t.list) set.add(t.list);
     }
+    for (const t of completedTasks) {
+      if (t.list) set.add(t.list);
+    }
     return Array.from(set).sort();
-  }, [allActive, customLists]);
+  }, [allActive, completedTasks, customLists]);
 
   // Sidebar live counts
   const upcomingDays = settings?.upcoming_days ?? 7;
@@ -266,13 +360,19 @@ function MainWindow() {
     }, 5000);
   }
 
-  async function refreshAll(v = view, q = query, s = sort) {
+  async function refreshAll(
+    v = filtersRef.current.view,
+    q = filtersRef.current.query,
+    s = filtersRef.current.sort
+  ) {
+    const seq = ++refreshSeqRef.current;
     try {
       const [list, active, done] = await Promise.all([
         api.listTasks(v, q, s),
         api.listTasks("all", undefined, "date"),
         api.listTasks("completed", q || undefined, "date"),
       ]);
+      if (seq !== refreshSeqRef.current) return;
       setTasks(list);
       setAllActive(active);
       setCompletedTasks(done);
@@ -280,13 +380,20 @@ function MainWindow() {
     } catch (e) {
       showToast(`刷新列表失败：${String(e)}`);
     } finally {
-      setLoaded(true);
+      if (seq === refreshSeqRef.current) {
+        setLoaded(true);
+      }
     }
   }
 
   async function bootstrap(st: AuthStatus) {
     setAuth(st);
-    if (!st.logged_in) return;
+    if (!st.logged_in) {
+      customListsAccountRef.current = null;
+      return;
+    }
+    customListsAccountRef.current = customListsStorageKey(st);
+    setCustomLists(loadSavedCustomLists(st));
     try {
       const cfg = await api.getSettings();
       setSettings(cfg);
@@ -333,7 +440,17 @@ function MainWindow() {
       }
     });
     const unUpdateProg = listen<UpdateProgressEvent>("update:progress", (ev) => {
-      setUpdateProgress(ev.payload);
+      const payload = ev.payload;
+      if (!installingUpdateRef.current) return;
+      setUpdateProgress(payload);
+      if (payload.phase === "error") {
+        installingUpdateRef.current = false;
+        setInstallingUpdate(false);
+        setUpdateError(payload.message);
+      } else if (payload.phase === "done") {
+        installingUpdateRef.current = false;
+        setInstallingUpdate(false);
+      }
     });
 
     const updateTimer = window.setTimeout(() => {
@@ -396,6 +513,7 @@ function MainWindow() {
   function applyLocalTaskPatch(id: number, updater: (t: Task) => Task) {
     setTasks((prev) => prev.map((t) => (t.id === id ? updater(t) : t)));
     setAllActive((prev) => prev.map((t) => (t.id === id ? updater(t) : t)));
+    setCompletedTasks((prev) => prev.map((t) => (t.id === id ? updater(t) : t)));
   }
 
   async function handleCreate(input: CreateTaskInput) {
@@ -463,9 +581,10 @@ function MainWindow() {
     }
   }
 
-  async function handleUpdate(id: number, patch: UpdateTaskInput) {
+  async function handleUpdate(id: number, patch: UpdateTaskInput): Promise<Task> {
     const prevTasks = tasks;
     const prevActive = allActive;
+    const prevCompleted = completedTasks;
 
     applyLocalTaskPatch(id, (t) => ({
       ...t,
@@ -487,9 +606,11 @@ function MainWindow() {
       applyLocalTaskPatch(id, () => saved);
       setConflictMsg(null);
       void refreshAll();
+      return saved;
     } catch (e) {
       setTasks(prevTasks);
       setAllActive(prevActive);
+      setCompletedTasks(prevCompleted);
       const msg = String(e);
       if (msg.includes("TASK_CONFLICT")) {
         setConflictMsg("该任务已在其他设备或极空间官方记事本中被修改，请选择覆盖或刷新。");
@@ -1018,76 +1139,82 @@ function MainWindow() {
       </nav>
 
       {/* Main Content Area: Toolbox Modules */}
-      {workspace === "sticky" ? (
-        <StickyBoard
-          onConvertToTodo={handleCreate}
-          onToast={(m) => showToast(m)}
-        />
-      ) : workspace === "files" ? (
-        <FileDropView
-          settings={settings}
-          onSettingsChanged={(cfg) => setSettings(cfg)}
-          onToast={(m) => showToast(m)}
-        />
-      ) : workspace === "nas" ? (
-        <NasStatusView
-          settings={settings}
-          onSettingsChanged={(cfg) => setSettings(cfg)}
-          onToast={(m) => showToast(m)}
-        />
-      ) : workspace === "docker" ? (
-        <DockerBoardView onToast={(m) => showToast(m)} />
-      ) : workspace === "downloader" ? (
-        <DownloaderView settings={settings} onToast={(m) => showToast(m)} />
-      ) : workspace === "calendar" ? (
-        <div className="flex min-w-0 flex-1">
-          <MonthCalendarView
-            lists={lists}
-            selectedTaskId={selectedId}
-            refreshToken={calendarRefreshToken}
-            onSelectTask={(id) => {
-              setSelectedId(id);
-              setConflictMsg(null);
-            }}
-            onCreateTaskOnDate={handleCreate}
-            onRescheduleItem={handleCalendarReschedule}
-            onToggleItem={handleCalendarToggle}
-            onQuickUpdateTask={(id, patch) => handleUpdate(id, patch)}
-            onContextMenuTask={(taskId, x, y) => {
-              const t = allActive.find((x) => x.id === taskId) ?? completedTasks.find((x) => x.id === taskId);
-              if (t) openMenu(t, x, y, "full");
-            }}
-            onSync={handleSync}
-            busy={busy}
-          />
-          {selected && (
-            <section className="w-[390px] shrink-0 border-l border-slate-200 bg-white">
-              <TaskDetail
-                task={selected}
+      {workspace !== "tasks" ? (
+        <Suspense fallback={<WorkspaceLoadingShell />}>
+          {workspace === "sticky" ? (
+            <StickyBoard
+              onConvertToTodo={handleCreate}
+              onToast={(m) => showToast(m)}
+            />
+          ) : workspace === "files" ? (
+            <FileDropView
+              settings={settings}
+              onSettingsChanged={(cfg) => setSettings(cfg)}
+              onToast={(m) => showToast(m)}
+            />
+          ) : workspace === "nas" ? (
+            <NasStatusView
+              settings={settings}
+              onSettingsChanged={(cfg) => setSettings(cfg)}
+              onToast={(m) => showToast(m)}
+            />
+          ) : workspace === "docker" ? (
+            <DockerBoardView onToast={(m) => showToast(m)} />
+          ) : workspace === "downloader" ? (
+            <DownloaderView settings={settings} onToast={(m) => showToast(m)} />
+          ) : workspace === "calendar" ? (
+            <div className="flex min-w-0 flex-1">
+              <MonthCalendarView
                 lists={lists}
-                defaultAllDayTime={settings?.default_all_day_reminder_time}
-                onClose={() => setSelectedId(null)}
-                onUpdate={handleUpdate}
-                onToggle={handleToggle}
-                onSkip={handleSkip}
-                onReopenOccurrence={handleReopenOccurrence}
-                onOverrideOccurrence={handleOverrideOccurrence}
-                onClearOccurrenceOverride={handleClearOccurrenceOverride}
-                onUploadAttachment={handleUploadAttachment}
-                onDownloadAttachment={handleDownloadAttachment}
-                onRemoveAttachment={handleRemoveAttachment}
-                onEndSeries={handleEndSeries}
-                onDelete={handleDelete}
-                onReloadTask={async (id) => {
-                  await api.getTask(id, true);
-                  await refreshAll();
+                selectedTaskId={selectedId}
+                refreshToken={calendarRefreshToken}
+                onSelectTask={(id) => {
+                  setSelectedId(id);
+                  setConflictMsg(null);
                 }}
-                conflictMessage={conflictMsg}
-                onClearConflict={() => setConflictMsg(null)}
+                onCreateTaskOnDate={handleCreate}
+                onRescheduleItem={handleCalendarReschedule}
+                onToggleItem={handleCalendarToggle}
+                onQuickUpdateTask={async (id, patch) => {
+                  await handleUpdate(id, patch);
+                }}
+                onContextMenuTask={(taskId, x, y) => {
+                  const t = allActive.find((x) => x.id === taskId) ?? completedTasks.find((x) => x.id === taskId);
+                  if (t) openMenu(t, x, y, "full");
+                }}
+                onSync={handleSync}
+                busy={busy}
               />
-            </section>
-          )}
-        </div>
+              {selected && (
+                <section className="w-[390px] shrink-0 border-l border-slate-200 bg-white">
+                  <TaskDetail
+                    task={selected}
+                    lists={lists}
+                    defaultAllDayTime={settings?.default_all_day_reminder_time}
+                    onClose={() => setSelectedId(null)}
+                    onUpdate={handleUpdate}
+                    onToggle={handleToggle}
+                    onSkip={handleSkip}
+                    onReopenOccurrence={handleReopenOccurrence}
+                    onOverrideOccurrence={handleOverrideOccurrence}
+                    onClearOccurrenceOverride={handleClearOccurrenceOverride}
+                    onUploadAttachment={handleUploadAttachment}
+                    onDownloadAttachment={handleDownloadAttachment}
+                    onRemoveAttachment={handleRemoveAttachment}
+                    onEndSeries={handleEndSeries}
+                    onDelete={handleDelete}
+                    onReloadTask={async (id) => {
+                      await api.getTask(id, true);
+                      await refreshAll();
+                    }}
+                    conflictMessage={conflictMsg}
+                    onClearConflict={() => setConflictMsg(null)}
+                  />
+                </section>
+              )}
+            </div>
+          ) : null}
+        </Suspense>
       ) : (
         <div className="flex min-w-0 flex-1">
           {/* Task Views & Custom Lists Sidebar */}
@@ -1207,7 +1334,10 @@ function MainWindow() {
                         setNewListName("");
                       }
                     }}
-                    onBlur={() => setAddingList(false)}
+                    onBlur={() => {
+                      setAddingList(false);
+                      setNewListName("");
+                    }}
                     placeholder="清单名称，回车确认"
                     className="mb-1.5 w-full rounded-lg border border-blue-400 bg-white px-2.5 py-1 text-xs outline-none"
                   />
@@ -1558,29 +1688,48 @@ function MainWindow() {
       )}
 
       {showSettings && (
-        <SettingsModal
-          auth={auth}
-          updateInfo={updateInfo}
-          updateProgress={updateProgress}
-          installingUpdate={installingUpdate}
-          updateError={updateError}
-          onUpdateChecked={(info) => {
-            setUpdateInfo(info);
-            if (info.has_update) setUpdateDismissed(false);
-          }}
-          onInstallUpdate={handleInstallUpdate}
-          onAuthRefreshed={(nextAuth) => setAuth(nextAuth)}
-          onClose={() => setShowSettings(false)}
-          onLogout={async () => {
-            await api.logout();
-            setShowSettings(false);
-            setAuth({ logged_in: false, profile: "zspace-memo" });
-          }}
-          onSettingsChanged={(cfg) => {
-            setSettings(cfg);
-            void refreshAll();
-          }}
-        />
+        <Suspense fallback={null}>
+          <SettingsModal
+            auth={auth}
+            updateInfo={updateInfo}
+            updateProgress={updateProgress}
+            installingUpdate={installingUpdate}
+            updateError={updateError}
+            onUpdateChecked={(info) => {
+              setUpdateInfo(info);
+              if (info.has_update) setUpdateDismissed(false);
+            }}
+            onInstallUpdate={handleInstallUpdate}
+            onAuthRefreshed={(nextAuth) => setAuth(nextAuth)}
+            onClose={() => {
+              if (!installingUpdate) setShowSettings(false);
+            }}
+            onLogout={async () => {
+              await api.logout();
+              refreshSeqRef.current++;
+              customListsAccountRef.current = null;
+              setShowSettings(false);
+              setAuth({ logged_in: false, profile: "zspace-memo" });
+              setSettings(null);
+              setTasks([]);
+              setAllActive([]);
+              setCompletedTasks([]);
+              setCustomLists([]);
+              setSelectedId(null);
+              setActiveList(null);
+              setActiveLabel(null);
+              setConflictMsg(null);
+              setQuery("");
+              setLoaded(false);
+              setView("today");
+              setWorkspace("tasks");
+            }}
+            onSettingsChanged={(cfg) => {
+              setSettings(cfg);
+              void refreshAll();
+            }}
+          />
+        </Suspense>
       )}
 
       {updateInfo?.has_update && !updateDismissed && !showSettings && (
@@ -1595,7 +1744,9 @@ function MainWindow() {
               </div>
               <div className="text-[11px] text-slate-400">
                 当前 v{updateInfo.current_version}
-                {updateInfo.asset_size ? ` · 包体积 ${formatBytesCompact(updateInfo.asset_size)}` : ""}
+                {(updateInfo.asset_size ?? 0) > 0
+                  ? ` · 包体积 ${formatBytesCompact(updateInfo.asset_size)}`
+                  : ""}
               </div>
             </div>
             {!installingUpdate && (
