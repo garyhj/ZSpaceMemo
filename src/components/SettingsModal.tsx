@@ -59,7 +59,7 @@ export function SettingsModal({
   );
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [notifPerm, setNotifPerm] = useState<"granted" | "denied" | "prompt" | "unknown">("unknown");
-  const [appVersion, setAppVersion] = useState("0.7.0");
+  const [appVersion, setAppVersion] = useState("0.7.1");
   const [localUpdate, setLocalUpdate] = useState<ReleaseUpdateInfo | null>(updateInfo ?? null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
 

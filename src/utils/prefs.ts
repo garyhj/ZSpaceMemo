@@ -9,6 +9,9 @@ export interface UiPrefs {
   timeFormat: "24h" | "12h";
   weekStart: "mon" | "sun";
   showCompletedGroup: boolean;
+  sidebarCollapsed: boolean;
+  listsCollapsed: boolean;
+  labelsCollapsed: boolean;
 }
 
 const KEY = "zsm.ui-prefs.v1";
@@ -18,6 +21,9 @@ const DEFAULTS: UiPrefs = {
   timeFormat: "24h",
   weekStart: "mon",
   showCompletedGroup: false,
+  sidebarCollapsed: false,
+  listsCollapsed: false,
+  labelsCollapsed: false,
 };
 
 let cache: UiPrefs | null = null;

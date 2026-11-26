@@ -1,7 +1,7 @@
 import { Bell, Calendar, Check, MoreHorizontal, Paperclip, Pin, Repeat } from "lucide-react";
 import { memo, useState } from "react";
 import type { Task } from "../types";
-import { dueLabel, effectiveDue, isTaskOverdue, PRIORITY_META, todayStr } from "../utils/date";
+import { dueLabel, effectiveDue, isTaskOverdue, listColorHex, PRIORITY_META, todayStr } from "../utils/date";
 import { formatTime, usePrefs } from "../utils/prefs";
 
 interface Props {
@@ -57,8 +57,8 @@ function TaskListItemImpl({ task, selected, compact, onSelect, onToggle, onOpenM
         onOpenMenu(task, e.clientX, e.clientY, "full");
       }}
       className={`group relative flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 transition-colors ${
-        compact ? "py-1.5" : "py-2"
-      } ${selected ? "bg-blue-50" : "hover:bg-slate-50"} ${
+        compact ? "py-1.5" : "py-[7px] border-b border-slate-100/75 last:border-b-0"
+      } ${selected ? "bg-[#eef3ff]" : "hover:bg-slate-100/60"} ${
         completing && !task.repeat ? "animate-task-done" : ""
       }`}
     >
@@ -87,7 +87,7 @@ function TaskListItemImpl({ task, selected, compact, onSelect, onToggle, onOpenM
         <div className="flex items-center gap-1.5">
           <span
             className={`truncate text-[13.5px] transition-colors ${
-              checked ? "text-slate-400 line-through" : "text-slate-800"
+              checked ? "text-slate-400 line-through" : "text-[#222222]"
             }`}
           >
             {task.title}
@@ -109,10 +109,14 @@ function TaskListItemImpl({ task, selected, compact, onSelect, onToggle, onOpenM
         )}
       </div>
 
-      <div className="flex shrink-0 items-center gap-1.5 text-xs">
+      <div className="flex shrink-0 items-center gap-2 text-xs">
         {task.list && !compact && (
-          <span className="max-w-24 truncate text-[11px] text-slate-400 group-hover:hidden">
-            {task.list}
+          <span className="inline-flex max-w-24 items-center gap-1 truncate text-[11px] text-slate-400 group-hover:hidden">
+            <span
+              className="h-1.5 w-1.5 shrink-0 rounded-full opacity-75"
+              style={{ backgroundColor: listColorHex(task.list) ?? "#94a3b8" }}
+            />
+            <span className="truncate">{task.list}</span>
           </span>
         )}
         {task.repeat && <Repeat className="h-3 w-3 text-slate-400" />}
@@ -128,7 +132,7 @@ function TaskListItemImpl({ task, selected, compact, onSelect, onToggle, onOpenM
         )}
         {due && (
           <span
-            className={`tabular-nums ${
+            className={`text-[12px] tabular-nums ${
               checked
                 ? "text-slate-400"
                 : overdue

@@ -3,12 +3,14 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   AlertCircle,
   Calendar,
-  CalendarClock,
   CheckCircle2,
   ChevronRight,
   Download,
   Inbox,
   Layers,
+  List as ListIcon,
+  PanelLeftClose,
+  PanelLeftOpen,
   PanelRightOpen,
   Plus,
   RefreshCw,
@@ -16,7 +18,7 @@ import {
   Search,
   Settings,
   Sparkles,
-  Sun,
+  Tag,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -59,15 +61,36 @@ import type {
 import { dateLabel, effectiveDue, formatDate, isTaskOverdue, listColorHex, todayStr } from "./utils/date";
 import { setPrefs, usePrefs } from "./utils/prefs";
 
-const VIEW_ITEMS: { key: TaskView; label: string; icon: React.ReactNode }[] = [
-  { key: "today", label: "今天", icon: <Sun className="h-4 w-4" /> },
-  { key: "upcoming", label: "即将到来", icon: <CalendarClock className="h-4 w-4" /> },
-  { key: "inbox", label: "收集箱", icon: <Inbox className="h-4 w-4" /> },
-  { key: "overdue", label: "已逾期", icon: <AlertCircle className="h-4 w-4" /> },
-  { key: "repeating", label: "重复任务", icon: <Repeat className="h-4 w-4" /> },
-  { key: "all", label: "全部任务", icon: <Layers className="h-4 w-4" /> },
-  { key: "completed", label: "已完成", icon: <CheckCircle2 className="h-4 w-4" /> },
+function DayBadgeIcon({ label }: { label: string | number }) {
+  return (
+    <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border border-current text-[9.5px] font-semibold leading-none tracking-tighter tabular-nums">
+      {label}
+    </span>
+  );
+}
+
+const PRIMARY_VIEW_ITEMS: { key: TaskView; label: string; icon: (todayDay: number, days: number) => React.ReactNode }[] = [
+  { key: "all", label: "所有", icon: () => <Layers className="h-4 w-4" strokeWidth={1.75} /> },
+  { key: "today", label: "今天", icon: (day) => <DayBadgeIcon label={day} /> },
+  { key: "upcoming", label: "最近7天", icon: (_day, days) => <DayBadgeIcon label={days} /> },
+  { key: "inbox", label: "收集箱", icon: () => <Inbox className="h-4 w-4" strokeWidth={1.75} /> },
 ];
+
+const SECONDARY_VIEW_ITEMS: { key: TaskView; label: string; icon: React.ReactNode }[] = [
+  { key: "overdue", label: "已逾期", icon: <AlertCircle className="h-4 w-4" strokeWidth={1.75} /> },
+  { key: "repeating", label: "重复任务", icon: <Repeat className="h-4 w-4" strokeWidth={1.75} /> },
+  { key: "completed", label: "已完成", icon: <CheckCircle2 className="h-4 w-4" strokeWidth={1.75} /> },
+];
+
+const ALL_VIEW_LABELS: Record<TaskView, string> = {
+  all: "所有",
+  today: "今天",
+  upcoming: "最近7天",
+  inbox: "收集箱",
+  overdue: "已逾期",
+  repeating: "重复任务",
+  completed: "已完成",
+};
 
 interface ToastState {
   message: string;
@@ -185,10 +208,13 @@ function MainWindow() {
   }, [allActive, customLists]);
 
   // Sidebar live counts
+  const upcomingDays = settings?.upcoming_days ?? 7;
   const viewCounts = useMemo(() => {
     const today = todayStr();
+    const upcomingEnd = formatDate(new Date(Date.now() + upcomingDays * 86_400_000));
     let inbox = 0;
     let todayCount = 0;
+    let upcoming = 0;
     let overdue = 0;
     let repeating = 0;
     for (const t of allActive) {
@@ -200,15 +226,19 @@ function MainWindow() {
       if (due?.date === today || (settings?.show_overdue_in_today !== false && od)) {
         todayCount++;
       }
+      if (due && due.date > today && due.date <= upcomingEnd) {
+        upcoming++;
+      }
     }
     return {
       inbox,
       today: todayCount,
+      upcoming,
       overdue,
       repeating,
       all: allActive.length,
     };
-  }, [allActive, settings?.show_overdue_in_today]);
+  }, [allActive, settings?.show_overdue_in_today, upcomingDays]);
 
   const listCounts = useMemo(() => {
     const m: Record<string, number> = {};
@@ -777,6 +807,43 @@ function MainWindow() {
     showToast(date ? `已调整到 ${dateLabel(date)}` : "已清除截止日期");
   };
 
+  async function handlePostponeAllOverdue() {
+    if (overdueToday.length === 0) return;
+    const target = todayStr();
+    const results = await Promise.allSettled(
+      overdueToday.map((t) => {
+        if (t.repeat && t.series) {
+          return api.overrideOccurrence(
+            t.id,
+            t.series.cursor,
+            target,
+            t.schedule.all_day ? null : t.schedule.due?.time ?? null,
+            t.schedule.all_day,
+            null
+          );
+        }
+        return api.updateTask(t.id, {
+          schedule: {
+            ...t.schedule,
+            all_day: t.schedule.all_day || !t.schedule.due?.time,
+            due: {
+              date: target,
+              time: t.schedule.all_day ? null : t.schedule.due?.time ?? null,
+            },
+          },
+          etag: t.etag,
+        });
+      })
+    );
+    const okCount = results.filter((r) => r.status === "fulfilled").length;
+    await refreshAll();
+    if (okCount === overdueToday.length) {
+      showToast(`已将 ${okCount} 条逾期任务顺延到今天`);
+    } else {
+      showToast(`已顺延 ${okCount}/${overdueToday.length} 条逾期任务到今天`);
+    }
+  }
+
   // Global keyboard shortcuts (Dida365-style)
   useEffect(() => {
     if (!auth?.logged_in) return;
@@ -868,13 +935,18 @@ function MainWindow() {
     return <AuthScreen onAuthenticated={bootstrap} />;
   }
 
-  const groupHeader = (label: React.ReactNode, tone: "default" | "danger" = "default") => (
+  const groupHeader = (
+    label: React.ReactNode,
+    tone: "default" | "danger" = "default",
+    action?: React.ReactNode
+  ) => (
     <div
-      className={`sticky top-0 z-10 bg-white/95 px-2.5 pb-1 pt-3 text-xs font-semibold backdrop-blur ${
+      className={`sticky top-0 z-10 flex items-center justify-between bg-white/95 px-2.5 pb-1 pt-3 text-xs font-semibold backdrop-blur ${
         tone === "danger" ? "text-red-500" : "text-slate-500"
       }`}
     >
-      {label}
+      <span>{label}</span>
+      {action}
     </div>
   );
 
@@ -1019,205 +1091,318 @@ function MainWindow() {
       ) : (
         <div className="flex min-w-0 flex-1">
           {/* Task Views & Custom Lists Sidebar */}
-          <aside className="flex w-52 shrink-0 flex-col border-r border-slate-200 bg-slate-50/80 p-2.5 overflow-y-auto">
-            <div className="space-y-0.5">
-              {VIEW_ITEMS.map((item) => {
-                const active = noSubFilter && view === item.key;
-                const count =
-                  item.key === "today"
-                    ? viewCounts.today
-                    : item.key === "inbox"
-                    ? viewCounts.inbox
-                    : item.key === "overdue"
-                    ? viewCounts.overdue
-                    : item.key === "repeating"
-                    ? viewCounts.repeating
-                    : item.key === "all"
-                    ? viewCounts.all
-                    : 0;
-                return (
-                  <button
-                    key={item.key}
-                    type="button"
-                    onDragOver={(e) => {
-                      if (item.key !== "inbox") return;
-                      e.preventDefault();
-                      if (dragOverList !== "__inbox__") setDragOverList("__inbox__");
-                    }}
-                    onDragLeave={() => {
-                      if (dragOverList === "__inbox__") setDragOverList(null);
-                    }}
-                    onDrop={(e) => {
-                      if (item.key !== "inbox") return;
-                      e.preventDefault();
-                      setDragOverList(null);
-                      const id = Number(e.dataTransfer.getData("text/x-zsm-task-id"));
-                      const t = allActive.find((x) => x.id === id);
-                      if (t && t.list) {
-                        void handleUpdate(t.id, { list: null, etag: t.etag });
-                        showToast(`已将「${t.title}」移出清单`);
-                      }
-                    }}
-                    onClick={() => {
-                      setActiveList(null);
-                      setActiveLabel(null);
-                      setView(item.key);
-                    }}
-                    className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm transition ${
-                      item.key === "inbox" && dragOverList === "__inbox__"
-                        ? "bg-blue-100 ring-1 ring-blue-400"
-                        : active
-                        ? "bg-blue-50 font-medium text-blue-700"
-                        : "text-slate-700 hover:bg-slate-200/60"
-                    }`}
-                  >
-                    <span className={active ? "text-blue-600" : "text-slate-400"}>
-                      {item.icon}
-                    </span>
-                    <span className="flex-1 text-left">{item.label}</span>
-                    {count > 0 && (
-                      <span
-                        className={`text-xs ${
-                          item.key === "overdue" ? "font-medium text-red-500" : "text-slate-400"
-                        }`}
-                      >
-                        {count}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="mt-5">
-              <div className="mb-1 flex items-center justify-between px-2.5 text-[11px] font-medium text-slate-400">
-                <span>清单</span>
-                <button
-                  type="button"
-                  title="新建清单"
-                  onClick={() => setAddingList((v) => !v)}
-                  className="rounded p-0.5 hover:bg-slate-200 hover:text-slate-700"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                </button>
-              </div>
-
-              {addingList && (
-                <input
-                  autoFocus
-                  value={newListName}
-                  onChange={(e) => setNewListName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && newListName.trim()) {
-                      const n = newListName.trim();
-                      setCustomLists((prev) => (prev.includes(n) ? prev : [...prev, n]));
-                      setActiveList(n);
-                      setActiveLabel(null);
-                      setView("all");
-                      setNewListName("");
-                      setAddingList(false);
-                    }
-                    if (e.key === "Escape") {
-                      setAddingList(false);
-                      setNewListName("");
-                    }
-                  }}
-                  onBlur={() => setAddingList(false)}
-                  placeholder="清单名称，回车确认"
-                  className="mb-1.5 w-full rounded-lg border border-blue-400 bg-white px-2.5 py-1 text-xs outline-none"
-                />
-              )}
-
+          {!prefs.sidebarCollapsed && (
+            <aside className="flex w-[212px] shrink-0 flex-col overflow-y-auto border-r border-slate-200/80 bg-[#fbfbfd] px-2.5 py-3">
+              {/* Primary Smart Views: 所有 / 今天 / 最近7天 / 收集箱 */}
               <div className="space-y-0.5">
-                {lists.map((l) => {
-                  const active = activeList === l;
+                {PRIMARY_VIEW_ITEMS.map((item) => {
+                  const active = noSubFilter && view === item.key;
+                  const count =
+                    item.key === "all"
+                      ? viewCounts.all
+                      : item.key === "today"
+                      ? viewCounts.today
+                      : item.key === "upcoming"
+                      ? viewCounts.upcoming
+                      : item.key === "inbox"
+                      ? viewCounts.inbox
+                      : 0;
+                  const label = item.key === "upcoming" ? `最近${upcomingDays}天` : item.label;
+                  const todayDay = Number(todayStr().slice(8, 10));
                   return (
                     <button
-                      key={l}
+                      key={item.key}
                       type="button"
                       onDragOver={(e) => {
+                        if (item.key !== "inbox") return;
                         e.preventDefault();
-                        if (dragOverList !== l) setDragOverList(l);
+                        if (dragOverList !== "__inbox__") setDragOverList("__inbox__");
                       }}
                       onDragLeave={() => {
-                        if (dragOverList === l) setDragOverList(null);
+                        if (dragOverList === "__inbox__") setDragOverList(null);
                       }}
                       onDrop={(e) => {
+                        if (item.key !== "inbox") return;
                         e.preventDefault();
                         setDragOverList(null);
                         const id = Number(e.dataTransfer.getData("text/x-zsm-task-id"));
                         const t = allActive.find((x) => x.id === id);
-                        if (t && t.list !== l) {
-                          void handleUpdate(t.id, { list: l, etag: t.etag });
-                          showToast(`已移动到清单「${l}」`);
+                        if (t && t.list) {
+                          void handleUpdate(t.id, { list: null, etag: t.etag });
+                          showToast(`已将「${t.title}」移出清单`);
                         }
                       }}
                       onClick={() => {
-                        setActiveList(l);
+                        setActiveList(null);
                         setActiveLabel(null);
-                        setView("all");
+                        setView(item.key);
                       }}
-                      className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-xs transition ${
-                        dragOverList === l
+                      className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-[6px] text-[13.5px] transition ${
+                        item.key === "inbox" && dragOverList === "__inbox__"
                           ? "bg-blue-100 ring-1 ring-blue-400"
                           : active
-                          ? "bg-blue-50 font-medium text-blue-700"
-                          : "text-slate-600 hover:bg-slate-200/60"
+                          ? "bg-[#eef3ff] font-medium text-[#191919]"
+                          : "text-[#333333] hover:bg-slate-200/50"
                       }`}
                     >
-                      <span
-                        className="h-2 w-2 shrink-0 rounded-full"
-                        style={{ backgroundColor: listColorHex(l) ?? "#4772FA" }}
-                      />
-                      <span className="flex-1 truncate text-left">{l}</span>
-                      {(listCounts[l] ?? 0) > 0 && (
-                        <span className="text-[11px] text-slate-400">{listCounts[l]}</span>
+                      <span className={active ? "text-blue-600" : "text-slate-400"}>
+                        {item.icon(todayDay, upcomingDays)}
+                      </span>
+                      <span className="flex-1 text-left">{label}</span>
+                      {count > 0 && (
+                        <span className="text-[11.5px] tabular-nums text-slate-400">{count}</span>
                       )}
                     </button>
                   );
                 })}
               </div>
-            </div>
 
-            {allLabels.length > 0 && (
-              <div className="mt-5">
-                <div className="mb-1 px-2.5 text-[11px] font-medium text-slate-400">标签</div>
-                <div className="space-y-0.5">
-                  {allLabels.map((lb) => {
-                    const active = activeLabel === lb;
-                    return (
-                      <button
-                        key={lb}
-                        type="button"
-                        onClick={() => {
-                          setActiveLabel(lb);
-                          setActiveList(null);
-                          setView("all");
-                        }}
-                        className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs transition ${
-                          active
-                            ? "bg-blue-50 font-medium text-blue-700"
-                            : "text-slate-600 hover:bg-slate-200/60"
-                        }`}
-                      >
-                        <span className="text-slate-400">#</span>
-                        <span className="flex-1 truncate text-left">{lb}</span>
-                        <span className="text-[11px] text-slate-400">{labelCounts[lb]}</span>
-                      </button>
-                    );
-                  })}
+              <div className="my-2.5 border-t border-slate-100" />
+
+              {/* Collapsible Lists */}
+              <div>
+                <div className="mb-1 flex items-center justify-between px-1.5 text-[11.5px] font-medium text-slate-400">
+                  <button
+                    type="button"
+                    onClick={() => setPrefs({ listsCollapsed: !prefs.listsCollapsed })}
+                    className="flex flex-1 items-center gap-1 rounded px-1 py-0.5 text-left transition hover:bg-slate-200/50 hover:text-slate-600"
+                  >
+                    <ChevronRight
+                      className={`h-3 w-3 shrink-0 transition-transform ${
+                        prefs.listsCollapsed ? "" : "rotate-90"
+                      }`}
+                    />
+                    <span>清单</span>
+                  </button>
+                  <button
+                    type="button"
+                    title="新建清单"
+                    onClick={() => {
+                      if (prefs.listsCollapsed) setPrefs({ listsCollapsed: false });
+                      setAddingList((v) => !v);
+                    }}
+                    className="rounded p-0.5 transition hover:bg-slate-200/70 hover:text-slate-700"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                  </button>
                 </div>
+
+                {addingList && !prefs.listsCollapsed && (
+                  <input
+                    autoFocus
+                    value={newListName}
+                    onChange={(e) => setNewListName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && newListName.trim()) {
+                        const n = newListName.trim();
+                        setCustomLists((prev) => (prev.includes(n) ? prev : [...prev, n]));
+                        setActiveList(n);
+                        setActiveLabel(null);
+                        setView("all");
+                        setNewListName("");
+                        setAddingList(false);
+                      }
+                      if (e.key === "Escape") {
+                        setAddingList(false);
+                        setNewListName("");
+                      }
+                    }}
+                    onBlur={() => setAddingList(false)}
+                    placeholder="清单名称，回车确认"
+                    className="mb-1.5 w-full rounded-lg border border-blue-400 bg-white px-2.5 py-1 text-xs outline-none"
+                  />
+                )}
+
+                {!prefs.listsCollapsed && (
+                  <div className="space-y-0.5">
+                    {lists.map((l) => {
+                      const active = activeList === l;
+                      return (
+                        <button
+                          key={l}
+                          type="button"
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            if (dragOverList !== l) setDragOverList(l);
+                          }}
+                          onDragLeave={() => {
+                            if (dragOverList === l) setDragOverList(null);
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            setDragOverList(null);
+                            const id = Number(e.dataTransfer.getData("text/x-zsm-task-id"));
+                            const t = allActive.find((x) => x.id === id);
+                            if (t && t.list !== l) {
+                              void handleUpdate(t.id, { list: l, etag: t.etag });
+                              showToast(`已移动到清单「${l}」`);
+                            }
+                          }}
+                          onClick={() => {
+                            setActiveList(l);
+                            setActiveLabel(null);
+                            setView("all");
+                          }}
+                          className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-[5.5px] text-[13px] transition ${
+                            dragOverList === l
+                              ? "bg-blue-100 ring-1 ring-blue-400"
+                              : active
+                              ? "bg-[#eef3ff] font-medium text-[#191919]"
+                              : "text-[#333333] hover:bg-slate-200/50"
+                          }`}
+                        >
+                          <ListIcon
+                            className={`h-3.5 w-3.5 shrink-0 ${active ? "text-blue-600" : "text-slate-400"}`}
+                            strokeWidth={1.75}
+                          />
+                          <span className="flex-1 truncate text-left">{l}</span>
+                          <span
+                            className="h-2 w-2 shrink-0 rounded-full"
+                            style={{ backgroundColor: listColorHex(l) ?? "#4772FA" }}
+                          />
+                          {(listCounts[l] ?? 0) > 0 && (
+                            <span className="min-w-[14px] text-right text-[11.5px] tabular-nums text-slate-400">
+                              {listCounts[l]}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-            )}
-          </aside>
+
+              {/* Collapsible Labels */}
+              {allLabels.length > 0 && (
+                <>
+                  <div className="my-2.5 border-t border-slate-100" />
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setPrefs({ labelsCollapsed: !prefs.labelsCollapsed })}
+                      className="mb-1 flex w-full items-center gap-1 rounded px-2.5 py-0.5 text-left text-[11.5px] font-medium text-slate-400 transition hover:bg-slate-200/50 hover:text-slate-600"
+                    >
+                      <ChevronRight
+                        className={`h-3 w-3 shrink-0 transition-transform ${
+                          prefs.labelsCollapsed ? "" : "rotate-90"
+                        }`}
+                      />
+                      <span>标签</span>
+                    </button>
+                    {!prefs.labelsCollapsed && (
+                      <div className="space-y-0.5">
+                        {allLabels.map((lb) => {
+                          const active = activeLabel === lb;
+                          return (
+                            <button
+                              key={lb}
+                              type="button"
+                              onClick={() => {
+                                setActiveLabel(lb);
+                                setActiveList(null);
+                                setView("all");
+                              }}
+                              className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-[5.5px] text-[13px] transition ${
+                                active
+                                  ? "bg-[#eef3ff] font-medium text-[#191919]"
+                                  : "text-[#333333] hover:bg-slate-200/50"
+                              }`}
+                            >
+                              <Tag
+                                className={`h-3.5 w-3.5 shrink-0 ${active ? "text-blue-600" : "text-slate-400"}`}
+                                strokeWidth={1.75}
+                              />
+                              <span className="flex-1 truncate text-left">{lb}</span>
+                              <span className="text-[11.5px] tabular-nums text-slate-400">
+                                {labelCounts[lb]}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {/* Bottom Secondary Utility Views: 已逾期 / 重复任务 / 已完成 */}
+              <div className="mt-auto space-y-0.5 border-t border-slate-100 pt-2.5">
+                {SECONDARY_VIEW_ITEMS.map((item) => {
+                  const active = noSubFilter && view === item.key;
+                  const count =
+                    item.key === "overdue"
+                      ? viewCounts.overdue
+                      : item.key === "repeating"
+                      ? viewCounts.repeating
+                      : 0;
+                  return (
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={() => {
+                        setActiveList(null);
+                        setActiveLabel(null);
+                        setView(item.key);
+                      }}
+                      className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-[6px] text-[13px] transition ${
+                        active
+                          ? "bg-[#eef3ff] font-medium text-[#191919]"
+                          : "text-[#475569] hover:bg-slate-200/50"
+                      }`}
+                    >
+                      <span
+                        className={
+                          active
+                            ? item.key === "overdue"
+                              ? "text-red-500"
+                              : "text-blue-600"
+                            : item.key === "overdue" && count > 0
+                            ? "text-red-400"
+                            : "text-slate-400"
+                        }
+                      >
+                        {item.icon}
+                      </span>
+                      <span className="flex-1 text-left">{item.label}</span>
+                      {count > 0 && (
+                        <span
+                          className={`text-[11.5px] tabular-nums ${
+                            item.key === "overdue" ? "font-medium text-red-500" : "text-slate-400"
+                          }`}
+                        >
+                          {count}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </aside>
+          )}
 
           {/* Middle Task List */}
           <main className="flex min-w-0 flex-1 flex-col border-r border-slate-200/80 bg-white">
             <div className="space-y-2.5 px-4 pb-2 pt-3.5">
               <div className="flex items-center gap-2">
-                <h1 className="text-lg font-semibold tracking-tight text-slate-900">
+                <button
+                  type="button"
+                  title={prefs.sidebarCollapsed ? "展开左侧栏" : "收起左侧栏"}
+                  onClick={() => setPrefs({ sidebarCollapsed: !prefs.sidebarCollapsed })}
+                  className="-ml-1 rounded-md p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                >
+                  {prefs.sidebarCollapsed ? (
+                    <PanelLeftOpen className="h-4 w-4" />
+                  ) : (
+                    <PanelLeftClose className="h-4 w-4" />
+                  )}
+                </button>
+                <h1 className="text-lg font-semibold tracking-tight text-[#191919]">
                   {activeList ??
-                    (activeLabel ? `#${activeLabel}` : VIEW_ITEMS.find((v) => v.key === view)?.label)}
+                    (activeLabel
+                      ? `#${activeLabel}`
+                      : view === "upcoming" && upcomingDays !== 7
+                      ? `最近${upcomingDays}天`
+                      : ALL_VIEW_LABELS[view])}
                 </h1>
                 <button
                   type="button"
@@ -1277,7 +1462,19 @@ function MainWindow() {
                 <>
                   {overdueToday.length > 0 && (
                     <>
-                      {groupHeader(<>已过期 <span className="font-normal">{overdueToday.length}</span></>, "danger")}
+                      {groupHeader(
+                        <>
+                          已过期 <span className="font-normal">{overdueToday.length}</span>
+                        </>,
+                        "danger",
+                        <button
+                          type="button"
+                          onClick={() => void handlePostponeAllOverdue()}
+                          className="text-xs font-medium text-blue-600 transition hover:text-blue-700 hover:underline"
+                        >
+                          顺延
+                        </button>
+                      )}
                       {overdueToday.map(renderTask)}
                     </>
                   )}

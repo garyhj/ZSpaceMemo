@@ -214,6 +214,7 @@ ZSPACE_CLI_BIN=/path/to/zspace-cli ZSPACE_CLI_HOME=/path/to/cli-home \
 - [x] **v0.5.0**：极空间 LAN 内网直连与 `doctor` 连接诊断、文件快传箱文件夹递归上传、统一上传/下载队列与重试、批量下载与分页加载
 - [x] **v0.6.0**：重复引擎支持中国法定工作日/调休（`cn_workday`）、离线 1901–2099 农历重复与闰月策略、单次发生实例可视化改期与恢复
 - [x] **v0.7.0**：待办原生附件上传/下载/关联（`file notes` `attachment_upload` / `attachment_download`）与 NAS 下载器看板（`Alt + 7`）
+- [x] **v0.7.1**：滴答清单风格任务左侧栏重构（4 项核心视图 + 底部工具区、清单/标签可折叠、颜色圆点右移、一键收起侧边栏、逾期一键顺延）
 - [ ] **后续扩展**：文件分享与标签快捷管理、Docker 镜像与 Compose 看板、存储池 SMART / 备份中心只读巡检
 
 ---
