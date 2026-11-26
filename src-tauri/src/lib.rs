@@ -48,6 +48,7 @@ struct FloatingDockState {
     peeked: bool,
     peek_hold: bool,
     peek_seq: u64,
+    peek_pos: Option<PhysicalPosition<i32>>,
     tab_pos: Option<PhysicalPosition<i32>>,
     saved_pos: Option<PhysicalPosition<i32>>,
     saved_size: Option<PhysicalSize<u32>>,
@@ -168,6 +169,7 @@ fn dock_floating(app: &AppHandle, edge_hint: Option<DockEdge>) {
         dock.peeked = false;
         dock.peek_hold = false;
         dock.peek_seq += 1;
+        dock.peek_pos = None;
         dock.tab_pos = Some(PhysicalPosition::new(nx, ny));
         dock.ignore_moves_until_ms = now_ms() + 800;
     }
@@ -183,6 +185,21 @@ fn dock_floating(app: &AppHandle, edge_hint: Option<DockEdge>) {
             peeked: false,
         },
     );
+}
+
+fn is_cursor_inside_floating(win: &WebviewWindow) -> Option<bool> {
+    let cursor = win.cursor_position().ok()?;
+    let pos = win.outer_position().ok()?;
+    let size = win.outer_size().ok()?;
+    let scale = win.scale_factor().unwrap_or(1.0);
+    let margin = (8.0 * scale).round();
+
+    Some(
+        cursor.x >= (pos.x as f64 - margin)
+            && cursor.x <= (pos.x as f64 + size.width as f64 + margin)
+            && cursor.y >= (pos.y as f64 - margin)
+            && cursor.y <= (pos.y as f64 + size.height as f64 + margin),
+    )
 }
 
 fn start_peek_cursor_monitor(app: AppHandle, seq: u64) {
@@ -219,18 +236,9 @@ fn start_peek_cursor_monitor(app: AppHandle, seq: u64) {
                 continue;
             }
 
-            let (Ok(cursor), Ok(pos), Ok(size)) =
-                (win.cursor_position(), win.outer_position(), win.outer_size())
-            else {
+            let Some(inside) = is_cursor_inside_floating(&win) else {
                 continue;
             };
-            let scale = win.scale_factor().unwrap_or(1.0);
-            let margin = (8.0 * scale).round();
-
-            let inside = cursor.x >= (pos.x as f64 - margin)
-                && cursor.x <= (pos.x as f64 + size.width as f64 + margin)
-                && cursor.y >= (pos.y as f64 - margin)
-                && cursor.y <= (pos.y as f64 + size.height as f64 + margin);
 
             if inside {
                 outside_streak = 0;
@@ -250,7 +258,10 @@ fn peek_floating(app: &AppHandle) {
         return;
     };
     let cur_pos = win.outer_position().ok();
-    let (edge, tab_pos, saved_size, seq) = {
+    let (wa_left, wa_top, wa_right, wa_bottom, scale) =
+        monitor_work_area(&win).unwrap_or((0, 0, 1440, 900, 1.0));
+
+    let (edge, target_size, nx, ny, seq) = {
         let state = app.state::<AppState>();
         let mut dock = state.dock.lock().unwrap();
         let Some(edge) = dock.docked else {
@@ -262,38 +273,40 @@ fn peek_floating(app: &AppHandle) {
         if dock.tab_pos.is_none() {
             dock.tab_pos = cur_pos;
         }
+        let target_size = dock.saved_size.unwrap_or_else(|| {
+            PhysicalSize::new(
+                (350.0 * scale).round() as u32,
+                (520.0 * scale).round() as u32,
+            )
+        });
+        let exp_w = target_size.width as i32;
+        let exp_h = target_size.height as i32;
+        let base = dock
+            .tab_pos
+            .or(cur_pos)
+            .unwrap_or(PhysicalPosition::new(wa_right - 38, wa_top + 80));
+
+        let (nx, ny) = match edge {
+            DockEdge::Left => (
+                wa_left,
+                base.y.clamp(wa_top + 8, (wa_bottom - exp_h - 8).max(wa_top)),
+            ),
+            DockEdge::Right => (
+                wa_right - exp_w,
+                base.y.clamp(wa_top + 8, (wa_bottom - exp_h - 8).max(wa_top)),
+            ),
+            DockEdge::Top => (
+                base.x.clamp(wa_left + 8, (wa_right - exp_w - 8).max(wa_left)),
+                wa_top,
+            ),
+        };
+
         dock.peeked = true;
         dock.peek_hold = false;
         dock.peek_seq += 1;
-        dock.ignore_moves_until_ms = now_ms() + 350;
-        (edge, dock.tab_pos.or(cur_pos), dock.saved_size, dock.peek_seq)
-    };
-
-    let (wa_left, wa_top, wa_right, wa_bottom, scale) =
-        monitor_work_area(&win).unwrap_or((0, 0, 1440, 900, 1.0));
-    let target_size = saved_size.unwrap_or_else(|| {
-        PhysicalSize::new(
-            (350.0 * scale).round() as u32,
-            (520.0 * scale).round() as u32,
-        )
-    });
-    let exp_w = target_size.width as i32;
-    let exp_h = target_size.height as i32;
-    let base = tab_pos.unwrap_or(PhysicalPosition::new(wa_right - 38, wa_top + 80));
-
-    let (nx, ny) = match edge {
-        DockEdge::Left => (
-            wa_left,
-            base.y.clamp(wa_top + 8, (wa_bottom - exp_h - 8).max(wa_top)),
-        ),
-        DockEdge::Right => (
-            wa_right - exp_w,
-            base.y.clamp(wa_top + 8, (wa_bottom - exp_h - 8).max(wa_top)),
-        ),
-        DockEdge::Top => (
-            base.x.clamp(wa_left + 8, (wa_right - exp_w - 8).max(wa_left)),
-            wa_top,
-        ),
+        dock.peek_pos = Some(PhysicalPosition::new(nx, ny));
+        dock.ignore_moves_until_ms = now_ms() + 650;
+        (edge, target_size, nx, ny, dock.peek_seq)
     };
 
     let _ = win.set_resizable(true);
@@ -327,6 +340,7 @@ fn collapse_peek_floating(app: &AppHandle) {
         dock.peeked = false;
         dock.peek_hold = false;
         dock.peek_seq += 1;
+        dock.peek_pos = None;
         dock.ignore_moves_until_ms = now_ms() + 800;
         (edge, dock.tab_pos)
     };
@@ -383,6 +397,7 @@ fn undock_floating(app: &AppHandle) {
         dock.peeked = false;
         dock.peek_hold = false;
         dock.peek_seq += 1;
+        dock.peek_pos = None;
         let tab_pos = dock.tab_pos.take();
         dock.ignore_moves_until_ms = now_ms() + 1000;
         (edge, tab_pos, dock.saved_pos, dock.saved_size)
@@ -1239,7 +1254,7 @@ pub fn run() {
                     let _ = window.hide();
                 }
             }
-            WindowEvent::Moved(_) if window.label() == "floating" => {
+            WindowEvent::Moved(new_pos) if window.label() == "floating" => {
                 let app = window.app_handle().clone();
                 let (seq_opt, broke_peek) = {
                     let state = app.state::<AppState>();
@@ -1248,17 +1263,27 @@ pub fn run() {
                         (None, false)
                     } else if dock.docked.is_some() && !dock.peeked {
                         (None, false)
-                    } else {
-                        let broke = dock.docked.is_some() && dock.peeked;
-                        if broke {
+                    } else if dock.docked.is_some() && dock.peeked {
+                        // Ignore stray OS/DPI resize WM_MOVE events near the expected peek position.
+                        let dragged_away = dock
+                            .peek_pos
+                            .map(|p| (new_pos.x - p.x).abs() > 24 || (new_pos.y - p.y).abs() > 24)
+                            .unwrap_or(true);
+                        if !dragged_away {
+                            (None, false)
+                        } else {
                             dock.docked = None;
                             dock.peeked = false;
                             dock.peek_hold = false;
                             dock.peek_seq += 1;
+                            dock.peek_pos = None;
                             dock.tab_pos = None;
+                            dock.move_seq += 1;
+                            (Some(dock.move_seq), true)
                         }
+                    } else {
                         dock.move_seq += 1;
-                        (Some(dock.move_seq), broke)
+                        (Some(dock.move_seq), false)
                     }
                 };
                 if broke_peek {
@@ -1316,9 +1341,25 @@ pub fn run() {
                 }
             }
             WindowEvent::Focused(false) if window.label() == "floating" => {
-                let state = window.app_handle().state::<AppState>();
-                let mut dock = state.dock.lock().unwrap();
-                dock.peek_hold = false;
+                let app = window.app_handle().clone();
+                let should_check = {
+                    let state = app.state::<AppState>();
+                    let mut dock = state.dock.lock().unwrap();
+                    dock.peek_hold = false;
+                    dock.docked.is_some() && dock.peeked
+                };
+                if should_check {
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(80)).await;
+                        if let Some(win) = app.get_webview_window("floating") {
+                            let focused = win.is_focused().unwrap_or(false);
+                            let inside = is_cursor_inside_floating(&win).unwrap_or(false);
+                            if !focused && !inside {
+                                collapse_peek_floating(&app);
+                            }
+                        }
+                    });
+                }
             }
             _ => {}
         })

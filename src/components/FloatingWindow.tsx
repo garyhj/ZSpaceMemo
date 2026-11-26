@@ -116,6 +116,8 @@ export function FloatingWindow() {
         setDockEdge((p as DockEdge) ?? null);
         setDockPeeked(false);
       }
+      hoveringRef.current = false;
+      setInputFocused(false);
       clearPeekTimer();
       clearCollapseTimer();
     });

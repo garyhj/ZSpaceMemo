@@ -2,6 +2,11 @@
 
 All notable changes to **ZSpace Kit（极空工具箱）** (repository `ZSpaceMemo`) are documented in this file.
 
+## [0.3.5] - 2026-11-25
+
+### Fixed
+- **修复悬浮待办窗首次贴边展开后失焦/移开未折叠的竞态 Bug**：首次由书签冷展开为大窗体时，Windows WebView2 会延迟派发 `WM_MOVE` 事件，此前会在 `350ms` 后误触发 `broke_peek` 清空贴边状态并终止鼠标监测循环。现记录预期展开坐标 `peek_pos`（仅真实拖动位移超过 `24px` 才解除贴边），并在窗体失焦且鼠标位于窗外时立即触发折叠，彻底解决“第一次打开失焦不关、多试几次才正常”的问题。
+
 ## [0.3.4] - 2026-11-25
 
 ### Changed
