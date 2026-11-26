@@ -2,6 +2,13 @@
 
 All notable changes to **ZSpace Kit（极空工具箱）** (repository `ZSpaceMemo`) are documented in this file.
 
+## [0.4.3] - 2026-11-26
+
+### Fixed
+- **彻底修复 Windows 应用内更新关闭软件后未覆盖安装与重启的问题**：
+  - 此前通过隐藏 PowerShell 传入裸 `/S` 启动安装包时，Tauri NSIS 安装模板因缺少 `/UPDATE` 标记会误进入卸载检查流程并被静默中止，且异步退出可能与安装器抢占进程锁。
+  - 现改为完全对齐官方 `tauri-plugin-updater` 方案：在下载与 SHA-256 校验通过后，直接调用 Win32 `ShellExecuteW` 启动 `-setup.exe` 并传入 **`/P /UPDATE /R`**（被动安装进度条 + 跳过卸载覆盖更新 + 自动拉起新版 `.exe`），同时适配 `.msi` 的 `/passive /promptrestart AUTOLAUNCHAPP=True` 参数并立即退出主进程。
+
 ## [0.4.2] - 2026-11-26
 
 ### Fixed

@@ -343,76 +343,70 @@ pub async fn install_app_update(
         "校验通过，即将关闭当前窗口并完成更新安装…",
     );
 
+    tracing::info!(
+        installer = %dest_path.display(),
+        bytes = downloaded,
+        "update package verified, spawning platform installer"
+    );
+
     spawn_platform_installer(&dest_path)?;
 
-    let app_exit = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(350)).await;
-        app_exit.exit(0);
-    });
-
-    Ok(())
+    // Flush progress event briefly then exit process immediately (matching tauri-plugin-updater)
+    // so Windows NSIS/MSI overwrites binaries cleanly and `/R` relaunches the updated app.
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    std::process::exit(0);
 }
 
 #[cfg(target_os = "windows")]
 fn spawn_platform_installer(installer_path: &Path) -> Result<(), String> {
-    use base64::Engine as _;
-    use std::os::windows::process::CommandExt;
+    use windows::core::{w, HSTRING, PCWSTR};
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
 
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
-
-    let current_exe =
-        std::env::current_exe().map_err(|e| format!("无法获取当前程序路径：{e}"))?;
-    let pid = std::process::id();
-    let esc = |s: &str| s.replace('\'', "''");
-    let inst_str = esc(&installer_path.to_string_lossy());
-    let exe_str = esc(&current_exe.to_string_lossy());
     let is_msi = installer_path
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.eq_ignore_ascii_case("msi"))
         .unwrap_or(false);
 
-    let install_cmd = if is_msi {
-        format!(
-            "$p = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i','{inst_str}','/passive','/norestart') -Wait -PassThru\n\
-             if ($p.ExitCode -eq 0) {{ Start-Process -FilePath '{exe_str}' }} else {{ Start-Process -FilePath '{inst_str}' }}"
-        )
+    let inst_str = installer_path.to_string_lossy();
+    let (file_h, params_h): (HSTRING, HSTRING) = if is_msi {
+        let sys_root = std::env::var("SYSTEMROOT").unwrap_or_else(|_| r"C:\Windows".to_string());
+        let msiexec = format!(r"{sys_root}\System32\msiexec.exe");
+        let escaped = inst_str.replace('"', "");
+        let params = format!("/i \"{escaped}\" /passive /promptrestart AUTOLAUNCHAPP=True");
+        (HSTRING::from(msiexec), HSTRING::from(params))
     } else {
-        format!(
-            "$p = Start-Process -FilePath '{inst_str}' -ArgumentList '/S' -Wait -PassThru\n\
-             if ($p.ExitCode -eq 0) {{ Start-Process -FilePath '{exe_str}' }} else {{ Start-Process -FilePath '{inst_str}' }}"
+        // Official Tauri NSIS updater flags:
+        // /P = passive progress bar, /UPDATE = skip uninstall & preserve shortcuts, /R = relaunch after install
+        (
+            HSTRING::from(inst_str.as_ref()),
+            HSTRING::from("/P /UPDATE /R"),
         )
     };
 
-    let script = format!(
-        "try {{ Wait-Process -Id {pid} -Timeout 15 -ErrorAction SilentlyContinue }} catch {{}}\n\
-         Start-Sleep -Milliseconds 700\n\
-         {install_cmd}"
+    tracing::info!(
+        installer = %installer_path.display(),
+        is_msi,
+        "launching Windows installer via ShellExecuteW"
     );
-    let utf16: Vec<u8> = script
-        .encode_utf16()
-        .flat_map(|u| u.to_le_bytes())
-        .collect();
-    let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
 
-    std::process::Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-WindowStyle",
-            "Hidden",
-            "-EncodedCommand",
-            &encoded,
-        ])
-        .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| format!("启动 Windows 安装器失败：{e}"))?;
-
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            &file_h,
+            &params_h,
+            PCWSTR::null(),
+            SW_SHOW,
+        )
+    };
+    let code = result.0 as isize;
+    if code <= 32 {
+        return Err(format!(
+            "启动 Windows 安装器失败（ShellExecuteW 返回 {code}）"
+        ));
+    }
     Ok(())
 }
 
