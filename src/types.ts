@@ -101,6 +101,8 @@ export interface Task {
   reminders: Reminder[];
   repeat?: RepeatRule | null;
   series?: SeriesState | null;
+  effective_current_key?: string | null;
+  is_overdue?: boolean | null;
   attachments?: TaskAttachment[];
   completed_at?: string | null;
   created_at?: string | null;
@@ -168,6 +170,7 @@ export interface AppSettings {
   lan_host?: string | null;
   allow_insecure_http: boolean;
   cli_timeout_secs: number;
+  global_shortcut?: string;
 }
 
 export interface NasDoctorReport {

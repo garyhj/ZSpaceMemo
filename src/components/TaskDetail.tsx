@@ -452,8 +452,12 @@ export function TaskDetail({
 
   async function handleDelete() {
     if (!task) return;
+    const attHint =
+      task.attachments && task.attachments.length > 0
+        ? "\n受极空间 CLI 接口限制，任务中关联的 NAS 附件不会同步物理删除。"
+        : "";
     const ok = window.confirm(
-      `确定删除「${task.title}」吗？\n\n这会删除对应的极空间原生笔记（先进入「最近删除」，再次删除将永久删除）。\n如果是完成任务，请点击左侧勾选框。`
+      `确定删除「${task.title}」吗？\n\n这会删除对应的极空间原生笔记（先进入「最近删除」，再次删除将永久删除）。\n如果是完成任务，请点击左侧勾选框。${attHint}`
     );
     if (ok) {
       deletedTaskIdRef.current = task.id;
@@ -480,7 +484,7 @@ export function TaskDetail({
           <>
             <button
               type="button"
-              title={task.repeat ? "完成本次" : done ? "重新打开" : "标记完成"}
+              title={done ? (task.repeat ? "恢复系列" : "重新打开") : task.repeat ? "完成本次" : "标记完成"}
               onClick={() => void onToggle(task)}
               style={done ? undefined : { borderColor: pri.hex }}
               className={`flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-[5px] border-[1.5px] transition ${
@@ -1031,7 +1035,11 @@ export function TaskDetail({
                         type="button"
                         disabled={attBusy}
                         onClick={() => {
-                          if (window.confirm(`确定从待办中移除附件「${att.name}」吗？`)) {
+                          if (
+                            window.confirm(
+                              `确定从待办中解除附件「${att.name}」的关联吗？\n\n受极空间 CLI 接口限制，解除后不会物理删除 NAS 云端原始附件文件。`
+                            )
+                          ) {
                             void onRemoveAttachment(task, att.file_id);
                           }
                         }}
@@ -1165,18 +1173,48 @@ export function TaskDetail({
       <Suspense fallback={null}>
         {modal === "date" && (
           <DatePickerModal
-            schedule={task.schedule}
+            schedule={
+              task.repeat && due
+                ? {
+                    all_day: due.all_day,
+                    due: { date: due.date, time: due.all_day ? null : due.time ?? null },
+                    timezone: task.schedule.timezone,
+                  }
+                : task.schedule
+            }
+            singleOccurrence={Boolean(task.repeat)}
+            titleText={task.repeat ? "调整本期排期（仅本次有效，不影响重复模板）" : undefined}
             onClose={() => setModal(null)}
             onSave={(next: Schedule) => {
               setModal(null);
-              void savePatch({ schedule: next });
+              if (task.repeat && task.series && onOverrideOccurrence) {
+                void onOverrideOccurrence(
+                  task,
+                  task.effective_current_key ?? task.series.cursor,
+                  next
+                );
+              } else {
+                void savePatch({ schedule: next });
+              }
             }}
-            onSaveAndOpenReminder={(next: Schedule) => {
-              void savePatch({ schedule: next });
-              setModal("reminder");
-            }}
+            onSaveAndOpenReminder={
+              task.repeat
+                ? undefined
+                : (next: Schedule) => {
+                    void savePatch({ schedule: next });
+                    setModal("reminder");
+                  }
+            }
             onSaveAndOpenRepeat={(next: Schedule) => {
-              void savePatch({ schedule: next });
+              if (task.repeat && task.series && onOverrideOccurrence) {
+                void onOverrideOccurrence(
+                  task,
+                  task.effective_current_key ?? task.series.cursor,
+                  next
+                );
+              } else {
+                void savePatch({ schedule: next });
+              }
               setModal("repeat");
             }}
           />

@@ -22,7 +22,7 @@ import {
   X,
 } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import { AuthScreen } from "./components/AuthScreen";
 import { QuickAddBar } from "./components/QuickAddBar";
 import { TaskContextMenu, type ContextMenuState } from "./components/TaskContextMenu";
@@ -237,6 +237,7 @@ function MainWindow() {
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [updateDismissed, setUpdateDismissed] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [postponing, setPostponing] = useState(false);
 
   async function handleInstallUpdate(info: ReleaseUpdateInfo) {
     installingUpdateRef.current = true;
@@ -400,26 +401,56 @@ function MainWindow() {
       await refreshAll();
     } catch (e) {
       showToast(`加载本地缓存失败：${String(e)}`);
-    }
-    setBusy(true);
-    try {
-      await api.initializeCategory(true);
-      await api.syncTasks();
-      await refreshAll();
-      void api.initStickyCategory(true).then(() => api.syncStickyNotes()).catch(() => {});
-    } catch (e) {
-      showToast(`后台同步失败：${String(e)}`);
     } finally {
-      setBusy(false);
+      setAuthChecked(true);
     }
+
+    setBusy(true);
+    lastFocusSyncRef.current = Date.now();
+    void (async () => {
+      try {
+        await api.initializeCategory(true);
+        await api.syncTasks();
+        await refreshAll();
+        void api.initStickyCategory(true).then(() => api.syncStickyNotes()).catch(() => {});
+      } catch (e) {
+        showToast(`后台同步失败：${String(e)}`);
+      } finally {
+        setBusy(false);
+      }
+    })();
   }
 
   useEffect(() => {
     api
       .authStatus()
       .then((st) => bootstrap(st))
-      .catch(() => setAuth({ logged_in: false, profile: "zspace-memo" }))
+      .catch(async (e) => {
+        if (!(e instanceof ApiError && e.code === "NAS_AUTH_REQUIRED")) {
+          try {
+            const cfg = await api.getSettings();
+            if (cfg.todo_category_id != null) {
+              setSettings(cfg);
+              await refreshAll();
+              setAuth({ logged_in: true, profile: "zspace-memo" });
+              showToast(`离线模式已加载本地缓存：${String(e)}`);
+              return;
+            }
+          } catch {
+            // Fall through to AuthScreen
+          }
+        }
+        setAuth({ logged_in: false, profile: "zspace-memo" });
+      })
       .finally(() => setAuthChecked(true));
+
+    const onAuthExpired = () => {
+      setAuth((prev) =>
+        prev?.logged_in ? { logged_in: false, profile: prev.profile || "zspace-memo" } : prev
+      );
+      showToast("极空间登录态已失效，请重新登录授权");
+    };
+    window.addEventListener("zsm:auth-expired", onAuthExpired);
 
     const unSynced = listen("tasks:synced", () => {
       void refreshAll();
@@ -463,6 +494,7 @@ function MainWindow() {
 
     return () => {
       window.clearTimeout(updateTimer);
+      window.removeEventListener("zsm:auth-expired", onAuthExpired);
       void unSynced.then((f) => f());
       void unChanged.then((f) => f());
       void unSelect.then((f) => f());
@@ -538,7 +570,7 @@ function MainWindow() {
     const withList: CreateTaskInput = {
       ...input,
       reminders: autoReminders,
-      list: input.list ?? activeList ?? null,
+      list: input.list !== undefined ? input.list : workspace === "tasks" ? activeList : null,
     };
     const tempId = -Date.now();
     const optimistic: Task = {
@@ -612,7 +644,7 @@ function MainWindow() {
       setAllActive(prevActive);
       setCompletedTasks(prevCompleted);
       const msg = String(e);
-      if (msg.includes("TASK_CONFLICT")) {
+      if ((e instanceof ApiError && e.code === "TASK_CONFLICT") || msg.includes("TASK_CONFLICT")) {
         setConflictMsg("该任务已在其他设备或极空间官方记事本中被修改，请选择覆盖或刷新。");
       } else {
         showToast(`保存失败：${msg}`);
@@ -653,7 +685,7 @@ function MainWindow() {
         await refreshAll();
         showToast(`已重新打开「${task.title}」`);
       } else {
-        const prevKey = task.series?.cursor ?? null;
+        const prevKey = task.effective_current_key ?? task.series?.cursor ?? null;
         const updated = await api.completeTask(task.id);
         await refreshAll();
         if (updated.repeat && updated.series && updated.status === "active") {
@@ -860,7 +892,7 @@ function MainWindow() {
             (acc[d] ??= []).push(t);
             return acc;
           }, {})
-        ).sort(([a], [b]) => a.localeCompare(b))
+        ).sort(([a], [b]) => (a === "未安排" ? 1 : b === "未安排" ? -1 : a.localeCompare(b)))
       : [];
 
   // Dida365-style collapsible "已完成" group at the bottom of the current view.
@@ -917,6 +949,19 @@ function MainWindow() {
   }, [activeList, activeLabel, view, overdueToday, normalToday, upcomingGroups, displayedTasks, prefs.showCompletedGroup, completedForView]);
 
   const setTaskDate = async (task: Task, date: string | null) => {
+    if (task.repeat && task.series) {
+      if (!date) {
+        showToast("重复任务不支持清除单期日期，请在详情面板关闭重复");
+        return;
+      }
+      const key = task.effective_current_key ?? task.series.cursor;
+      const allDay = task.schedule.all_day || !task.schedule.due?.time;
+      const dueTime = allDay ? null : task.schedule.due?.time ?? null;
+      await api.overrideOccurrence(task.id, key, date, dueTime, allDay, null);
+      await refreshAll();
+      showToast(`已调整本期到 ${dateLabel(date)}`);
+      return;
+    }
     await handleUpdate(task.id, {
       schedule: {
         ...task.schedule,
@@ -929,39 +974,54 @@ function MainWindow() {
   };
 
   async function handlePostponeAllOverdue() {
-    if (overdueToday.length === 0) return;
+    if (postponing || overdueToday.length === 0) return;
+    setPostponing(true);
+    const snapshot = [...overdueToday];
     const target = todayStr();
-    const results = await Promise.allSettled(
-      overdueToday.map((t) => {
-        if (t.repeat && t.series) {
-          return api.overrideOccurrence(
-            t.id,
-            t.series.cursor,
-            target,
-            t.schedule.all_day ? null : t.schedule.due?.time ?? null,
-            t.schedule.all_day,
-            null
-          );
+    const now = new Date();
+    let okCount = 0;
+    try {
+      for (const t of snapshot) {
+        try {
+          const rawTime = t.schedule.all_day ? null : t.schedule.due?.time ?? null;
+          const timePassedToday = Boolean(rawTime && new Date(`${target}T${rawTime}`) <= now);
+          const effectiveAllDay = t.schedule.all_day || !rawTime || timePassedToday;
+          const effectiveTime = effectiveAllDay ? null : rawTime;
+          if (t.repeat && t.series) {
+            await api.overrideOccurrence(
+              t.id,
+              t.effective_current_key ?? t.series.cursor,
+              target,
+              effectiveTime,
+              effectiveAllDay,
+              null
+            );
+          } else {
+            await api.updateTask(t.id, {
+              schedule: {
+                ...t.schedule,
+                all_day: effectiveAllDay,
+                due: {
+                  date: target,
+                  time: effectiveTime,
+                },
+              },
+              etag: t.etag,
+            });
+          }
+          okCount++;
+        } catch {
+          // Continue remaining overdue items
         }
-        return api.updateTask(t.id, {
-          schedule: {
-            ...t.schedule,
-            all_day: t.schedule.all_day || !t.schedule.due?.time,
-            due: {
-              date: target,
-              time: t.schedule.all_day ? null : t.schedule.due?.time ?? null,
-            },
-          },
-          etag: t.etag,
-        });
-      })
-    );
-    const okCount = results.filter((r) => r.status === "fulfilled").length;
-    await refreshAll();
-    if (okCount === overdueToday.length) {
-      showToast(`已将 ${okCount} 条逾期任务顺延到今天`);
-    } else {
-      showToast(`已顺延 ${okCount}/${overdueToday.length} 条逾期任务到今天`);
+      }
+      await refreshAll();
+      if (okCount === snapshot.length) {
+        showToast(`已将 ${okCount} 条逾期任务顺延到今天`);
+      } else {
+        showToast(`已顺延 ${okCount}/${snapshot.length} 条逾期任务到今天`);
+      }
+    } finally {
+      setPostponing(false);
     }
   }
 
@@ -971,19 +1031,29 @@ function MainWindow() {
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       const editing = Boolean(
-        target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable)
+        target &&
+          (target.tagName === "INPUT" ||
+            target.tagName === "TEXTAREA" ||
+            target.tagName === "SELECT" ||
+            target.isContentEditable)
+      );
+      const hasDialog = Boolean(
+        ctxMenu || showSettings || document.querySelector('[role="dialog"], .fixed.z-50')
       );
       const mod = e.metaKey || e.ctrlKey;
+      const noMods = !e.ctrlKey && !e.metaKey && !e.altKey;
 
-      if (mod && e.key.toLowerCase() === "k") {
+      if (mod && e.key.toLowerCase() === "k" && !hasDialog) {
         e.preventDefault();
         setWorkspace("tasks");
         searchRef.current?.focus();
         searchRef.current?.select();
         return;
       }
-      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-        const idx = ["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7"].indexOf(e.code);
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && !editing && !hasDialog) {
+        const idx = ["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7"].indexOf(
+          e.code
+        );
         if (idx >= 0) {
           e.preventDefault();
           const modEntry = TOOLBOX_MODULES[idx];
@@ -992,30 +1062,42 @@ function MainWindow() {
         }
       }
       if (e.key === "Escape") {
-        if (ctxMenu) { setCtxMenu(null); return; }
-        if (showSettings) { setShowSettings(false); return; }
-        if (editing) { target?.blur(); return; }
-        if (query) { setQuery(""); return; }
+        if (ctxMenu) {
+          setCtxMenu(null);
+          return;
+        }
+        if (showSettings) return;
+        if (document.querySelector('[role="dialog"], .fixed.z-50')) return;
+        if (editing) {
+          target?.blur();
+          return;
+        }
+        if (query) {
+          setQuery("");
+          return;
+        }
         if (selectedId !== null) setSelectedId(null);
         return;
       }
-      if (editing || showSettings) return;
+      if (editing || hasDialog || workspace !== "tasks") return;
 
-      if (e.key === "/" ) {
+      if (e.key === "/" && noMods) {
         e.preventDefault();
-        setWorkspace("tasks");
         searchRef.current?.focus();
-      } else if (e.key.toLowerCase() === "n" && !mod) {
+      } else if (e.key.toLowerCase() === "n" && noMods && !e.shiftKey) {
         e.preventDefault();
-        setWorkspace("tasks");
         requestAnimationFrame(() => quickAddRef.current?.focus());
-      } else if (e.key === "1" || e.key === "2" || e.key === "3" || e.key === "4") {
-        const map: Record<string, TaskView> = { "1": "today", "2": "upcoming", "3": "inbox", "4": "all" };
-        setWorkspace("tasks");
+      } else if ((e.key === "1" || e.key === "2" || e.key === "3" || e.key === "4") && noMods) {
+        const map: Record<string, TaskView> = {
+          "1": "today",
+          "2": "upcoming",
+          "3": "inbox",
+          "4": "all",
+        };
         setActiveList(null);
         setActiveLabel(null);
         setView(map[e.key]);
-      } else if (workspace === "tasks" && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && noMods) {
         if (visibleTaskOrder.length === 0) return;
         e.preventDefault();
         const idx = visibleTaskOrder.findIndex((t) => t.id === selectedId);
@@ -1031,10 +1113,10 @@ function MainWindow() {
         requestAnimationFrame(() => {
           document.querySelector(`[data-task-id="${nextId}"]`)?.scrollIntoView({ block: "nearest" });
         });
-      } else if (selected && (e.key === " " || (mod && e.key === "Enter"))) {
+      } else if (selected && ((e.key === " " && noMods) || (mod && e.key === "Enter"))) {
         e.preventDefault();
         void handleToggle(selected);
-      } else if (selected && (e.key === "Delete" || e.key === "Backspace")) {
+      } else if (selected && (e.key === "Delete" || e.key === "Backspace") && noMods) {
         e.preventDefault();
         if (window.confirm(`确定删除「${selected.title}」吗？`)) {
           void handleDelete(selected);
@@ -1113,7 +1195,7 @@ function MainWindow() {
         <div className="mt-auto flex flex-col items-center gap-2">
           <button
             type="button"
-            title="待办悬浮窗（Ctrl/Cmd+Shift+M）"
+            title={`待办悬浮窗（${settings?.global_shortcut ?? "Ctrl/Cmd+Shift+M"}）`}
             onClick={() => void api.toggleFloatingWindow()}
             className="flex h-9 w-9 items-center justify-center rounded-xl text-slate-500 hover:bg-slate-200/70"
           >
@@ -1599,10 +1681,11 @@ function MainWindow() {
                         "danger",
                         <button
                           type="button"
+                          disabled={postponing}
                           onClick={() => void handlePostponeAllOverdue()}
-                          className="text-xs font-medium text-blue-600 transition hover:text-blue-700 hover:underline"
+                          className="text-xs font-medium text-blue-600 transition hover:text-blue-700 hover:underline disabled:opacity-50"
                         >
-                          顺延
+                          {postponing ? "顺延中…" : "顺延"}
                         </button>
                       )}
                       {overdueToday.map(renderTask)}
@@ -1624,7 +1707,7 @@ function MainWindow() {
                       {groupHeader(
                         <span className="inline-flex items-center gap-1.5">
                           <Calendar className="h-3.5 w-3.5" />
-                          {dateLabel(date)}
+                          {date === "未安排" ? "未安排日期" : dateLabel(date)}
                           <span className="font-normal text-slate-400">{group.length}</span>
                         </span>
                       )}

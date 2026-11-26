@@ -1,4 +1,3 @@
-import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
@@ -23,7 +22,16 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api";
-import type { AppSettings, UploadBatchProgress } from "../../types";
+import type { AppSettings } from "../../types";
+import {
+  clearTransferJobs,
+  initTransferListener,
+  removeTransferJob,
+  setTransferBatchStatus,
+  upsertTransferJob,
+  useTransferStore,
+  type TransferJob,
+} from "./transferStore";
 
 interface Props {
   settings: AppSettings | null;
@@ -37,16 +45,6 @@ interface NasEntry {
   isDir: boolean;
   size: number;
   mtime: string;
-}
-
-interface TransferJob {
-  id: string;
-  direction: "upload" | "download";
-  name: string;
-  localPath: string;
-  remotePath: string; // upload: destDir; download: nasPath
-  status: "queued" | "running" | "done" | "error";
-  error?: string;
 }
 
 const PAGE_SIZE = 100;
@@ -131,10 +129,29 @@ function joinLocalPath(dir: string, filename: string): string {
   return `${cleanDir}${sep}${filename}`;
 }
 
+function uniqueDownloadFilename(rawName: string, usedLower: Set<string>): string {
+  const clean = rawName.trim() || "download";
+  if (!usedLower.has(clean.toLowerCase())) {
+    usedLower.add(clean.toLowerCase());
+    return clean;
+  }
+  const dot = clean.lastIndexOf(".");
+  const stem = dot > 0 ? clean.slice(0, dot) : clean;
+  const ext = dot > 0 ? clean.slice(dot) : "";
+  let n = 2;
+  while (usedLower.has(`${stem} (${n})${ext}`.toLowerCase())) {
+    n++;
+  }
+  const candidate = `${stem} (${n})${ext}`;
+  usedLower.add(candidate.toLowerCase());
+  return candidate;
+}
+
 export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
   const [lockedDir, setLockedDir] = useState<string>("");
   const lockedDirRef = useRef<string>("");
   lockedDirRef.current = lockedDir;
+  const retryingIdsRef = useRef<Set<string>>(new Set());
 
   const [entries, setEntries] = useState<NasEntry[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -145,20 +162,7 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
   const [searchMode, setSearchMode] = useState(false);
   const [loading, setLoading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
-  const [jobs, setJobs] = useState<TransferJob[]>([]);
-  const [batchStatus, setBatchStatus] = useState<string>("");
-
-  function upsertJob(job: TransferJob) {
-    setJobs((prev) => {
-      const idx = prev.findIndex((j) => j.id === job.id);
-      if (idx >= 0) {
-        const copy = [...prev];
-        copy[idx] = job;
-        return copy;
-      }
-      return [job, ...prev].slice(0, 40);
-    });
-  }
+  const { jobs, batchStatus } = useTransferStore();
 
   async function loadDir(path: string, append = false) {
     if (!path) return;
@@ -268,29 +272,9 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
     void initDownloadsDir();
   }, []);
 
-  // Listen to Rust batch transfer progress events
+  // Ensure global singleton listener for Rust batch transfer progress events
   useEffect(() => {
-    const un = listen<UploadBatchProgress>("files:transfer-progress", (ev) => {
-      const p = ev.payload;
-      setBatchStatus(
-        p.status === "uploading"
-          ? `正在上传 (${p.current}/${p.total})：${p.name}`
-          : ""
-      );
-      upsertJob({
-        id: p.job_id,
-        direction: "upload",
-        name: p.name,
-        localPath: p.local_path,
-        remotePath: p.dest_dir,
-        status:
-          p.status === "uploading" ? "running" : p.status === "done" ? "done" : "error",
-        error: p.error ?? undefined,
-      });
-    });
-    return () => {
-      void un.then((f) => f());
-    };
+    initTransferListener();
   }, []);
 
   // Listen to native OS drag-drop (supports both files and folders)
@@ -312,16 +296,20 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
     };
   }, []);
 
-  async function enqueueUploadPaths(paths: string[], targetDirOverride?: string) {
+  async function enqueueUploadPaths(
+    paths: string[],
+    targetDirOverride?: string
+  ): Promise<{ ok: boolean; error?: string }> {
     const targetDir = targetDirOverride ?? lockedDirRef.current;
     if (!targetDir) {
-      onToast("正在定位「我的文件/downloads」目录，请稍后再试");
-      return;
+      const error = "正在定位「我的文件/downloads」目录，请稍后再试";
+      onToast(error);
+      return { ok: false, error };
     }
     const batchId = `up_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     try {
       const summary = await api.nasUploadPaths(paths, targetDir, true, batchId);
-      setBatchStatus("");
+      setTransferBatchStatus("");
       if (summary.total_files === 0 && summary.created_dirs > 0) {
         onToast(`已创建 ${summary.created_dirs} 个目录（文件夹内暂无可上传文件）`);
       } else if (summary.failed > 0) {
@@ -333,9 +321,12 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
       if (lockedDirRef.current) {
         void loadDir(lockedDirRef.current);
       }
+      return { ok: true };
     } catch (e) {
-      setBatchStatus("");
-      onToast(`上传失败：${String(e)}`);
+      const error = String(e);
+      setTransferBatchStatus("");
+      onToast(`上传失败：${error}`);
+      return { ok: false, error };
     }
   }
 
@@ -353,13 +344,13 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
   }
 
   async function runDownloadJob(job: TransferJob) {
-    upsertJob({ ...job, status: "running", error: undefined });
+    upsertTransferJob({ ...job, status: "running", error: undefined });
     try {
       await api.nasDownloadFile(job.remotePath, job.localPath);
-      upsertJob({ ...job, status: "done", error: undefined });
+      upsertTransferJob({ ...job, status: "done", error: undefined });
       return true;
     } catch (e) {
-      upsertJob({ ...job, status: "error", error: String(e) });
+      upsertTransferJob({ ...job, status: "error", error: String(e) });
       return false;
     }
   }
@@ -390,28 +381,32 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
     const targetDir = await open({ multiple: false, directory: true });
     if (!targetDir || Array.isArray(targetDir)) return;
 
-    const batchJobs: TransferJob[] = selectedFiles.map((entry, idx) => ({
-      id: `dl_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 5)}`,
-      direction: "download",
-      name: entry.name,
-      localPath: joinLocalPath(targetDir, entry.name),
-      remotePath: entry.path,
-      status: "queued",
-    }));
+    const usedNames = new Set<string>();
+    const batchJobs: TransferJob[] = selectedFiles.map((entry, idx) => {
+      const localName = uniqueDownloadFilename(entry.name, usedNames);
+      return {
+        id: `dl_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 5)}`,
+        direction: "download",
+        name: localName,
+        localPath: joinLocalPath(targetDir, localName),
+        remotePath: entry.path,
+        status: "queued",
+      };
+    });
 
     for (const j of [...batchJobs].reverse()) {
-      upsertJob(j);
+      upsertTransferJob(j);
     }
 
     let okCount = 0;
     let errCount = 0;
     for (let i = 0; i < batchJobs.length; i++) {
-      setBatchStatus(`正在下载 (${i + 1}/${batchJobs.length})：${batchJobs[i].name}`);
+      setTransferBatchStatus(`正在下载 (${i + 1}/${batchJobs.length})：${batchJobs[i].name}`);
       const ok = await runDownloadJob(batchJobs[i]);
       if (ok) okCount++;
       else errCount++;
     }
-    setBatchStatus("");
+    setTransferBatchStatus("");
     setSelectedPaths(new Set());
     onToast(
       errCount > 0
@@ -421,12 +416,21 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
   }
 
   async function handleRetryJob(job: TransferJob) {
-    if (job.direction === "download") {
-      const ok = await runDownloadJob(job);
-      if (ok) onToast(`重试下载「${job.name}」成功`);
-    } else {
-      upsertJob({ ...job, status: "running", error: undefined });
-      await enqueueUploadPaths([job.localPath], job.remotePath);
+    if (retryingIdsRef.current.has(job.id)) return;
+    retryingIdsRef.current.add(job.id);
+    try {
+      if (job.direction === "download") {
+        const ok = await runDownloadJob(job);
+        if (ok) onToast(`重试下载「${job.name}」成功`);
+      } else {
+        removeTransferJob(job.id);
+        const res = await enqueueUploadPaths([job.localPath], job.remotePath);
+        if (!res.ok) {
+          upsertTransferJob({ ...job, status: "error", error: res.error });
+        }
+      }
+    } finally {
+      retryingIdsRef.current.delete(job.id);
     }
   }
 
@@ -579,7 +583,7 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
         <div className="border-b border-slate-100 bg-white px-5 py-2 space-y-1">
           <div className="flex items-center justify-between text-[11px] font-medium text-slate-400">
             <span>传输队列（{jobs.length}）</span>
-            <button type="button" onClick={() => setJobs([])} className="hover:text-slate-600">
+            <button type="button" onClick={clearTransferJobs} className="hover:text-slate-600">
               清空记录
             </button>
           </div>

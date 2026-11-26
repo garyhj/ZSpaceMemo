@@ -132,11 +132,15 @@ mod tests {
             day_time: None,
         };
         assert_eq!(
-            compute_fire_time_utc(&r_1d, &sched, "09:00").unwrap().to_rfc3339(),
+            compute_fire_time_utc(&r_1d, &sched, "09:00")
+                .unwrap()
+                .to_rfc3339(),
             "2026-11-25T10:00:00+00:00"
         );
         assert_eq!(
-            compute_fire_time_utc(&r_1h, &sched, "09:00").unwrap().to_rfc3339(),
+            compute_fire_time_utc(&r_1h, &sched, "09:00")
+                .unwrap()
+                .to_rfc3339(),
             "2026-11-26T09:00:00+00:00"
         );
     }
@@ -171,7 +175,9 @@ mod tests {
             day_time: Some("09:00".into()),
         };
         assert_eq!(
-            compute_fire_time_utc(&r, &sched, "09:00").unwrap().to_rfc3339(),
+            compute_fire_time_utc(&r, &sched, "09:00")
+                .unwrap()
+                .to_rfc3339(),
             "2026-11-25T01:00:00+00:00"
         );
     }

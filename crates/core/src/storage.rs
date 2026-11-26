@@ -38,6 +38,8 @@ pub struct AppSettings {
     pub allow_insecure_http: bool,
     #[serde(default = "default_cli_timeout")]
     pub cli_timeout_secs: u64,
+    #[serde(default = "default_global_shortcut")]
+    pub global_shortcut: String,
 }
 
 fn default_true() -> bool {
@@ -54,6 +56,10 @@ fn default_connection_mode() -> String {
 
 fn default_cli_timeout() -> u64 {
     30
+}
+
+fn default_global_shortcut() -> String {
+    "CommandOrControl+Shift+M".into()
 }
 
 impl AppSettings {
@@ -110,6 +116,41 @@ impl AppSettings {
             ));
         }
 
+        let sc = next.global_shortcut.trim().to_string();
+        if sc.is_empty() {
+            next.global_shortcut = default_global_shortcut();
+        } else {
+            let has_mod = sc.split('+').any(|p| {
+                matches!(
+                    p.trim().to_ascii_lowercase().as_str(),
+                    "commandorcontrol"
+                        | "ctrl"
+                        | "control"
+                        | "cmd"
+                        | "command"
+                        | "super"
+                        | "alt"
+                        | "option"
+                        | "shift"
+                )
+            });
+            let parts: Vec<&str> = sc
+                .split('+')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
+            if parts.len() < 2
+                || !has_mod
+                || sc.chars().any(|c| c.is_control() || c.is_whitespace())
+            {
+                return Err(crate::error::AppError::Validation(
+                    "全局呼出快捷键格式无效：需至少包含一个修饰键（如 CommandOrControl+Shift+M 或 Alt+Space）"
+                        .into(),
+                ));
+            }
+            next.global_shortcut = parts.join("+");
+        }
+
         next.cli_timeout_secs = next.cli_timeout_secs.clamp(10, 600);
         Ok(next)
     }
@@ -137,6 +178,7 @@ impl Default for AppSettings {
             lan_host: None,
             allow_insecure_http: false,
             cli_timeout_secs: default_cli_timeout(),
+            global_shortcut: default_global_shortcut(),
         }
     }
 }
@@ -537,7 +579,10 @@ impl LocalStorage {
     ) -> AppResult<String> {
         let conn = self.lock_conn()?;
         let now_unix = Utc::now().timestamp();
-        let job_key = format!("snooze-{task_id}-{occurrence_key}-{}", fire_at_utc.timestamp());
+        let job_key = format!(
+            "snooze-{task_id}-{occurrence_key}-{}",
+            fire_at_utc.timestamp()
+        );
         conn.execute(
             "INSERT OR REPLACE INTO reminder_jobs(job_key, task_id, occurrence_key, reminder_id, fire_at_unix, title, body, kind, status, updated_at_unix)
              VALUES(?1, ?2, ?3, 'snooze', ?4, ?5, ?6, 'snooze', 'pending', ?7)",
@@ -647,7 +692,10 @@ impl LocalStorage {
 
     pub fn mark_notification_read(&self, id: i64) -> AppResult<()> {
         let conn = self.lock_conn()?;
-        conn.execute("UPDATE notifications SET read = 1 WHERE id = ?1", params![id])?;
+        conn.execute(
+            "UPDATE notifications SET read = 1 WHERE id = ?1",
+            params![id],
+        )?;
         Ok(())
     }
 
@@ -673,7 +721,13 @@ impl LocalStorage {
         Ok(out)
     }
 
-    pub fn upsert_sticky(&self, id: i64, updated_at_unix: i64, length: i64, note_json: &str) -> AppResult<()> {
+    pub fn upsert_sticky(
+        &self,
+        id: i64,
+        updated_at_unix: i64,
+        length: i64,
+        note_json: &str,
+    ) -> AppResult<()> {
         let conn = self.lock_conn()?;
         conn.execute(
             "INSERT INTO sticky_index(id, updated_at_unix, length, note_json)
@@ -722,9 +776,11 @@ impl LocalStorage {
 
     pub fn get_kv(&self, key: &str) -> AppResult<Option<String>> {
         let conn = self.lock_conn()?;
-        conn.query_row("SELECT value FROM settings WHERE key = ?1", params![key], |r| {
-            r.get(0)
-        })
+        conn.query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![key],
+            |r| r.get(0),
+        )
         .optional()
         .map_err(Into::into)
     }

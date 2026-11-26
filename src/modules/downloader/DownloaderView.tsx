@@ -12,7 +12,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api";
 import type { AppSettings } from "../../types";
 
@@ -250,17 +250,21 @@ export function DownloaderView({ settings, onToast }: Props) {
   const [dirInput, setDirInput] = useState(settings?.nas_drop_dir ?? "");
   const [dirOptions, setDirOptions] = useState<string[]>([]);
   const [adding, setAdding] = useState(false);
+  const refreshSeqRef = useRef(0);
 
   async function refresh(silent = false) {
+    const reqSeq = ++refreshSeqRef.current;
     if (!silent) setLoading(true);
     try {
       const res = await api.nasDownloadTasks(tab, 0, 100);
+      if (reqSeq !== refreshSeqRef.current) return;
       setRawJson(res);
       setTasks(parseDownloadTasks(res));
     } catch (e) {
+      if (reqSeq !== refreshSeqRef.current) return;
       if (!silent) onToast(`获取下载任务失败：${String(e)}`);
     } finally {
-      if (!silent) setLoading(false);
+      if (!silent && reqSeq === refreshSeqRef.current) setLoading(false);
     }
   }
 
@@ -289,10 +293,24 @@ export function DownloaderView({ settings, onToast }: Props) {
 
   useEffect(() => {
     if (!autoRefresh) return;
-    const timer = window.setInterval(() => {
-      void refresh(true);
-    }, 5000);
-    return () => window.clearInterval(timer);
+    let cancelled = false;
+    let timer: number | undefined;
+
+    const schedule = () => {
+      if (cancelled) return;
+      timer = window.setTimeout(() => {
+        void (async () => {
+          await refresh(true);
+          schedule();
+        })();
+      }, 5000);
+    };
+
+    schedule();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, [autoRefresh, tab]);
 
   async function handleAddTask(e: React.FormEvent) {

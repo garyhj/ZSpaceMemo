@@ -1,7 +1,7 @@
 use crate::error::{AppError, AppResult};
 use crate::lunar::{
-    is_cn_workday, lunar_day_zh, lunar_month_days, lunar_month_zh, lunar_to_solar,
-    solar_to_lunar, year_leap_month, year_month_sequence, LunarDate,
+    is_cn_workday, lunar_day_zh, lunar_month_days, lunar_month_zh, lunar_to_solar, solar_to_lunar,
+    year_leap_month, year_month_sequence, LunarDate,
 };
 use crate::lunar_tables::LUNAR_MAX_YEAR;
 use crate::models::{
@@ -109,7 +109,8 @@ fn generate_lunar_occurrences(
         .unwrap_or(start_lunar.month)
         .clamp(1, 12);
 
-    let target_day: i8 = if rule.by_month_day.as_ref().and_then(|v| v.first().copied()) == Some(-1) {
+    let target_day: i8 = if rule.by_month_day.as_ref().and_then(|v| v.first().copied()) == Some(-1)
+    {
         -1
     } else {
         rule.lunar
@@ -137,7 +138,7 @@ fn generate_lunar_occurrences(
                 return false;
             }
         }
-        if after_date.map_or(true, |a| d > a) {
+        if after_date.is_none_or(|a| d > a) {
             out.push(format_date(d));
         }
         out.len() < limit
@@ -162,13 +163,19 @@ fn generate_lunar_occurrences(
                     let include = match leap_policy.as_str() {
                         "both" => true,
                         "only_leap" => m.is_leap,
-                        _ => !m.is_leap || (m.year == start_lunar.year && m.month == start_lunar.month && start_lunar.is_leap),
+                        _ => {
+                            !m.is_leap
+                                || (m.year == start_lunar.year
+                                    && m.month == start_lunar.month
+                                    && start_lunar.is_leap)
+                        }
                     };
                     if include {
                         valid_months.push(m);
                     }
                 }
-                if valid_months.len() > (limit + max_count.unwrap_or(0) + 64) * (interval as usize) {
+                if valid_months.len() > (limit + max_count.unwrap_or(0) + 64) * (interval as usize)
+                {
                     break;
                 }
             }
@@ -280,7 +287,7 @@ pub fn generate_occurrences(
                 return false;
             }
         }
-        if after_date.map_or(true, |a| d > a) {
+        if after_date.is_none_or(|a| d > a) {
             out.push(format_date(d));
         }
         out.len() < limit
@@ -306,8 +313,8 @@ pub fn generate_occurrences(
             RepeatFreq::Weekly => {
                 // Anchor to Monday of dtstart's week.
                 let offset_from_mon = dtstart.weekday().num_days_from_monday() as i64;
-                let week_mon =
-                    dtstart - Duration::days(offset_from_mon) + Duration::days((k * 7 * interval) as i64);
+                let week_mon = dtstart - Duration::days(offset_from_mon)
+                    + Duration::days((k * 7 * interval) as i64);
                 let mut wds: Vec<u32> = match &rule.by_weekday {
                     Some(list) if !list.is_empty() => list
                         .iter()
@@ -500,7 +507,8 @@ pub fn next_after_action(
                     RepeatFreq::Daily => completed_on_date + Duration::days(iv as i64),
                     RepeatFreq::Weekly => completed_on_date + Duration::days((iv * 7) as i64),
                     RepeatFreq::Monthly => {
-                        let (y, m) = add_months_ym(completed_on_date.year(), completed_on_date.month(), iv);
+                        let (y, m) =
+                            add_months_ym(completed_on_date.year(), completed_on_date.month(), iv);
                         let d = completed_on_date.day().min(days_in_month(y, m));
                         NaiveDate::from_ymd_opt(y, m, d).expect("valid clamped date")
                     }
@@ -546,7 +554,7 @@ pub fn effective_current_key(
         let mut seq = vec![cur.clone()];
         let more = generate_occurrences(rule, 500, Some(&cur))?;
         seq.extend(more);
-        if let Some(latest) = seq.into_iter().filter(|k| k.as_str() <= today).last() {
+        if let Some(latest) = seq.into_iter().rfind(|k| k.as_str() <= today) {
             cur = latest;
         }
     }
@@ -554,11 +562,7 @@ pub fn effective_current_key(
 }
 
 /// Compute missed occurrence keys (between stored cursor and effective current key).
-pub fn missed_keys(
-    rule: &RepeatRule,
-    series: &SeriesState,
-    today: &str,
-) -> AppResult<Vec<String>> {
+pub fn missed_keys(rule: &RepeatRule, series: &SeriesState, today: &str) -> AppResult<Vec<String>> {
     let Some(cur) = effective_current_key(rule, series, today)? else {
         return Ok(Vec::new());
     };
@@ -571,11 +575,7 @@ pub fn missed_keys(
 }
 
 /// Shift the template schedule to a specific occurrence key, applying any per-occurrence override.
-pub fn schedule_for_occurrence(
-    template: &Schedule,
-    series: &SeriesState,
-    key: &str,
-) -> Schedule {
+pub fn schedule_for_occurrence(template: &Schedule, series: &SeriesState, key: &str) -> Schedule {
     if let Some(ov) = series.overrides.get(key) {
         if let Some(sched) = &ov.schedule {
             return sched.clone();
@@ -689,7 +689,8 @@ pub fn describe_rule_zh(rule: &RepeatRule) -> String {
                 } else {
                     format!("每 {n} 个农历月")
                 };
-                let is_last = rule.by_month_day.as_ref().and_then(|v| v.first().copied()) == Some(-1);
+                let is_last =
+                    rule.by_month_day.as_ref().and_then(|v| v.first().copied()) == Some(-1);
                 let day_s = if is_last {
                     "最后一天".to_string()
                 } else {
@@ -734,7 +735,11 @@ pub fn describe_rule_zh(rule: &RepeatRule) -> String {
                         .by_month_day
                         .as_ref()
                         .and_then(|v| v.first().copied())
-                        .unwrap_or_else(|| parse_date(&rule.dtstart).map(|d| d.day() as i8).unwrap_or(1));
+                        .unwrap_or_else(|| {
+                            parse_date(&rule.dtstart)
+                                .map(|d| d.day() as i8)
+                                .unwrap_or(1)
+                        });
                     if day == -1 {
                         format!("{prefix} 最后一天")
                     } else {
@@ -757,7 +762,8 @@ pub fn describe_rule_zh(rule: &RepeatRule) -> String {
                     .map(|l| l.month)
                     .or_else(|| dt_lun.map(|l| l.month))
                     .unwrap_or(1);
-                let is_last = rule.by_month_day.as_ref().and_then(|v| v.first().copied()) == Some(-1);
+                let is_last =
+                    rule.by_month_day.as_ref().and_then(|v| v.first().copied()) == Some(-1);
                 let day_s = if is_last {
                     "最后一天".to_string()
                 } else {
@@ -774,7 +780,12 @@ pub fn describe_rule_zh(rule: &RepeatRule) -> String {
                     Some("only_leap") => "（仅闰月）",
                     _ => "",
                 };
-                format!("{prefix} 农历{}{}{}", lunar_month_zh(m, false), day_s, leap_hint)
+                format!(
+                    "{prefix} 农历{}{}{}",
+                    lunar_month_zh(m, false),
+                    day_s,
+                    leap_hint
+                )
             } else {
                 let prefix = if n == 1 {
                     "每年".to_string()
@@ -839,7 +850,10 @@ mod tests {
         r.interval = 6;
         r.by_month_day = Some(vec![24]);
         let occ = generate_occurrences(&r, 4, None).unwrap();
-        assert_eq!(occ, vec!["2026-11-24", "2027-05-24", "2027-11-24", "2028-05-24"]);
+        assert_eq!(
+            occ,
+            vec!["2026-11-24", "2027-05-24", "2027-11-24", "2028-05-24"]
+        );
     }
 
     #[test]
@@ -848,11 +862,17 @@ mod tests {
         r.by_month_day = Some(vec![31]);
         r.on_invalid_date = InvalidDatePolicy::Clamp;
         let clamped = generate_occurrences(&r, 4, None).unwrap();
-        assert_eq!(clamped, vec!["2026-01-31", "2026-02-28", "2026-03-31", "2026-04-30"]);
+        assert_eq!(
+            clamped,
+            vec!["2026-01-31", "2026-02-28", "2026-03-31", "2026-04-30"]
+        );
 
         r.on_invalid_date = InvalidDatePolicy::Skip;
         let skipped = generate_occurrences(&r, 4, None).unwrap();
-        assert_eq!(skipped, vec!["2026-01-31", "2026-03-31", "2026-05-31", "2026-07-31"]);
+        assert_eq!(
+            skipped,
+            vec!["2026-01-31", "2026-03-31", "2026-05-31", "2026-07-31"]
+        );
     }
 
     #[test]
@@ -880,7 +900,13 @@ mod tests {
         r.by_month_day = Some(vec![29]);
         assert_eq!(
             generate_occurrences(&r, 5, None).unwrap(),
-            vec!["2024-02-29", "2025-02-28", "2026-02-28", "2027-02-28", "2028-02-29"]
+            vec![
+                "2024-02-29",
+                "2025-02-28",
+                "2026-02-28",
+                "2027-02-28",
+                "2028-02-29"
+            ]
         );
         r.on_invalid_date = InvalidDatePolicy::Skip;
         assert_eq!(
@@ -917,11 +943,24 @@ mod tests {
             history_summary: None,
             ended_at: None,
         };
-        assert_eq!(effective_current_key(&r, &s, "2026-11-23").unwrap().as_deref(), Some("2026-11-23"));
-        assert_eq!(missed_keys(&r, &s, "2026-11-23").unwrap(), vec!["2026-11-20", "2026-11-21", "2026-11-22"]);
+        assert_eq!(
+            effective_current_key(&r, &s, "2026-11-23")
+                .unwrap()
+                .as_deref(),
+            Some("2026-11-23")
+        );
+        assert_eq!(
+            missed_keys(&r, &s, "2026-11-23").unwrap(),
+            vec!["2026-11-20", "2026-11-21", "2026-11-22"]
+        );
 
         r.catch_up = CatchUpPolicy::Each;
-        assert_eq!(effective_current_key(&r, &s, "2026-11-23").unwrap().as_deref(), Some("2026-11-20"));
+        assert_eq!(
+            effective_current_key(&r, &s, "2026-11-23")
+                .unwrap()
+                .as_deref(),
+            Some("2026-11-20")
+        );
         assert!(missed_keys(&r, &s, "2026-11-23").unwrap().is_empty());
     }
 
@@ -933,7 +972,13 @@ mod tests {
         // 2026-10-01..10-07 are National Day holiday; 2026-10-10 (Sat) is adjusted workday.
         assert_eq!(
             generate_occurrences(&r, 5, None).unwrap(),
-            vec!["2026-09-30", "2026-10-08", "2026-10-09", "2026-10-10", "2026-10-12"]
+            vec![
+                "2026-09-30",
+                "2026-10-08",
+                "2026-10-09",
+                "2026-10-10",
+                "2026-10-12"
+            ]
         );
     }
 
@@ -1004,8 +1049,18 @@ mod tests {
             ended_at: None,
         };
         // On 2026-11-28, postponed date 2026-11-29 is still in the future -> keep cursor 2026-11-26
-        assert_eq!(effective_current_key(&r, &s, "2026-11-28").unwrap().as_deref(), Some("2026-11-26"));
+        assert_eq!(
+            effective_current_key(&r, &s, "2026-11-28")
+                .unwrap()
+                .as_deref(),
+            Some("2026-11-26")
+        );
         // Once past 2026-11-29 (say 2026-11-30), catch-up advances normally
-        assert_eq!(effective_current_key(&r, &s, "2026-11-30").unwrap().as_deref(), Some("2026-11-30"));
+        assert_eq!(
+            effective_current_key(&r, &s, "2026-11-30")
+                .unwrap()
+                .as_deref(),
+            Some("2026-11-30")
+        );
     }
 }

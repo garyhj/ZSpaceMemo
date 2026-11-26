@@ -87,6 +87,10 @@ export function MonthCalendarView({
   const gridRef = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
+  const itemsRef = useRef<CalendarTaskItem[]>([]);
+  itemsRef.current = items;
+  const submittingQuickRef = useRef(false);
+  const cancelledQuickRef = useRef(false);
 
   const { cells, rangeFrom, rangeTo, year, monthNum } = useMemo(() => {
     const [y, m] = month.split("-").map(Number);
@@ -182,22 +186,32 @@ export function MonthCalendarView({
   }, [items, listFilter]);
 
   async function submitQuickAdd(date: string) {
+    if (submittingQuickRef.current) return;
+    if (cancelledQuickRef.current) {
+      cancelledQuickRef.current = false;
+      return;
+    }
     const t = quickTitle.trim();
     if (!t) {
       setQuickAddDate(null);
       return;
     }
-    await onCreateTaskOnDate({
-      title: t,
-      list: listFilter || null,
-      schedule: {
-        all_day: true,
-        due: { date, time: null },
-        timezone: "Asia/Shanghai",
-      },
-    });
+    submittingQuickRef.current = true;
     setQuickTitle("");
     setQuickAddDate(null);
+    try {
+      await onCreateTaskOnDate({
+        title: t,
+        list: listFilter || null,
+        schedule: {
+          all_day: true,
+          due: { date, time: null },
+          timezone: "Asia/Shanghai",
+        },
+      });
+    } finally {
+      submittingQuickRef.current = false;
+    }
   }
 
   function handleDragStart(e: React.DragEvent, item: CalendarTaskItem) {
@@ -216,6 +230,7 @@ export function MonthCalendarView({
     try {
       const item = JSON.parse(raw) as CalendarTaskItem;
       if (item.date !== targetDate) {
+        const prevItems = itemsRef.current;
         setItems((prev) =>
           prev.map((x) =>
             x.task_id === item.task_id &&
@@ -224,7 +239,9 @@ export function MonthCalendarView({
               : x
           )
         );
-        void onRescheduleItem(item, targetDate);
+        void onRescheduleItem(item, targetDate).catch(() => {
+          setItems(prevItems);
+        });
       }
     } catch {
       // ignore invalid drag payload
@@ -232,6 +249,8 @@ export function MonthCalendarView({
   }
 
   function handleOptimisticToggle(item: CalendarTaskItem) {
+    const prevItems = itemsRef.current;
+    const prevCard = quickCard;
     setItems((prev) =>
       prev.map((x) =>
         x.task_id === item.task_id &&
@@ -247,7 +266,10 @@ export function MonthCalendarView({
     ) {
       setQuickCard({ ...quickCard, item: { ...quickCard.item, done: !quickCard.item.done } });
     }
-    void onToggleItem(item);
+    void onToggleItem(item).catch(() => {
+      setItems(prevItems);
+      setQuickCard(prevCard);
+    });
   }
 
   function handlePillClick(e: React.MouseEvent, item: CalendarTaskItem) {
@@ -493,6 +515,7 @@ export function MonthCalendarView({
                   type="button"
                   title={`在 ${cell.date} 新建任务`}
                   onClick={() => {
+                    cancelledQuickRef.current = false;
                     setQuickAddDate(cell.date);
                     setQuickTitle("");
                   }}
@@ -509,8 +532,15 @@ export function MonthCalendarView({
                   value={quickTitle}
                   onChange={(e) => setQuickTitle(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") void submitQuickAdd(cell.date);
-                    if (e.key === "Escape") setQuickAddDate(null);
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void submitQuickAdd(cell.date);
+                    } else if (e.key === "Escape") {
+                      e.preventDefault();
+                      cancelledQuickRef.current = true;
+                      setQuickTitle("");
+                      setQuickAddDate(null);
+                    }
                   }}
                   onBlur={() => void submitQuickAdd(cell.date)}
                   placeholder="任务标题，回车创建"
@@ -644,7 +674,19 @@ export function MonthCalendarView({
             onBlur={() => {
               const trimmed = cardTitle.trim();
               if (trimmed && trimmed !== quickCard.item.title && onQuickUpdateTask) {
-                void onQuickUpdateTask(quickCard.item.task_id, { title: trimmed });
+                const prevItems = itemsRef.current;
+                const prevCard = quickCard;
+                setItems((prev) =>
+                  prev.map((x) =>
+                    x.task_id === quickCard.item.task_id ? { ...x, title: trimmed } : x
+                  )
+                );
+                setQuickCard({ ...quickCard, item: { ...quickCard.item, title: trimmed } });
+                void onQuickUpdateTask(quickCard.item.task_id, { title: trimmed }).catch(() => {
+                  setItems(prevItems);
+                  setQuickCard(prevCard);
+                  setCardTitle(prevCard.item.title);
+                });
               }
             }}
             onKeyDown={(e) => {
@@ -673,6 +715,8 @@ export function MonthCalendarView({
                 type="button"
                 onClick={() => {
                   if (quickCard.item.date !== d) {
+                    const prevItems = itemsRef.current;
+                    const prevCard = quickCard;
                     setItems((prev) =>
                       prev.map((x) =>
                         x.task_id === quickCard.item.task_id &&
@@ -681,8 +725,11 @@ export function MonthCalendarView({
                           : x
                       )
                     );
-                    void onRescheduleItem(quickCard.item, d);
                     setQuickCard({ ...quickCard, item: { ...quickCard.item, date: d } });
+                    void onRescheduleItem(quickCard.item, d).catch(() => {
+                      setItems(prevItems);
+                      setQuickCard(prevCard);
+                    });
                   }
                 }}
                 className={`rounded px-1.5 py-0.5 ${
@@ -704,14 +751,19 @@ export function MonthCalendarView({
                   type="button"
                   title={`${PRIORITY_META[p].label}优先级`}
                   onClick={() => {
-                    if (!onQuickUpdateTask) return;
+                    if (!onQuickUpdateTask || quickCard.item.priority === p) return;
+                    const prevItems = itemsRef.current;
+                    const prevCard = quickCard;
                     setItems((prev) =>
                       prev.map((x) =>
                         x.task_id === quickCard.item.task_id ? { ...x, priority: p } : x
                       )
                     );
                     setQuickCard({ ...quickCard, item: { ...quickCard.item, priority: p } });
-                    void onQuickUpdateTask(quickCard.item.task_id, { priority: p });
+                    void onQuickUpdateTask(quickCard.item.task_id, { priority: p }).catch(() => {
+                      setItems(prevItems);
+                      setQuickCard(prevCard);
+                    });
                   }}
                   className={`rounded-md p-1 ${
                     quickCard.item.priority === p ? "bg-slate-100 ring-1 ring-slate-300" : "hover:bg-slate-100"

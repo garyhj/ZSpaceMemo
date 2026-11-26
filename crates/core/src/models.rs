@@ -384,6 +384,12 @@ pub struct Task {
     pub etag: String,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub meta_extra: std::collections::BTreeMap<String, serde_json::Value>,
+    /// Computed at query/mutation time using the task's timezone and catch_up policy (not persisted to ZSM1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_current_key: Option<String>,
+    /// Computed at query/mutation time using the task's timezone + DST resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_overdue: Option<bool>,
 }
 
 fn default_source() -> String {

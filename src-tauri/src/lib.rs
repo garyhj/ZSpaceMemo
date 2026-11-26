@@ -760,6 +760,29 @@ fn sync_os_autostart(app: &AppHandle, enabled: bool) -> Result<(), String> {
     }
 }
 
+fn apply_global_shortcut(app: &AppHandle, prev: Option<&str>, next: &str) -> Result<(), String> {
+    let _ = app.global_shortcut().unregister_all();
+    let handle = app.clone();
+    match app.global_shortcut().on_shortcut(next, move |_app, _shortcut, event| {
+        if event.state == ShortcutState::Pressed {
+            let _ = toggle_floating_window(handle.clone());
+        }
+    }) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            if let Some(old) = prev.filter(|s| !s.trim().is_empty()) {
+                let restore_handle = app.clone();
+                let _ = app.global_shortcut().on_shortcut(old, move |_app, _shortcut, event| {
+                    if event.state == ShortcutState::Pressed {
+                        let _ = toggle_floating_window(restore_handle.clone());
+                    }
+                });
+            }
+            Err(format!("注册全局快捷键「{next}」失败：{e}"))
+        }
+    }
+}
+
 #[tauri::command]
 async fn save_settings(
     app: AppHandle,
@@ -770,6 +793,10 @@ async fn save_settings(
     let normalized = settings.normalized_and_validated().map_err(map_err)?;
     if prev.as_ref().is_some_and(|p| p.autostart != normalized.autostart) {
         sync_os_autostart(&app, normalized.autostart)?;
+    }
+    if prev.as_ref().is_some_and(|p| p.global_shortcut != normalized.global_shortcut) {
+        let prev_sc = prev.as_ref().map(|p| p.global_shortcut.as_str());
+        apply_global_shortcut(&app, prev_sc, &normalized.global_shortcut)?;
     }
     state.service.save_settings(&normalized).map_err(map_err)?;
 
@@ -1896,16 +1923,15 @@ pub fn run() {
             *app.state::<AppState>().tray.lock().unwrap() = Some(tray);
             refresh_tray_tooltip(app.handle());
 
-            // Global shortcut: Ctrl/Cmd + Shift + M toggles the floating quick window.
-            let handle = app.handle().clone();
-            let _ = app.global_shortcut().on_shortcut(
-                "CommandOrControl+Shift+M",
-                move |_app, _shortcut, event| {
-                    if event.state == ShortcutState::Pressed {
-                        let _ = toggle_floating_window(handle.clone());
-                    }
-                },
-            );
+            // Global shortcut: user-configured or default Ctrl/Cmd + Shift + M toggles the floating window.
+            let configured_sc = storage
+                .load_settings()
+                .map(|s| s.global_shortcut)
+                .unwrap_or_else(|_| "CommandOrControl+Shift+M".into());
+            if let Err(e) = apply_global_shortcut(app.handle(), None, &configured_sc) {
+                tracing::warn!(error = %e, shortcut = %configured_sc, "failed to register configured global shortcut, falling back");
+                let _ = apply_global_shortcut(app.handle(), None, "CommandOrControl+Shift+M");
+            }
 
             Ok(())
         })

@@ -72,7 +72,10 @@ pub struct UploadBatchSummary {
 }
 
 fn should_ignore_junk_name(name: &str) -> bool {
-    matches!(name, ".DS_Store" | "Thumbs.db" | "desktop.ini" | "._.DS_Store")
+    matches!(
+        name,
+        ".DS_Store" | "Thumbs.db" | "desktop.ini" | "._.DS_Store"
+    )
 }
 
 fn is_nas_entry_dir(val: &Value) -> bool {
@@ -127,13 +130,14 @@ fn walk_dir_for_upload(
     plan: &mut UploadPlan,
 ) -> AppResult<()> {
     if depth > MAX_UPLOAD_DIR_DEPTH {
-        plan.skipped
-            .push(format!("超过最大目录层级({MAX_UPLOAD_DIR_DEPTH}): {}", local_dir.display()));
+        plan.skipped.push(format!(
+            "超过最大目录层级({MAX_UPLOAD_DIR_DEPTH}): {}",
+            local_dir.display()
+        ));
         return Ok(());
     }
-    let rd = std::fs::read_dir(local_dir).map_err(|e| {
-        AppError::Validation(format!("读取目录失败 {}: {e}", local_dir.display()))
-    })?;
+    let rd = std::fs::read_dir(local_dir)
+        .map_err(|e| AppError::Validation(format!("读取目录失败 {}: {e}", local_dir.display())))?;
     let mut entries: Vec<std::fs::DirEntry> = Vec::new();
     for res in rd {
         let entry = res.map_err(|e| {
@@ -153,7 +157,8 @@ fn walk_dir_for_upload(
             AppError::Validation(format!("读取文件属性失败 {}: {e}", path.display()))
         })?;
         if meta.file_type().is_symlink() {
-            plan.skipped.push(format!("跳过符号链接: {}", path.display()));
+            plan.skipped
+                .push(format!("跳过符号链接: {}", path.display()));
             continue;
         }
         if meta.is_dir() {
@@ -205,7 +210,8 @@ pub fn build_upload_plan<P: AsRef<Path>>(
             AppError::Validation(format!("本地路径不可访问 {}: {e}", path.display()))
         })?;
         if meta.file_type().is_symlink() {
-            plan.skipped.push(format!("跳过符号链接: {}", path.display()));
+            plan.skipped
+                .push(format!("跳过符号链接: {}", path.display()));
             continue;
         }
         let name = path
@@ -235,7 +241,8 @@ pub fn build_upload_plan<P: AsRef<Path>>(
                 dest_dir: base.to_string(),
             });
         } else {
-            plan.skipped.push(format!("跳过非常规文件: {}", path.display()));
+            plan.skipped
+                .push(format!("跳过非常规文件: {}", path.display()));
         }
     }
 
@@ -249,10 +256,7 @@ pub struct ToolboxService {
 }
 
 impl ToolboxService {
-    pub fn new(
-        provider: Arc<OfficialCliNotebookProvider>,
-        storage: Arc<LocalStorage>,
-    ) -> Self {
+    pub fn new(provider: Arc<OfficialCliNotebookProvider>, storage: Arc<LocalStorage>) -> Self {
         Self { provider, storage }
     }
 
@@ -317,9 +321,8 @@ impl ToolboxService {
             return Err(AppError::Validation("无效的目标上传目录".into()));
         }
         let path = Path::new(local_path);
-        let meta = std::fs::symlink_metadata(path).map_err(|e| {
-            AppError::Validation(format!("本地文件不可访问 {local_path}: {e}"))
-        })?;
+        let meta = std::fs::symlink_metadata(path)
+            .map_err(|e| AppError::Validation(format!("本地文件不可访问 {local_path}: {e}")))?;
         if meta.file_type().is_symlink() {
             return Err(AppError::Validation(format!(
                 "出于安全限制，暂不支持直接上传符号链接：{local_path}"
@@ -441,7 +444,10 @@ impl ToolboxService {
                 total,
             });
 
-            match self.upload_file(&local_str, &target_dir, rename_on_conflict).await {
+            match self
+                .upload_file(&local_str, &target_dir, rename_on_conflict)
+                .await
+            {
                 Ok(_) => {
                     succeeded += 1;
                     on_progress(UploadBatchProgress {
@@ -648,8 +654,8 @@ impl ToolboxService {
             let body = pick_str(item, &["content", "message", "msg", "desc", "detail"])
                 .unwrap_or_else(|| title.clone());
             let level = pick_str(item, &["level", "severity"]).unwrap_or_else(|| "info".into());
-            let time = pick_str(item, &["created_at", "time", "ctime", "create_time"])
-                .unwrap_or_default();
+            let time =
+                pick_str(item, &["created_at", "time", "ctime", "create_time"]).unwrap_or_default();
             out.push(NasEventNotice {
                 id,
                 title,
@@ -687,7 +693,10 @@ impl ToolboxService {
             "container_id": container_id
         }))?;
         self.provider
-            .run_cli(&["docker", "containers", "--params", &params, "--yes"], None)
+            .run_cli(
+                &["docker", "containers", "--params", &params, "--yes"],
+                None,
+            )
             .await
     }
 
@@ -703,12 +712,7 @@ impl ToolboxService {
 
     // --- NAS Downloader Dashboard (`download tasks` / `download manage` / `download control`) ---
 
-    pub async fn download_tasks(
-        &self,
-        task_type: &str,
-        start: u32,
-        size: u32,
-    ) -> AppResult<Value> {
+    pub async fn download_tasks(&self, task_type: &str, start: u32, size: u32) -> AppResult<Value> {
         let clamped_size = size.clamp(1, 1000);
         let norm_type = normalize_download_task_type(task_type);
 
@@ -783,15 +787,14 @@ impl ToolboxService {
             .await
     }
 
-    pub async fn download_manage_action(
-        &self,
-        action: &str,
-        ids: Vec<Value>,
-    ) -> AppResult<Value> {
+    pub async fn download_manage_action(&self, action: &str, ids: Vec<Value>) -> AppResult<Value> {
         let params = build_download_manage_action_params(action, &ids)?;
         let params_str = serde_json::to_string(&params)?;
         self.provider
-            .run_cli(&["download", "manage", "--params", &params_str, "--yes"], None)
+            .run_cli(
+                &["download", "manage", "--params", &params_str, "--yes"],
+                None,
+            )
             .await
     }
 }
@@ -807,10 +810,14 @@ pub fn normalize_download_task_type(task_type: &str) -> &'static str {
 pub fn validate_download_uri(raw: &str) -> AppResult<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err(AppError::Validation("请输入下载链接（HTTP/HTTPS/Magnet/ed2k）".into()));
+        return Err(AppError::Validation(
+            "请输入下载链接（HTTP/HTTPS/Magnet/ed2k）".into(),
+        ));
     }
     if trimmed.chars().any(|c| c.is_control() || c.is_whitespace()) {
-        return Err(AppError::Validation("下载链接不能包含空格或控制字符".into()));
+        return Err(AppError::Validation(
+            "下载链接不能包含空格或控制字符".into(),
+        ));
     }
     let lower = trimmed.to_ascii_lowercase();
     if lower.starts_with("magnet:") || lower.starts_with("ed2k://") {
@@ -850,11 +857,11 @@ pub fn validate_download_uri(raw: &str) -> AppResult<String> {
     }
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
         let blocked = match ip {
-            std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_unspecified() || v4.is_link_local(),
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback() || v4.is_unspecified() || v4.is_link_local()
+            }
             std::net::IpAddr::V6(v6) => {
-                v6.is_loopback()
-                    || v6.is_unspecified()
-                    || (v6.segments()[0] & 0xffc0) == 0xfe80
+                v6.is_loopback() || v6.is_unspecified() || (v6.segments()[0] & 0xffc0) == 0xfe80
             }
         };
         if blocked {
@@ -926,7 +933,11 @@ mod tests {
         fs::write(sub_dir.join("cover.jpg"), "img").unwrap();
         fs::write(nested.join("trip.png"), "png").unwrap();
 
-        let plan = build_upload_plan(&[top_file.clone(), sub_dir.clone()], "/pool/my/data/downloads/").unwrap();
+        let plan = build_upload_plan(
+            &[top_file.clone(), sub_dir.clone()],
+            "/pool/my/data/downloads/",
+        )
+        .unwrap();
         assert_eq!(
             plan.directories,
             vec![
@@ -948,8 +959,14 @@ mod tests {
             ]
         );
         let rels: Vec<&str> = plan.files.iter().map(|f| f.display_name.as_str()).collect();
-        assert_eq!(rels, vec!["notes.txt", "Photos/2026/trip.png", "Photos/cover.jpg"]);
-        assert_eq!(plan.files[1].dest_dir, "/pool/my/data/downloads/Photos/2026");
+        assert_eq!(
+            rels,
+            vec!["notes.txt", "Photos/2026/trip.png", "Photos/cover.jpg"]
+        );
+        assert_eq!(
+            plan.files[1].dest_dir,
+            "/pool/my/data/downloads/Photos/2026"
+        );
         assert_eq!(plan.files[2].dest_dir, "/pool/my/data/downloads/Photos");
     }
 
@@ -964,8 +981,14 @@ mod tests {
             ]
         });
         let map = extract_dir_children(&payload, "/p/downloads");
-        assert_eq!(map.get("Photos").map(String::as_str), Some("/p/downloads/Photos"));
-        assert_eq!(map.get("Logs").map(String::as_str), Some("/p/downloads/Logs"));
+        assert_eq!(
+            map.get("Photos").map(String::as_str),
+            Some("/p/downloads/Photos")
+        );
+        assert_eq!(
+            map.get("Logs").map(String::as_str),
+            Some("/p/downloads/Logs")
+        );
         assert!(!map.contains_key("movie.mp4"));
         assert!(!map.contains_key("readme.txt"));
     }

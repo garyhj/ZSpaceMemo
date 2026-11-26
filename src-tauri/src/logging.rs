@@ -94,12 +94,21 @@ impl RotatingLogSink {
     }
 }
 
-/// Redact credential/token values from log lines before persisting to disk.
+/// Redact credential/token values from log lines before persisting or emitting to stderr.
 pub fn sanitize_log_line(line: &str) -> String {
     let mut out = line.to_string();
     let sensitive_keys = [
         "access_token",
         "refresh_token",
+        "auth_token",
+        "csrf_token",
+        "session_token",
+        "id_token",
+        "api_key",
+        "access_key",
+        "secret_key",
+        "client_secret",
+        "auth_code",
         "token",
         "password",
         "passwd",
@@ -139,10 +148,15 @@ fn redact_key_values(input: &str, key: &str) -> String {
     let mut i = 0;
     while let Some(rel) = lower[i..].find(key) {
         let start = i + rel;
-        let before_ok = start == 0 || {
-            let prev = input[..start].chars().next_back().unwrap_or(' ');
-            !prev.is_ascii_alphanumeric() && prev != '_'
+        let prev = if start == 0 {
+            ' '
+        } else {
+            input[..start].chars().next_back().unwrap_or(' ')
         };
+        // Match standalone keys OR snake_case/kebab-case suffixes like `custom_auth_token`
+        // for keys longer than `"code"` (avoids false positives on `exit_code=0`).
+        let allow_prefixed = key != "code" && matches!(prev, '_' | '-');
+        let before_ok = start == 0 || allow_prefixed || (!prev.is_ascii_alphanumeric() && prev != '_');
         let after_idx = start + key.len();
         if !before_ok || after_idx >= input.len() {
             out.push_str(&input[i..after_idx]);
@@ -169,7 +183,7 @@ fn redact_key_values(input: &str, key: &str) -> String {
                 i = val_start_in_input + ws_len + 1 + end_q;
             } else {
                 let end_v = v
-                    .find(|c: char| c.is_whitespace() || matches!(c, '&' | ',' | ';' | '}'))
+                    .find(|c: char| c.is_whitespace() || matches!(c, '&' | ',' | ';' | '}' | '"'))
                     .unwrap_or(v.len());
                 if end_v == 0 {
                     out.push_str(&input[i..val_start_in_input + ws_len]);
@@ -193,10 +207,11 @@ pub struct SanitizedTeeWriter;
 
 impl Write for SanitizedTeeWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let _ = io::stderr().write_all(buf);
+        let sanitized = sanitize_log_line(&String::from_utf8_lossy(buf));
+        let _ = io::stderr().write_all(sanitized.as_bytes());
         if let Some(sink) = FILE_SINK.get() {
             if let Ok(mut guard) = sink.lock() {
-                guard.write_bytes(buf);
+                guard.write_bytes(sanitized.as_bytes());
             }
         }
         Ok(buf.len())
@@ -241,19 +256,21 @@ mod tests {
 
     #[test]
     fn redacts_tokens_secrets_and_bearer_headers() {
-        let input = r#"INFO auth: Bearer abc.def.ghi {"access_token":"xyz123","code":"mycode"} password=pass1 token=tok_99"#;
+        let input = r#"INFO auth: Bearer abc.def.ghi {"access_token":"xyz123","auth_token":"at_999","code":"mycode"} password=pass1 token=tok_99 nas_api_key=k_secret"#;
         let out = sanitize_log_line(input);
         assert!(!out.contains("abc.def.ghi"));
         assert!(!out.contains("xyz123"));
+        assert!(!out.contains("at_999"));
         assert!(!out.contains("mycode"));
         assert!(!out.contains("pass1"));
         assert!(!out.contains("tok_99"));
+        assert!(!out.contains("k_secret"));
         assert!(out.contains("[REDACTED]"));
     }
 
     #[test]
     fn preserves_unicode_and_normal_telemetry() {
-        let input = "INFO sync: 同步完成 total=12 fetched=2 cpu=9.0%";
+        let input = "INFO sync: 同步完成 total=12 fetched=2 exit_code=0 cpu=9.0%";
         assert_eq!(sanitize_log_line(input), input);
     }
 }

@@ -43,11 +43,11 @@ pub fn spawn_background_scheduler(
             let interval_secs = cfg.sync_interval_secs.max(30) as i64;
 
             let due_for_sync = match last_sync_utc {
-                None => true,
+                None => !service.synced_within(20),
                 Some(prev) => (now - prev).num_seconds() >= interval_secs,
             };
 
-            if due_for_sync && !sync_in_flight.swap(true, Ordering::SeqCst) {
+            if due_for_sync && !service.synced_within(20) && !sync_in_flight.swap(true, Ordering::SeqCst) {
                 last_sync_utc = Some(now);
                 let flag = sync_in_flight.clone();
                 let app_sync = app.clone();

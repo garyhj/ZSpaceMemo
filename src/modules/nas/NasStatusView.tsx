@@ -24,6 +24,8 @@ interface Props {
 
 interface EventRow {
   id: string;
+  keyId: string;
+  hasRemoteId: boolean;
   title: string;
   body: string;
   level: string;
@@ -166,16 +168,18 @@ function fmtSize(val: number | null): string {
   return `${bytes.toFixed(1)} ${units[i]}`;
 }
 
-function fmtMemSize(val: number | null): string {
+function fmtMemSize(val: number | null, scaleHint?: number | null): string {
   if (val === null || val <= 0) return "-";
-  let bytes = val;
-  if (val <= 512) {
-    bytes = val * 1024 * 1024 * 1024; // GiB
-  } else if (val < 524_288) {
-    bytes = val * 1024 * 1024; // MiB
-  } else if (val < 536_870_912) {
-    bytes = val * 1024; // KiB
+  const probe = scaleHint !== undefined && scaleHint !== null && scaleHint > 0 ? scaleHint : val;
+  let multiplier = 1;
+  if (probe <= 512) {
+    multiplier = 1024 * 1024 * 1024; // GiB
+  } else if (probe < 524_288) {
+    multiplier = 1024 * 1024; // MiB
+  } else if (probe < 536_870_912) {
+    multiplier = 1024; // KiB
   }
+  let bytes = val * multiplier;
   const units = ["B", "KB", "MB", "GB", "TB"];
   let i = 0;
   while (bytes >= 1024 && i < units.length - 1) {
@@ -218,14 +222,24 @@ export function NasStatusView({ settings, onSettingsChanged, onToast }: Props) {
         onToast(`获取 NAS 状态失败：${String(ovRes.reason)}`);
       }
       if (evRes.status === "fulfilled") {
-        const rows = asArr(evRes.value, ["list", "events", "items", "data"]).map((r) => ({
-          id: String(r.id ?? r.event_id ?? Math.random()),
-          title: pick(r, ["title", "event_name", "group", "action"]),
-          body: pick(r, ["content", "message", "msg", "desc", "detail"]),
-          level: pick(r, ["level", "severity"]),
-          time: pick(r, ["created_at", "time", "ctime", "create_time"]),
-          unread: Number(r.is_new ?? r.unread ?? (r.is_read === false ? 1 : 0)) === 1,
-        }));
+        const rows = asArr(evRes.value, ["list", "events", "items", "data"]).map((r, idx) => {
+          const remoteId = r.id ?? r.event_id;
+          const hasRemoteId =
+            remoteId !== undefined && remoteId !== null && String(remoteId).trim() !== "";
+          const title = pick(r, ["title", "event_name", "group", "action"]);
+          const time = pick(r, ["created_at", "time", "ctime", "create_time"]);
+          const id = hasRemoteId ? String(remoteId) : `${idx}_${time}_${title}`;
+          return {
+            id,
+            keyId: hasRemoteId ? `id:${id}` : `syn:${idx}:${time}:${title}`,
+            hasRemoteId,
+            title,
+            body: pick(r, ["content", "message", "msg", "desc", "detail"]),
+            level: pick(r, ["level", "severity"]),
+            time,
+            unread: Number(r.is_new ?? r.unread ?? (r.is_read === false ? 1 : 0)) === 1,
+          };
+        });
         setEvents(rows);
       }
     } finally {
@@ -522,7 +536,11 @@ export function NasStatusView({ settings, onSettingsChanged, onToast }: Props) {
             icon={<MemoryStick className="h-4 w-4 text-emerald-600" />}
             label="内存占用"
             value={memPct !== null ? `${memPct.toFixed(1)}%` : "-"}
-            sub={memTotal ? `${fmtMemSize(memUsed)} / ${fmtMemSize(memTotal)}` : "系统内存"}
+            sub={
+              memTotal
+                ? `${fmtMemSize(memUsed, memTotal)} / ${fmtMemSize(memTotal, memTotal)}`
+                : "系统内存"
+            }
           />
           <StatCard
             icon={<Thermometer className="h-4 w-4 text-amber-500" />}
@@ -663,7 +681,7 @@ export function NasStatusView({ settings, onSettingsChanged, onToast }: Props) {
           ) : (
             <div className="divide-y divide-slate-100">
               {events.map((ev) => (
-                <div key={ev.id} className="flex items-start gap-2.5 py-2.5 text-xs">
+                <div key={ev.keyId} className="flex items-start gap-2.5 py-2.5 text-xs">
                   <span
                     className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${
                       ev.unread ? "bg-blue-600" : "bg-slate-200"
@@ -683,7 +701,7 @@ export function NasStatusView({ settings, onSettingsChanged, onToast }: Props) {
                       <div className="text-slate-500">{ev.body}</div>
                     )}
                   </div>
-                  {ev.unread && (
+                  {ev.unread && ev.hasRemoteId && (
                     <button
                       type="button"
                       onClick={() => void markOneRead(ev.id)}

@@ -10,11 +10,14 @@ on:
 
 jobs:
   core-and-frontend:
-    name: Core Tests & Frontend Build
+    name: Core Tests, Lint & Frontend Build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
       - uses: pnpm/action-setup@v4
         with:
           version: 10
@@ -22,16 +25,52 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+      - name: Run Clippy on core engine
+        run: cargo clippy -p zspace-memo-core --all-targets -- -D warnings
       - name: Run Rust core tests
         run: cargo test -p zspace-memo-core
-      - name: Install frontend dependencies & build
+      - name: Install frontend dependencies, test & build
         run: |
-          pnpm install --frozen-lockfile || pnpm install
+          pnpm install --frozen-lockfile
+          pnpm test
           pnpm build
+
+  prepare-release:
+    name: Prepare Draft Release
+    needs: core-and-frontend
+    permissions:
+      contents: write
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.prep.outputs.release_id }}
+      tag: ${{ steps.prep.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create or reuse draft release for version
+        id: prep
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v$(node -p "require('./package.json').version")"
+          REL_ID=$(gh api "repos/${GITHUB_REPOSITORY}/releases" --jq ".[] | select(.tag_name==\"${TAG}\") | .id" | head -n1 || true)
+          if [ -z "$REL_ID" ]; then
+            REL_ID=$(gh api -X POST "repos/${GITHUB_REPOSITORY}/releases" \
+              -f tag_name="${TAG}" \
+              -f target_commitish="${GITHUB_SHA}" \
+              -f name="ZSpace Kit ${TAG}" \
+              -F draft=true \
+              -F prerelease=false \
+              --jq ".id")
+          fi
+          echo "release_id=${REL_ID}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
   build-desktop:
     name: Build Tauri Desktop (${{ matrix.platform }})
-    needs: core-and-frontend
+    needs: [core-and-frontend, prepare-release]
     permissions:
       contents: write
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
@@ -55,6 +94,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || 'x86_64-pc-windows-msvc' }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri
+            .
+          key: ${{ matrix.platform }}
       - uses: pnpm/action-setup@v4
         with:
           version: 10
@@ -74,12 +119,15 @@ jobs:
           fi
           chmod +x "${{ matrix.sidecar }}" || true
       - name: Install frontend dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
+      - name: Run Tauri desktop Rust unit tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: ${{ matrix.args }}
+          releaseId: ${{ needs.prepare-release.outputs.release_id }}
           tagName: v__VERSION__
           releaseName: "ZSpace Kit v__VERSION__"
           releaseDraft: true
@@ -97,25 +145,19 @@ jobs:
 
   publish-release:
     name: Publish GitHub Release
-    needs: build-desktop
+    needs: [prepare-release, build-desktop]
     permissions:
       contents: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
       - name: Publish draft release for current version
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="v$(node -p "require('./package.json').version")"
-          REL_ID=$(gh api "repos/${GITHUB_REPOSITORY}/releases" --jq ".[] | select(.tag_name==\"${TAG}\") | .id" | head -n1)
-          if [ -z "$REL_ID" ]; then
-            echo "Draft release for ${TAG} not found" >&2
-            exit 1
-          fi
+          REL_ID="${{ needs.prepare-release.outputs.release_id }}"
+          TAG="${{ needs.prepare-release.outputs.tag }}"
           gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${REL_ID}" \
             -F draft=false \
             -f make_latest=true \
             -f target_commitish="${GITHUB_SHA}"
           echo "Published ${TAG} (release id ${REL_ID})"
-

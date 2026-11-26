@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { RepeatFreq, RepeatRule } from "../types";
-import { dateLabel, describeRepeatZh, parseDate, todayStr, weekdayCode } from "../utils/date";
+import { addDays, dateLabel, describeRepeatZh, parseDate, todayStr, weekdayCode } from "../utils/date";
 import { getLunarCoords, LUNAR_DAY_NAMES, LUNAR_MONTH_NAMES } from "../utils/lunar";
 
 interface Props {
@@ -619,6 +619,38 @@ export function RepeatModal({ baseDate, repeat, onSave, onClose }: Props) {
                   className="w-12 rounded border border-slate-200 px-1 py-0.5 text-center"
                 />
                 次
+              </label>
+              <label className="flex items-center gap-1">
+                <input
+                  type="radio"
+                  checked={rule.end.type === "until"}
+                  onChange={() =>
+                    setRule({
+                      ...rule,
+                      end: { type: "until", until: addDays(rule.dtstart, 30) },
+                    })
+                  }
+                />
+                截至
+                <input
+                  type="date"
+                  min={rule.dtstart}
+                  value={
+                    rule.end.type === "until" ? rule.end.until : addDays(rule.dtstart, 30)
+                  }
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (!/^\d{4}-\d{2}-\d{2}$/.test(val)) return;
+                    setRule({
+                      ...rule,
+                      end: {
+                        type: "until",
+                        until: val < rule.dtstart ? rule.dtstart : val,
+                      },
+                    });
+                  }}
+                  className="rounded border border-slate-200 px-1.5 py-0.5 text-xs"
+                />
               </label>
             </div>
           </div>

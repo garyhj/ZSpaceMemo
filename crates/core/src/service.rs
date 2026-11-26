@@ -2,17 +2,19 @@ use crate::codec::{decode_task_note, encode_task_note};
 use crate::error::{AppError, AppResult};
 use crate::models::{
     CalendarTaskItem, CreateTaskInput, DateTimePoint, HistorySummary, MetaState,
-    OccurrenceActionStatus, OccurrenceHistoryEntry, OccurrenceOverride, Schedule, SeriesState,
-    Task, TaskSort, TaskStatus, TaskView, UpdateTaskInput,
+    OccurrenceActionStatus, OccurrenceHistoryEntry, OccurrenceOverride, RepeatEnd, Schedule,
+    SeriesState, Task, TaskSort, TaskStatus, TaskView, UpdateTaskInput,
 };
 use crate::provider::NotebookProvider;
 use crate::recurrence::{
     effective_current_key, format_date, generate_occurrences, next_after_action, parse_date,
     schedule_for_occurrence,
 };
-use crate::reminder::{compute_fire_time_utc, compute_job_key, ComputedReminderJob};
+use crate::reminder::{
+    compute_fire_time_utc, compute_job_key, resolve_local_to_utc, ComputedReminderJob,
+};
 use crate::storage::{AppSettings, DueReminderJob, LocalStorage, NotificationRecord};
-use chrono::{Duration, NaiveDateTime, Utc};
+use chrono::{DateTime, Duration, NaiveTime, Utc};
 use chrono_tz::Tz;
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -47,6 +49,14 @@ pub struct TaskService<P: NotebookProvider> {
     task_locks: StdMutex<HashMap<i64, Arc<AsyncMutex<()>>>>,
     dirty_during_sync: StdMutex<HashSet<i64>>,
     deleted_during_sync: StdMutex<HashSet<i64>>,
+    last_sync_at: StdMutex<Option<DateTime<Utc>>>,
+}
+
+struct ComputedDueInfo {
+    eff_key: Option<String>,
+    due: Option<(String, Option<String>, bool)>,
+    overdue: bool,
+    today_tz: String,
 }
 
 impl<P: NotebookProvider> TaskService<P> {
@@ -58,7 +68,98 @@ impl<P: NotebookProvider> TaskService<P> {
             task_locks: StdMutex::new(HashMap::new()),
             dirty_during_sync: StdMutex::new(HashSet::new()),
             deleted_during_sync: StdMutex::new(HashSet::new()),
+            last_sync_at: StdMutex::new(None),
         }
+    }
+
+    pub fn synced_within(&self, max_age_secs: i64) -> bool {
+        let guard = self.last_sync_at.lock().unwrap_or_else(|p| p.into_inner());
+        guard
+            .map(|prev| (Utc::now() - prev).num_seconds() < max_age_secs)
+            .unwrap_or(false)
+    }
+
+    fn compute_due_and_overdue(
+        &self,
+        task: &Task,
+        fallback_tz: Tz,
+        now_utc: DateTime<Utc>,
+    ) -> ComputedDueInfo {
+        let task_tz: Tz = task.schedule.timezone.parse().unwrap_or(fallback_tz);
+        let today_in_task_tz = format_date(now_utc.with_timezone(&task_tz).date_naive());
+
+        let (eff_key, due) = if let (Some(rule), Some(series)) = (&task.repeat, &task.series) {
+            let key = effective_current_key(rule, series, &today_in_task_tz)
+                .ok()
+                .flatten();
+            let due = key.as_deref().and_then(|k| {
+                let s = schedule_for_occurrence(&task.schedule, series, k);
+                let d = s.due?;
+                Some((d.date, d.time, s.all_day))
+            });
+            (key, due)
+        } else {
+            let due = task
+                .schedule
+                .due
+                .as_ref()
+                .map(|d| (d.date.clone(), d.time.clone(), task.schedule.all_day));
+            (None, due)
+        };
+
+        let overdue = if task.status.is_done() {
+            false
+        } else if let Some((ref date, ref time, all_day)) = due {
+            if !all_day {
+                if let Some(tm) = time {
+                    if let (Ok(d), Ok(t)) = (
+                        parse_date(date),
+                        NaiveTime::parse_from_str(tm, "%H:%M")
+                            .or_else(|_| NaiveTime::parse_from_str(tm, "%H:%M:%S")),
+                    ) {
+                        let due_utc = resolve_local_to_utc(d.and_time(t), task_tz);
+                        due_utc < now_utc
+                    } else {
+                        date.as_str() < today_in_task_tz.as_str()
+                    }
+                } else {
+                    date.as_str() < today_in_task_tz.as_str()
+                }
+            } else {
+                date.as_str() < today_in_task_tz.as_str()
+            }
+        } else {
+            false
+        };
+
+        ComputedDueInfo {
+            eff_key,
+            due,
+            overdue,
+            today_tz: today_in_task_tz,
+        }
+    }
+
+    fn enrich_task_view_with_tz(
+        &self,
+        mut task: Task,
+        fallback_tz: Tz,
+        now_utc: DateTime<Utc>,
+    ) -> Task {
+        let info = self.compute_due_and_overdue(&task, fallback_tz, now_utc);
+        task.effective_current_key = info.eff_key;
+        task.is_overdue = Some(info.overdue);
+        task
+    }
+
+    fn enrich_task_view(&self, task: Task) -> Task {
+        let fallback_tz: Tz = self
+            .storage
+            .load_settings()
+            .ok()
+            .and_then(|s| s.timezone.parse().ok())
+            .unwrap_or(chrono_tz::Asia::Shanghai);
+        self.enrich_task_view_with_tz(task, fallback_tz, Utc::now())
     }
 
     fn task_lock(&self, id: i64) -> Arc<AsyncMutex<()>> {
@@ -157,7 +258,9 @@ impl<P: NotebookProvider> TaskService<P> {
         self.storage
             .load_settings()?
             .todo_category_id
-            .ok_or_else(|| AppError::CategoryNotConfigured("尚未初始化 ZSpace Memo 专用分类".into()))
+            .ok_or_else(|| {
+                AppError::CategoryNotConfigured("尚未初始化 ZSpace Memo 专用分类".into())
+            })
     }
 
     /// Incremental sync from NAS into local SQLite index cache + reminder job reconciliation.
@@ -274,8 +377,9 @@ impl<P: NotebookProvider> TaskService<P> {
                 }
             }
 
-            let valid_for_cache =
-                decoded.meta_present && !decoded.meta_corrupted && (!was_corrupted || wrote_back_recovery);
+            let valid_for_cache = decoded.meta_present
+                && !decoded.meta_corrupted
+                && (!was_corrupted || wrote_back_recovery);
             let ts = if wrote_back_recovery {
                 Utc::now().timestamp()
             } else {
@@ -314,12 +418,14 @@ impl<P: NotebookProvider> TaskService<P> {
         }
         let keep_ids: Vec<i64> = keep_set.into_iter().collect();
         self.storage.remove_cached_tasks_except(&keep_ids)?;
+        let synced_now = Utc::now();
+        *self.last_sync_at.lock().unwrap_or_else(|p| p.into_inner()) = Some(synced_now);
 
         Ok(SyncSummary {
             total_notes: all_summaries.len(),
             fetched_details,
             recovered_count,
-            synced_at: Utc::now().to_rfc3339(),
+            synced_at: synced_now.to_rfc3339(),
         })
     }
 
@@ -340,7 +446,10 @@ impl<P: NotebookProvider> TaskService<P> {
                     prev.updated_at = edited.updated_at.clone();
                     prev.rev += 1;
                     prev.meta_state = MetaState::Recovered;
-                    warn!(task_id = edited.id, "recovered corrupted metadata from local cache");
+                    warn!(
+                        task_id = edited.id,
+                        "recovered corrupted metadata from local cache"
+                    );
                     return Ok(Some(prev));
                 }
             }
@@ -359,7 +468,10 @@ impl<P: NotebookProvider> TaskService<P> {
                         prev.raw_description_html = edited.raw_description_html.clone();
                         prev.rev += 1;
                         prev.meta_state = MetaState::Recovered;
-                        warn!(task_id = edited.id, "recovered corrupted metadata from NAS history");
+                        warn!(
+                            task_id = edited.id,
+                            "recovered corrupted metadata from NAS history"
+                        );
                         return Ok(Some(prev));
                     }
                 }
@@ -421,6 +533,8 @@ impl<P: NotebookProvider> TaskService<P> {
             rev: 1,
             etag: String::new(),
             meta_extra: BTreeMap::new(),
+            effective_current_key: None,
+            is_overdue: None,
         };
 
         let encoded = encode_task_note(&task);
@@ -458,17 +572,23 @@ impl<P: NotebookProvider> TaskService<P> {
         self.storage
             .upsert_cached_task(&task, verified.updated_at, verified.length, true)?;
         self.reconcile_reminders(&task)?;
-        Ok(task)
+        Ok(self.enrich_task_view(task))
     }
 
     pub async fn get_task(&self, id: i64, refresh: bool) -> AppResult<Task> {
         if !refresh {
             if let Some(c) = self.storage.get_cached_task(id)? {
-                return Ok(c.task);
+                return Ok(self.enrich_task_view(c.task));
             }
         }
         let raw = self.provider.get_note(id).await?;
-        let decoded = decode_task_note(raw.id, &raw.title, &raw.body, raw.pin_flag != 0, raw.updated_at);
+        let decoded = decode_task_note(
+            raw.id,
+            &raw.title,
+            &raw.body,
+            raw.pin_flag != 0,
+            raw.updated_at,
+        );
         let locked = self.task_lock(id);
         let _guard = locked.lock().await;
         self.storage.upsert_cached_task(
@@ -477,7 +597,7 @@ impl<P: NotebookProvider> TaskService<P> {
             raw.length,
             decoded.meta_present && !decoded.meta_corrupted,
         )?;
-        Ok(decoded.task)
+        Ok(self.enrich_task_view(decoded.task))
     }
 
     async fn load_fresh_for_mutation(&self, id: i64) -> AppResult<Task> {
@@ -584,11 +704,18 @@ impl<P: NotebookProvider> TaskService<P> {
             task.pinned = new_pin;
         }
 
-        self.persist_task_update(task, pin_changed.and_then(|(p, changed)| changed.then_some(p)))
-            .await
+        self.persist_task_update(
+            task,
+            pin_changed.and_then(|(p, changed)| changed.then_some(p)),
+        )
+        .await
     }
 
-    async fn persist_task_update(&self, mut task: Task, pin_update: Option<bool>) -> AppResult<Task> {
+    async fn persist_task_update(
+        &self,
+        mut task: Task,
+        pin_update: Option<bool>,
+    ) -> AppResult<Task> {
         task.rev = task.rev.saturating_add(1);
         task.meta_state = MetaState::Ok;
         let encoded = encode_task_note(&task);
@@ -604,14 +731,10 @@ impl<P: NotebookProvider> TaskService<P> {
         task.etag = encoded.etag;
         task.updated_at = Some(now.to_rfc3339());
         self.mark_dirty(task.id);
-        self.storage.upsert_cached_task(
-            &task,
-            now.timestamp(),
-            encoded.body.len() as i64,
-            true,
-        )?;
+        self.storage
+            .upsert_cached_task(&task, now.timestamp(), encoded.body.len() as i64, true)?;
         self.reconcile_reminders(&task)?;
-        Ok(task)
+        Ok(self.enrich_task_view(task))
     }
 
     /// Idempotent complete/skip for a single task or a repeating occurrence.
@@ -636,7 +759,7 @@ impl<P: NotebookProvider> TaskService<P> {
             };
             // Idempotency: if this occurrence key is already recorded, return as-is.
             if series.history.iter().any(|h| h.key == key) {
-                return Ok(task);
+                return Ok(self.enrich_task_view(task));
             }
             series.history.insert(
                 0,
@@ -686,17 +809,50 @@ impl<P: NotebookProvider> TaskService<P> {
         let lock = self.task_lock(id);
         let _guard = lock.lock().await;
         let mut task = self.load_fresh_for_mutation(id).await?;
-        if let (Some(_rule), Some(series)) = (&task.repeat, &mut task.series) {
-            let target_key = occurrence_key
-                .map(str::to_string)
-                .or_else(|| series.history.first().map(|h| h.key.clone()));
-            if let Some(key) = target_key {
-                series.history.retain(|h| h.key != key);
-                if key < series.cursor {
-                    series.cursor = key;
+        let today = self.today_in_tz(&task.schedule.timezone);
+        if let (Some(rule), Some(series)) = (&task.repeat, &mut task.series) {
+            if let Some(k) = occurrence_key {
+                series.history.retain(|h| h.key != k);
+                if k < series.cursor.as_str() {
+                    series.cursor = k.to_string();
                 }
                 series.ended_at = None;
                 task.status = TaskStatus::Active;
+            } else if series.ended_at.is_some() || task.status == TaskStatus::Ended {
+                let reached_limit = match &rule.end {
+                    RepeatEnd::Count { count } => {
+                        let summary_total = series
+                            .history_summary
+                            .as_ref()
+                            .map(|s| (s.completed + s.skipped) as usize)
+                            .unwrap_or(0);
+                        series.history.len() + summary_total >= *count as usize
+                    }
+                    RepeatEnd::Until { .. } => series
+                        .history
+                        .first()
+                        .and_then(|h| {
+                            let d = parse_date(&today).ok()?;
+                            next_after_action(rule, &h.key, d).ok()
+                        })
+                        .is_some_and(|next_opt| next_opt.is_none()),
+                    RepeatEnd::Never => false,
+                };
+                if reached_limit {
+                    if let Some(last) = series.history.first().cloned() {
+                        series.history.remove(0);
+                        if last.key < series.cursor {
+                            series.cursor = last.key;
+                        }
+                    }
+                }
+                series.ended_at = None;
+                task.status = TaskStatus::Active;
+            } else if let Some(last) = series.history.first().cloned() {
+                series.history.remove(0);
+                if last.key < series.cursor {
+                    series.cursor = last.key;
+                }
             }
         } else {
             task.status = TaskStatus::Pending;
@@ -728,9 +884,8 @@ impl<P: NotebookProvider> TaskService<P> {
     /// Upload a local file as a native ZSpace note attachment (`attachment_upload`) and record it in ZSM1.
     pub async fn upload_task_attachment(&self, id: i64, local_path: &str) -> AppResult<Task> {
         let path = std::path::Path::new(local_path);
-        let meta = std::fs::symlink_metadata(path).map_err(|e| {
-            AppError::Validation(format!("附件路径不可访问 {local_path}: {e}"))
-        })?;
+        let meta = std::fs::symlink_metadata(path)
+            .map_err(|e| AppError::Validation(format!("附件路径不可访问 {local_path}: {e}")))?;
         if meta.file_type().is_symlink() || !meta.is_file() {
             return Err(AppError::Validation(format!(
                 "附件路径无效或不是常规文件：{local_path}"
@@ -740,7 +895,8 @@ impl<P: NotebookProvider> TaskService<P> {
         let _guard = lock.lock().await;
         let mut task = self.load_fresh_for_mutation(id).await?;
         let att = self.provider.upload_note_attachment(id, path).await?;
-        task.attachments.retain(|existing| existing.file_id != att.file_id);
+        task.attachments
+            .retain(|existing| existing.file_id != att.file_id);
         task.attachments.push(att);
         self.persist_task_update(task, None).await
     }
@@ -774,7 +930,7 @@ impl<P: NotebookProvider> TaskService<P> {
         let prev_len = task.attachments.len();
         task.attachments.retain(|a| a.file_id != file_id);
         if task.attachments.len() == prev_len {
-            return Ok(task);
+            return Ok(self.enrich_task_view(task));
         }
         self.persist_task_update(task, None).await
     }
@@ -818,7 +974,9 @@ impl<P: NotebookProvider> TaskService<P> {
                 Some(ad) => ad,
                 None => match new_due_time {
                     Some(_) => false,
-                    None => prev_sched.map(|s| s.all_day).unwrap_or(task.schedule.all_day),
+                    None => prev_sched
+                        .map(|s| s.all_day)
+                        .unwrap_or(task.schedule.all_day),
                 },
             };
             let resolved_time = if resolved_all_day {
@@ -840,7 +998,8 @@ impl<P: NotebookProvider> TaskService<P> {
             return self.persist_task_update(task, None).await;
         }
         // Fallback for non-repeating task: update due date directly.
-        let resolved_all_day = new_all_day.unwrap_or_else(|| task.schedule.all_day && new_due_time.is_none());
+        let resolved_all_day =
+            new_all_day.unwrap_or_else(|| task.schedule.all_day && new_due_time.is_none());
         task.schedule.all_day = resolved_all_day;
         task.schedule.due = Some(DateTimePoint {
             date: new_due_date.to_string(),
@@ -869,7 +1028,7 @@ impl<P: NotebookProvider> TaskService<P> {
                 return self.persist_task_update(task, None).await;
             }
         }
-        Ok(task)
+        Ok(self.enrich_task_view(task))
     }
 
     /// Build occurrence timeline for UI display using the task's configured IANA timezone.
@@ -883,7 +1042,13 @@ impl<P: NotebookProvider> TaskService<P> {
             return Ok(Vec::new());
         };
         let today = self.today_in_tz(&task.schedule.timezone);
-        crate::recurrence::build_occurrence_timeline(rule, series, &task.schedule, &today, future_count)
+        crate::recurrence::build_occurrence_timeline(
+            rule,
+            series,
+            &task.schedule,
+            &today,
+            future_count,
+        )
     }
 
     /// Expand all single tasks and repeating series occurrences falling within `[from, to]` (inclusive).
@@ -1008,17 +1173,15 @@ impl<P: NotebookProvider> TaskService<P> {
         sort: TaskSort,
     ) -> AppResult<Vec<Task>> {
         let settings = self.storage.load_settings()?;
-        let today = self.today_in_tz(&settings.timezone);
-        let today_date = parse_date(&today)?;
-        let upcoming_end = format_date(today_date + Duration::days(settings.upcoming_days as i64));
         let now_utc = Utc::now();
-        let tz: Tz = settings
+        let fallback_tz: Tz = settings
             .timezone
             .parse()
             .unwrap_or(chrono_tz::Asia::Shanghai);
-        let now_local = now_utc.with_timezone(&tz).naive_local();
 
-        let q = keyword.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
+        let q = keyword
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty());
 
         let mut tasks = self.storage.list_cached_tasks()?;
         if let Some(q_str) = &q {
@@ -1034,75 +1197,58 @@ impl<P: NotebookProvider> TaskService<P> {
             });
         }
 
-        let effective_due = |t: &Task| -> Option<(String, Option<String>, bool)> {
-            if let (Some(rule), Some(series)) = (&t.repeat, &t.series) {
-                let key = effective_current_key(rule, series, &today).ok().flatten()?;
-                let s = schedule_for_occurrence(&t.schedule, series, &key);
-                let d = s.due?;
-                return Some((d.date, d.time, s.all_day));
-            }
-            let d = t.schedule.due.as_ref()?;
-            Some((d.date.clone(), d.time.clone(), t.schedule.all_day))
-        };
-
-        let is_overdue = |t: &Task| -> bool {
-            if t.status.is_done() {
-                return false;
-            }
-            let Some((date, time, all_day)) = effective_due(t) else {
-                return false;
-            };
-            if !all_day {
-                if let Some(tm) = time {
-                    if let Ok(dt) = NaiveDateTime::parse_from_str(
-                        &format!("{date}T{tm}"),
-                        "%Y-%m-%dT%H:%M",
-                    ) {
-                        return dt < now_local;
-                    }
-                }
-            }
-            date.as_str() < today.as_str()
-        };
-
         let mut filtered: Vec<Task> = tasks
             .into_iter()
-            .filter(|t| match view {
-                TaskView::Inbox => {
-                    !t.status.is_done() && t.repeat.is_none() && t.schedule.due.is_none()
-                }
-                TaskView::Today => {
-                    if t.status.is_done() {
-                        return false;
+            .filter(|t| {
+                let info = self.compute_due_and_overdue(t, fallback_tz, now_utc);
+                let today_date =
+                    parse_date(&info.today_tz).unwrap_or_else(|_| now_utc.date_naive());
+                let upcoming_end =
+                    format_date(today_date + Duration::days(settings.upcoming_days as i64));
+                match view {
+                    TaskView::Inbox => {
+                        !t.status.is_done() && t.repeat.is_none() && t.schedule.due.is_none()
                     }
-                    let due_today = effective_due(t)
-                        .map(|(d, _, _)| d == today)
-                        .unwrap_or(false);
-                    due_today || (settings.show_overdue_in_today && is_overdue(t))
-                }
-                TaskView::Upcoming => {
-                    if t.status.is_done() {
-                        return false;
-                    }
-                    effective_due(t)
-                        .map(|(d, _, _)| d > today && d <= upcoming_end)
-                        .unwrap_or(false)
-                }
-                TaskView::Overdue => is_overdue(t),
-                TaskView::All => !t.status.is_done(),
-                TaskView::Completed => {
-                    t.status.is_done()
-                        || t.series
+                    TaskView::Today => {
+                        if t.status.is_done() {
+                            return false;
+                        }
+                        let due_today = info
+                            .due
                             .as_ref()
-                            .map(|s| {
-                                s.history
-                                    .iter()
-                                    .any(|h| h.status == OccurrenceActionStatus::Completed)
+                            .map(|(d, _, _)| d == &info.today_tz)
+                            .unwrap_or(false);
+                        due_today || (settings.show_overdue_in_today && info.overdue)
+                    }
+                    TaskView::Upcoming => {
+                        if t.status.is_done() {
+                            return false;
+                        }
+                        info.due
+                            .as_ref()
+                            .map(|(d, _, _)| {
+                                d.as_str() > info.today_tz.as_str()
+                                    && d.as_str() <= upcoming_end.as_str()
                             })
                             .unwrap_or(false)
+                    }
+                    TaskView::Overdue => info.overdue,
+                    TaskView::All => !t.status.is_done(),
+                    TaskView::Completed => {
+                        t.status.is_done()
+                            || t.series
+                                .as_ref()
+                                .map(|s| {
+                                    s.history
+                                        .iter()
+                                        .any(|h| h.status == OccurrenceActionStatus::Completed)
+                                })
+                                .unwrap_or(false)
+                    }
+                    TaskView::Repeating => t.repeat.is_some(),
                 }
-                TaskView::Repeating => t.repeat.is_some(),
             })
+            .map(|t| self.enrich_task_view_with_tz(t, fallback_tz, now_utc))
             .collect();
 
         filtered.sort_by(|a, b| {
@@ -1121,13 +1267,16 @@ impl<P: NotebookProvider> TaskService<P> {
                     .then_with(|| a.id.cmp(&b.id)),
                 TaskSort::Created => b.created_at.cmp(&a.created_at),
                 TaskSort::Date => {
-                    let ka = effective_due(a)
-                        .map(|(d, t, _)| format!("{d} {}", t.unwrap_or_else(|| "99:99".into())))
-                        .unwrap_or_else(|| "9999-99-99 99:99".into());
-                    let kb = effective_due(b)
-                        .map(|(d, t, _)| format!("{d} {}", t.unwrap_or_else(|| "99:99".into())))
-                        .unwrap_or_else(|| "9999-99-99 99:99".into());
-                    ka.cmp(&kb)
+                    let key_of = |t: &Task| -> String {
+                        let info = self.compute_due_and_overdue(t, fallback_tz, now_utc);
+                        info.due
+                            .map(|(d, tm, _)| {
+                                format!("{d} {}", tm.unwrap_or_else(|| "99:99".into()))
+                            })
+                            .unwrap_or_else(|| "9999-99-99 99:99".into())
+                    };
+                    key_of(a)
+                        .cmp(&key_of(b))
                         .then_with(|| a.priority.sort_rank().cmp(&b.priority.sort_rank()))
                 }
             }
@@ -1150,7 +1299,10 @@ impl<P: NotebookProvider> TaskService<P> {
             if let (Some(rule), Some(series)) = (&task.repeat, &task.series) {
                 let mut v = Vec::new();
                 if let Some(cur) = effective_current_key(rule, series, &today)? {
-                    v.push((cur.clone(), schedule_for_occurrence(&task.schedule, series, &cur)));
+                    v.push((
+                        cur.clone(),
+                        schedule_for_occurrence(&task.schedule, series, &cur),
+                    ));
                     for next_k in generate_occurrences(rule, 3, Some(&cur))? {
                         v.push((
                             next_k.clone(),
@@ -1363,7 +1515,11 @@ mod tests {
 
         // Idempotent occurrence completion advances cursor to 2027-05-26.
         let after_done = svc
-            .act_on_occurrence(created.id, Some("2026-11-26"), OccurrenceActionStatus::Completed)
+            .act_on_occurrence(
+                created.id,
+                Some("2026-11-26"),
+                OccurrenceActionStatus::Completed,
+            )
             .await
             .unwrap();
         assert_eq!(after_done.series.as_ref().unwrap().cursor, "2027-05-26");
@@ -1371,7 +1527,11 @@ mod tests {
 
         // Second call with same key is idempotent.
         let idempotent = svc
-            .act_on_occurrence(created.id, Some("2026-11-26"), OccurrenceActionStatus::Completed)
+            .act_on_occurrence(
+                created.id,
+                Some("2026-11-26"),
+                OccurrenceActionStatus::Completed,
+            )
             .await
             .unwrap();
         assert_eq!(idempotent.series.as_ref().unwrap().cursor, "2027-05-26");
@@ -1455,7 +1615,13 @@ mod tests {
         let dates: Vec<&str> = items.iter().map(|i| i.date.as_str()).collect();
         assert_eq!(
             dates,
-            vec!["2026-11-02", "2026-11-09", "2026-11-16", "2026-11-23", "2026-11-30"]
+            vec![
+                "2026-11-02",
+                "2026-11-09",
+                "2026-11-16",
+                "2026-11-23",
+                "2026-11-30"
+            ]
         );
 
         // Drag-reschedule only the 2026-11-16 occurrence to 2026-11-17.
@@ -1469,7 +1635,13 @@ mod tests {
         let dates_after: Vec<&str> = items_after.iter().map(|i| i.date.as_str()).collect();
         assert_eq!(
             dates_after,
-            vec!["2026-11-02", "2026-11-09", "2026-11-17", "2026-11-23", "2026-11-30"]
+            vec![
+                "2026-11-02",
+                "2026-11-09",
+                "2026-11-17",
+                "2026-11-23",
+                "2026-11-30"
+            ]
         );
 
         // Clear the single-instance override and ensure it snaps back to 2026-11-16.
@@ -1482,7 +1654,13 @@ mod tests {
         let dates_restored: Vec<&str> = items_restored.iter().map(|i| i.date.as_str()).collect();
         assert_eq!(
             dates_restored,
-            vec!["2026-11-02", "2026-11-09", "2026-11-16", "2026-11-23", "2026-11-30"]
+            vec![
+                "2026-11-02",
+                "2026-11-09",
+                "2026-11-16",
+                "2026-11-23",
+                "2026-11-30"
+            ]
         );
     }
 
@@ -1594,5 +1772,104 @@ mod tests {
             .claim_due_jobs(Utc::now().timestamp())
             .unwrap();
         assert_eq!(re_claimed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn reopen_ended_series_handles_manual_and_count_end_and_computes_effective_key() {
+        let (svc, _provider) = setup().await;
+        let today_naive = Utc::now()
+            .with_timezone(&chrono_tz::Asia::Shanghai)
+            .date_naive();
+        let today = format_date(today_naive);
+        let past_start = format_date(today_naive - Duration::days(10));
+        let manual_task = svc
+            .create_task(CreateTaskInput {
+                title: "手动终止系列".into(),
+                description: String::new(),
+                priority: Priority::Normal,
+                list: None,
+                labels: vec![],
+                pinned: false,
+                schedule: Schedule {
+                    all_day: true,
+                    due: Some(due_point(&past_start, None)),
+                    timezone: "Asia/Shanghai".into(),
+                },
+                reminders: vec![],
+                repeat: Some(RepeatRule {
+                    freq: RepeatFreq::Daily,
+                    interval: 1,
+                    calendar: Default::default(),
+                    by_weekday: None,
+                    by_set_pos: None,
+                    by_month_day: None,
+                    by_month: None,
+                    lunar: None,
+                    day_filter: None,
+                    on_invalid_date: Default::default(),
+                    basis: Default::default(),
+                    catch_up: crate::models::CatchUpPolicy::Latest,
+                    end: RepeatEnd::Never,
+                    dtstart: past_start,
+                }),
+            })
+            .await
+            .unwrap();
+
+        // Catch-up 'latest' should advance effective_current_key to today instead of 10 days ago.
+        assert_eq!(
+            manual_task.effective_current_key.as_deref(),
+            Some(today.as_str())
+        );
+        assert_eq!(manual_task.is_overdue, Some(false));
+
+        let ended = svc.end_series(manual_task.id).await.unwrap();
+        assert_eq!(ended.status, TaskStatus::Ended);
+        let resumed = svc.reopen_task(manual_task.id, None).await.unwrap();
+        assert_eq!(resumed.status, TaskStatus::Active);
+        assert!(resumed.series.unwrap().ended_at.is_none());
+
+        // Count=1 series ends after 1 completion; reopening restores cursor & clears completion.
+        let limited = svc
+            .create_task(CreateTaskInput {
+                title: "仅一次循环".into(),
+                description: String::new(),
+                priority: Priority::Normal,
+                list: None,
+                labels: vec![],
+                pinned: false,
+                schedule: Schedule {
+                    all_day: true,
+                    due: Some(due_point(&today, None)),
+                    timezone: "Asia/Shanghai".into(),
+                },
+                reminders: vec![],
+                repeat: Some(RepeatRule {
+                    freq: RepeatFreq::Daily,
+                    interval: 1,
+                    calendar: Default::default(),
+                    by_weekday: None,
+                    by_set_pos: None,
+                    by_month_day: None,
+                    by_month: None,
+                    lunar: None,
+                    day_filter: None,
+                    on_invalid_date: Default::default(),
+                    basis: Default::default(),
+                    catch_up: crate::models::CatchUpPolicy::Latest,
+                    end: RepeatEnd::Count { count: 1 },
+                    dtstart: today.clone(),
+                }),
+            })
+            .await
+            .unwrap();
+        let done_limited = svc
+            .act_on_occurrence(limited.id, None, OccurrenceActionStatus::Completed)
+            .await
+            .unwrap();
+        assert_eq!(done_limited.status, TaskStatus::Ended);
+        let reopened_limited = svc.reopen_task(limited.id, None).await.unwrap();
+        assert_eq!(reopened_limited.status, TaskStatus::Active);
+        assert!(reopened_limited.series.unwrap().history.is_empty());
     }
 }

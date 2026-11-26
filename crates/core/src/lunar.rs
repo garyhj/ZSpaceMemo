@@ -79,8 +79,9 @@ pub fn lunar_to_solar(lunar: LunarDate) -> Option<NaiveDate> {
             if lunar.day == 0 || lunar.day > m.days {
                 return None;
             }
-            return epoch_1900()
-                .checked_add_signed(Duration::days(cny_days as i64 + offset + (lunar.day - 1) as i64));
+            return epoch_1900().checked_add_signed(Duration::days(
+                cny_days as i64 + offset + (lunar.day - 1) as i64,
+            ));
         }
         offset += m.days as i64;
     }
@@ -226,12 +227,20 @@ mod tests {
         // 2026-01-04 (Sun): Adjusted makeup workday -> true
         assert!(is_cn_workday(NaiveDate::from_ymd_opt(2026, 1, 4).unwrap()));
         // 2026-10-01..10-07 National Day Holiday -> false
-        assert!(!is_cn_workday(NaiveDate::from_ymd_opt(2026, 10, 5).unwrap()));
+        assert!(!is_cn_workday(
+            NaiveDate::from_ymd_opt(2026, 10, 5).unwrap()
+        ));
         // 2026-10-10 (Sat): Adjusted makeup workday -> true
-        assert!(is_cn_workday(NaiveDate::from_ymd_opt(2026, 10, 10).unwrap()));
+        assert!(is_cn_workday(
+            NaiveDate::from_ymd_opt(2026, 10, 10).unwrap()
+        ));
         // 2026-11-28 (Sat): Normal weekend -> false
-        assert!(!is_cn_workday(NaiveDate::from_ymd_opt(2026, 11, 28).unwrap()));
+        assert!(!is_cn_workday(
+            NaiveDate::from_ymd_opt(2026, 11, 28).unwrap()
+        ));
         // 2026-11-26 (Thu): Normal weekday -> true
-        assert!(is_cn_workday(NaiveDate::from_ymd_opt(2026, 11, 26).unwrap()));
+        assert!(is_cn_workday(
+            NaiveDate::from_ymd_opt(2026, 11, 26).unwrap()
+        ));
     }
 }

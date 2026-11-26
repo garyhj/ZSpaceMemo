@@ -192,7 +192,11 @@ pub fn render_summary_lines(task: &Task) -> Vec<String> {
             .take(3)
             .map(|a| a.name.as_str())
             .collect();
-        let suffix = if task.attachments.len() > 3 { "…" } else { "" };
+        let suffix = if task.attachments.len() > 3 {
+            "…"
+        } else {
+            ""
+        };
         meta_parts.push(format!(
             "📎 附件 {} 个（{}{}）",
             task.attachments.len(),
@@ -269,7 +273,9 @@ pub fn html_to_markdown(html_fragment: &str) -> String {
 
     for block in blocks {
         let with_links = html_link_re().replace_all(&block, "[$2]($1)").into_owned();
-        let with_bold = html_strong_re().replace_all(&with_links, "**$1**").into_owned();
+        let with_bold = html_strong_re()
+            .replace_all(&with_links, "**$1**")
+            .into_owned();
         let plain = strip_tags_re().replace_all(&with_bold, "").into_owned();
         let unescaped = decode_html_entities(&plain).trim().to_string();
         if unescaped.is_empty() {
@@ -373,7 +379,10 @@ fn extract_meta_in_text(plain_text: &str) -> Result<Option<NoteMetaV1>, String> 
 
 /// Prefer extracting metadata from the final `<hr>` footer section so literal `"ZSM1:"`
 /// strings inside the user description never masquerade as corrupted metadata.
-fn extract_meta_from_sections(sections: &[&str], full_plain: &str) -> Result<Option<NoteMetaV1>, String> {
+fn extract_meta_from_sections(
+    sections: &[&str],
+    full_plain: &str,
+) -> Result<Option<NoteMetaV1>, String> {
     if sections.len() >= 2 {
         let footer_plain = plain_text_of(sections[sections.len() - 1]);
         if footer_plain.contains("ZSM1b:") || footer_plain.contains("ZSM1:") {
@@ -488,6 +497,8 @@ pub fn decode_task_note(
             rev: meta.rev,
             etag,
             meta_extra: meta.extra,
+            effective_current_key: None,
+            is_overdue: None,
         };
 
         return DecodedNote {
@@ -536,6 +547,8 @@ pub fn decode_task_note(
         rev: 0,
         etag,
         meta_extra: BTreeMap::new(),
+        effective_current_key: None,
+        is_overdue: None,
     };
 
     DecodedNote {
@@ -622,6 +635,8 @@ mod tests {
             rev: 3,
             etag: String::new(),
             meta_extra: BTreeMap::new(),
+            effective_current_key: None,
+            is_overdue: None,
         }
     }
 
@@ -651,7 +666,10 @@ mod tests {
         assert_eq!(decoded.task.reminders.len(), 2);
         assert_eq!(decoded.task.repeat.as_ref().unwrap().interval, 6);
         assert!(decoded.task.description.contains("核对套餐（已确认）"));
-        assert!(decoded.task.description.contains("[续费链接](https://example.com/esim)"));
+        assert!(decoded
+            .task
+            .description
+            .contains("[续费链接](https://example.com/esim)"));
     }
 
     #[test]
@@ -678,7 +696,9 @@ mod tests {
     fn rich_html_is_protected() {
         let mut task = sample_task();
         let encoded = encode_task_note(&task);
-        let with_img = encoded.body.replace("核对套餐", r#"核对套餐<img src="x.png">"#);
+        let with_img = encoded
+            .body
+            .replace("核对套餐", r#"核对套餐<img src="x.png">"#);
         let decoded = decode_task_note(12345, "续费 eSIM", &with_img, false, 1795491160);
         assert!(decoded.task.rich_body_protected);
         assert!(decoded

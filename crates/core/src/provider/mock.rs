@@ -1,6 +1,8 @@
 use crate::error::{AppError, AppResult};
 use crate::models::TaskAttachment;
-use crate::provider::{AuthStatus, NoteCategory, NoteHistoryEntry, NoteSummary, NotebookProvider, RawNote};
+use crate::provider::{
+    AuthStatus, NoteCategory, NoteHistoryEntry, NoteSummary, NotebookProvider, RawNote,
+};
 use async_trait::async_trait;
 use chrono::Utc;
 use std::collections::BTreeMap;
@@ -101,7 +103,12 @@ impl NotebookProvider for MockNotebookProvider {
         Ok(id)
     }
 
-    async fn list_notes(&self, classify_id: i64, start: u32, num: u32) -> AppResult<Vec<NoteSummary>> {
+    async fn list_notes(
+        &self,
+        classify_id: i64,
+        start: u32,
+        num: u32,
+    ) -> AppResult<Vec<NoteSummary>> {
         let s = self.state.lock().await;
         let mut list: Vec<NoteSummary> = s
             .notes
@@ -118,7 +125,7 @@ impl NotebookProvider for MockNotebookProvider {
                 created_at: n.created_at,
             })
             .collect();
-        list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        list.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
         Ok(list
             .into_iter()
             .skip(start as usize)

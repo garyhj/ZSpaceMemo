@@ -193,10 +193,7 @@ impl<P: NotebookProvider> StickyService<P> {
     }
 
     fn note_lock(&self, id: i64) -> Arc<AsyncMutex<()>> {
-        let mut map = self
-            .note_locks
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut map = self.note_locks.lock().unwrap_or_else(|p| p.into_inner());
         map.entry(id)
             .or_insert_with(|| Arc::new(AsyncMutex::new(())))
             .clone()
@@ -233,7 +230,10 @@ impl<P: NotebookProvider> StickyService<P> {
                 return Ok(cid);
             }
         }
-        if let Some(found) = cats.iter().find(|c| c.name == settings.sticky_category_name) {
+        if let Some(found) = cats
+            .iter()
+            .find(|c| c.name == settings.sticky_category_name)
+        {
             settings.sticky_category_id = Some(found.id);
             self.storage.save_settings(&settings)?;
             return Ok(found.id);
@@ -241,7 +241,10 @@ impl<P: NotebookProvider> StickyService<P> {
         if !create_if_missing {
             return Err(AppError::Validation("未找到极空间便签专用分类".into()));
         }
-        let cid = self.provider.create_category(&settings.sticky_category_name).await?;
+        let cid = self
+            .provider
+            .create_category(&settings.sticky_category_name)
+            .await?;
         settings.sticky_category_id = Some(cid);
         self.storage.save_settings(&settings)?;
         Ok(cid)
@@ -326,7 +329,8 @@ impl<P: NotebookProvider> StickyService<P> {
                 }
                 let note = decode_sticky_note(&raw);
                 let json = serde_json::to_string(&note)?;
-                self.storage.upsert_sticky(s.id, raw.updated_at, s.length, &json)?;
+                self.storage
+                    .upsert_sticky(s.id, raw.updated_at, s.length, &json)?;
                 fetched += 1;
             }
         }
@@ -348,7 +352,9 @@ impl<P: NotebookProvider> StickyService<P> {
     }
 
     pub fn list_notes(&self, keyword: Option<&str>) -> AppResult<Vec<StickyNote>> {
-        let kw = keyword.map(|k| k.trim().to_lowercase()).filter(|k| !k.is_empty());
+        let kw = keyword
+            .map(|k| k.trim().to_lowercase())
+            .filter(|k| !k.is_empty());
         let mut out = Vec::new();
         for json in self.storage.list_stickies()? {
             if let Ok(note) = serde_json::from_str::<StickyNote>(&json) {
@@ -394,7 +400,10 @@ impl<P: NotebookProvider> StickyService<P> {
             etag: String::new(),
         };
         let (title, body, in_brief) = encode_sticky_note(&note);
-        let raw = self.provider.create_note(&title, &body, cat_id, &in_brief).await?;
+        let raw = self
+            .provider
+            .create_note(&title, &body, cat_id, &in_brief)
+            .await?;
         if note.pinned {
             self.provider.pin_note(raw.id, true).await?;
         }

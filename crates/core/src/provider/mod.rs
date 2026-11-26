@@ -75,7 +75,12 @@ pub trait NotebookProvider: Send + Sync {
     async fn auth_status(&self) -> AppResult<AuthStatus>;
     async fn list_categories(&self) -> AppResult<Vec<NoteCategory>>;
     async fn create_category(&self, name: &str) -> AppResult<i64>;
-    async fn list_notes(&self, classify_id: i64, start: u32, num: u32) -> AppResult<Vec<NoteSummary>>;
+    async fn list_notes(
+        &self,
+        classify_id: i64,
+        start: u32,
+        num: u32,
+    ) -> AppResult<Vec<NoteSummary>>;
     async fn get_note(&self, id: i64) -> AppResult<RawNote>;
     async fn create_note(
         &self,
@@ -84,13 +89,7 @@ pub trait NotebookProvider: Send + Sync {
         classify_id: i64,
         in_brief: &str,
     ) -> AppResult<RawNote>;
-    async fn update_note(
-        &self,
-        id: i64,
-        title: &str,
-        body: &str,
-        in_brief: &str,
-    ) -> AppResult<()>;
+    async fn update_note(&self, id: i64, title: &str, body: &str, in_brief: &str) -> AppResult<()>;
     async fn pin_note(&self, id: i64, pinned: bool) -> AppResult<()>;
     async fn delete_note(&self, id: i64) -> AppResult<()>;
     async fn list_history(&self, note_id: i64) -> AppResult<Vec<NoteHistoryEntry>>;

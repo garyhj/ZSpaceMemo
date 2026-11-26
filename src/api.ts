@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import type { ReleaseUpdateInfo } from "./utils/updater";
 import type {
   AppSettings,
@@ -21,6 +21,54 @@ import type {
   UpdateTaskInput,
   UploadBatchSummary,
 } from "./types";
+
+export class ApiError extends Error {
+  code: string;
+  details?: unknown;
+
+  constructor(code: string, message: string, details?: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.code = code;
+    this.details = details;
+  }
+
+  override toString(): string {
+    return this.message;
+  }
+}
+
+function parseInvokeError(err: unknown): ApiError {
+  const raw = typeof err === "string" ? err : err instanceof Error ? err.message : String(err);
+  try {
+    const parsed = JSON.parse(raw) as { code?: unknown; message?: unknown; details?: unknown };
+    if (parsed && typeof parsed.code === "string" && typeof parsed.message === "string") {
+      return new ApiError(parsed.code, parsed.message, parsed.details);
+    }
+  } catch {
+    // Non-JSON error string
+  }
+  return new ApiError("UNKNOWN", raw);
+}
+
+const AUTH_SKIP_EVENT_CMDS = new Set([
+  "start_oauth_login",
+  "submit_oauth_code",
+  "auth_status",
+  "logout",
+]);
+
+async function invoke<T>(cmd: string, args?: Parameters<typeof tauriInvoke>[1]): Promise<T> {
+  try {
+    return await tauriInvoke<T>(cmd, args);
+  } catch (err) {
+    const apiErr = parseInvokeError(err);
+    if (apiErr.code === "NAS_AUTH_REQUIRED" && !AUTH_SKIP_EVENT_CMDS.has(cmd)) {
+      window.dispatchEvent(new CustomEvent("zsm:auth-expired", { detail: apiErr.message }));
+    }
+    throw apiErr;
+  }
+}
 
 export const api = {
   authStatus: () => invoke<AuthStatus>("auth_status"),

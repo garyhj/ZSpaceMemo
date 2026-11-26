@@ -1,6 +1,8 @@
 use crate::error::{AppError, AppResult};
 use crate::models::TaskAttachment;
-use crate::provider::{AuthStatus, NoteCategory, NoteHistoryEntry, NoteSummary, NotebookProvider, RawNote};
+use crate::provider::{
+    AuthStatus, NoteCategory, NoteHistoryEntry, NoteSummary, NotebookProvider, RawNote,
+};
 use crate::storage::AppSettings;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -177,8 +179,13 @@ impl OfficialCliNotebookProvider {
         } else {
             false
         };
-        let global_args =
-            build_global_cli_args(&self.profile, &cfg, clear_host, timeout_override, local_root);
+        let global_args = build_global_cli_args(
+            &self.profile,
+            &cfg,
+            clear_host,
+            timeout_override,
+            local_root,
+        );
         cmd.args(global_args);
         #[cfg(windows)]
         {
@@ -264,7 +271,9 @@ impl OfficialCliNotebookProvider {
                 if cleared {
                     self.pending_clear_host.store(true, Ordering::Release);
                 }
-                return Err(AppError::NasUnavailable(format!("无法启动 zspace-cli: {e}")));
+                return Err(AppError::NasUnavailable(format!(
+                    "无法启动 zspace-cli: {e}"
+                )));
             }
             Err(_) => {
                 if cleared {
@@ -339,7 +348,8 @@ impl OfficialCliNotebookProvider {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&self.cli_home, std::fs::Permissions::from_mode(0o700));
+            let _ =
+                std::fs::set_permissions(&self.cli_home, std::fs::Permissions::from_mode(0o700));
         }
 
         let mut guard = self.pending_login.lock().await;
@@ -400,7 +410,9 @@ impl OfficialCliNotebookProvider {
         }
 
         let _ = child.kill().await;
-        Err(AppError::NasAuthFailed("授权进程未返回 oauth_authorization 链接".into()))
+        Err(AppError::NasAuthFailed(
+            "授权进程未返回 oauth_authorization 链接".into(),
+        ))
     }
 
     /// Submit the user's one-time authorization code directly to the waiting CLI stdin
@@ -438,8 +450,8 @@ impl OfficialCliNotebookProvider {
             pending.child.wait_with_output()
         );
         let _ = read_res;
-        let output = wait_res
-            .map_err(|e| AppError::NasAuthFailed(format!("等待授权结果失败: {e}")))?;
+        let output =
+            wait_res.map_err(|e| AppError::NasAuthFailed(format!("等待授权结果失败: {e}")))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -459,9 +471,10 @@ impl OfficialCliNotebookProvider {
 
 fn parse_raw_note(v: &Value) -> AppResult<RawNote> {
     Ok(RawNote {
-        id: v.get("id").and_then(|x| x.as_i64()).ok_or_else(|| {
-            AppError::Internal("NAS 返回的笔记缺少 id 字段".into())
-        })?,
+        id: v
+            .get("id")
+            .and_then(|x| x.as_i64())
+            .ok_or_else(|| AppError::Internal("NAS 返回的笔记缺少 id 字段".into()))?,
         title: v
             .get("title")
             .and_then(|x| x.as_str())
@@ -549,7 +562,12 @@ impl NotebookProvider for OfficialCliNotebookProvider {
             .ok_or_else(|| AppError::Internal("class_create 未返回分类 ID".into()))
     }
 
-    async fn list_notes(&self, classify_id: i64, start: u32, num: u32) -> AppResult<Vec<NoteSummary>> {
+    async fn list_notes(
+        &self,
+        classify_id: i64,
+        start: u32,
+        num: u32,
+    ) -> AppResult<Vec<NoteSummary>> {
         let val = self
             .run_file_notes(
                 json!({
@@ -573,9 +591,20 @@ impl NotebookProvider for OfficialCliNotebookProvider {
             if let Some(id) = item.get("id").and_then(|v| v.as_i64()) {
                 out.push(NoteSummary {
                     id,
-                    title: item.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    classify_id: item.get("classify_id").and_then(|v| v.as_i64()).unwrap_or(classify_id),
-                    in_brief: item.get("in_brief").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    title: item
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    classify_id: item
+                        .get("classify_id")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(classify_id),
+                    in_brief: item
+                        .get("in_brief")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                     pin_flag: item.get("pin_flag").and_then(|v| v.as_i64()).unwrap_or(0),
                     length: item.get("length").and_then(|v| v.as_i64()).unwrap_or(0),
                     updated_at: item.get("updated_at").and_then(|v| v.as_i64()).unwrap_or(0),
@@ -733,11 +762,8 @@ impl NotebookProvider for OfficialCliNotebookProvider {
                 local_path.display()
             )));
         }
-        let (parent, file_name) = split_local_root_and_name(
-            local_path,
-            "无法解析附件所在本地目录",
-            "无效附件文件名",
-        )?;
+        let (parent, file_name) =
+            split_local_root_and_name(local_path, "无法解析附件所在本地目录", "无效附件文件名")?;
         let size = Some(meta.len());
 
         let params_str =
@@ -772,11 +798,8 @@ impl NotebookProvider for OfficialCliNotebookProvider {
         attachment: &TaskAttachment,
         local_dest: &Path,
     ) -> AppResult<()> {
-        let (parent, file_name) = split_local_root_and_name(
-            local_dest,
-            "无法解析附件保存目录",
-            "无效附件保存文件名",
-        )?;
+        let (parent, file_name) =
+            split_local_root_and_name(local_dest, "无法解析附件保存目录", "无效附件保存文件名")?;
         if !parent.exists() {
             std::fs::create_dir_all(&parent)
                 .map_err(|e| AppError::Storage(format!("创建保存目录失败: {e}")))?;
@@ -925,8 +948,21 @@ mod tests {
     fn global_cli_args_cover_auto_lan_http_and_clear_host() {
         let auto_cfg = CliConnectionConfig::default();
         assert_eq!(
-            to_strings(build_global_cli_args("zspace-memo", &auto_cfg, false, None, None)),
-            vec!["--profile", "zspace-memo", "--mode", "auto", "--timeout", "30"]
+            to_strings(build_global_cli_args(
+                "zspace-memo",
+                &auto_cfg,
+                false,
+                None,
+                None
+            )),
+            vec![
+                "--profile",
+                "zspace-memo",
+                "--mode",
+                "auto",
+                "--timeout",
+                "30"
+            ]
         );
 
         let lan_http = CliConnectionConfig {
@@ -965,7 +1001,13 @@ mod tests {
             timeout_secs: 20,
         };
         assert_eq!(
-            to_strings(build_global_cli_args("p", &lan_https_no_flag, false, None, None)),
+            to_strings(build_global_cli_args(
+                "p",
+                &lan_https_no_flag,
+                false,
+                None,
+                None
+            )),
             vec![
                 "--profile",
                 "p",
@@ -981,7 +1023,15 @@ mod tests {
         // Switching back to cloud/auto with clear_host strips --host and passes --clear-host
         assert_eq!(
             to_strings(build_global_cli_args("p", &auto_cfg, true, None, None)),
-            vec!["--profile", "p", "--mode", "auto", "--timeout", "30", "--clear-host"]
+            vec![
+                "--profile",
+                "p",
+                "--mode",
+                "auto",
+                "--timeout",
+                "30",
+                "--clear-host"
+            ]
         );
     }
 
@@ -1016,7 +1066,14 @@ mod tests {
         let dl_keys: Vec<&str> = dl.as_object().unwrap().keys().map(String::as_str).collect();
         assert_eq!(
             dl_keys,
-            vec!["action", "file_id", "local_path", "location", "overwrite", "safe_dir"]
+            vec![
+                "action",
+                "file_id",
+                "local_path",
+                "location",
+                "overwrite",
+                "safe_dir"
+            ]
         );
         assert_eq!(dl["action"], "attachment_download");
         assert_eq!(dl["file_id"], "98765");

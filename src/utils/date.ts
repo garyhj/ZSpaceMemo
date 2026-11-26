@@ -61,7 +61,7 @@ export function weekdayCode(s: string): string {
 
 export function effectiveDue(task: Task): { date: string; time?: string | null; all_day: boolean } | null {
   if (task.repeat && task.series) {
-    const key = task.series.cursor;
+    const key = task.effective_current_key ?? task.series.cursor;
     const ov = task.series.overrides?.[key]?.schedule;
     if (ov?.due) {
       return { date: ov.due.date, time: ov.due.time, all_day: ov.all_day };
@@ -82,6 +82,7 @@ export function effectiveDue(task: Task): { date: string; time?: string | null; 
 
 export function isTaskOverdue(task: Task): boolean {
   if (task.status === "completed" || task.status === "ended") return false;
+  if (typeof task.is_overdue === "boolean") return task.is_overdue;
   const due = effectiveDue(task);
   if (!due) return false;
   if (!due.all_day && due.time) {

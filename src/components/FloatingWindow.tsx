@@ -33,6 +33,7 @@ type GroupKey = "overdue" | "today" | "week" | "later" | "unscheduled";
 export function FloatingWindow() {
   const prefs = usePrefs();
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [globalShortcut, setGlobalShortcut] = useState("CommandOrControl+Shift+M");
   const [busy, setBusy] = useState(false);
   const [dockEdge, setDockEdge] = useState<DockEdge>(null);
   const [dockPeeked, setDockPeeked] = useState(false);
@@ -85,8 +86,14 @@ export function FloatingWindow() {
 
   async function refresh() {
     try {
-      const list = await api.listTasks("all", undefined, "date");
+      const [list, cfg] = await Promise.all([
+        api.listTasks("all", undefined, "date"),
+        api.getSettings().catch(() => null),
+      ]);
       setTasks(list);
+      if (cfg?.global_shortcut) {
+        setGlobalShortcut(cfg.global_shortcut);
+      }
     } catch {
       // Ignore if not logged in yet.
     }
@@ -190,6 +197,29 @@ export function FloatingWindow() {
     } catch {
       setTasks(prev);
     }
+  }
+
+  async function handleSetDate(task: Task, d: string | null) {
+    if (task.repeat && task.series) {
+      if (!d) return;
+      const key = task.effective_current_key ?? task.series.cursor;
+      const allDay = task.schedule.all_day || !task.schedule.due?.time;
+      const dueTime = allDay ? null : task.schedule.due?.time ?? null;
+      try {
+        await api.overrideOccurrence(task.id, key, d, dueTime, allDay, null);
+        await refresh();
+      } catch {
+        // leave tasks unchanged on failure
+      }
+      return;
+    }
+    await handlePatch(task, {
+      schedule: {
+        ...task.schedule,
+        all_day: d ? task.schedule.all_day || !task.schedule.due?.time : false,
+        due: d ? { date: d, time: task.schedule.all_day ? null : task.schedule.due?.time ?? null } : null,
+      },
+    });
   }
 
   async function handleDelete(task: Task) {
@@ -401,7 +431,7 @@ export function FloatingWindow() {
           </button>
           <button
             type="button"
-            title={dockPeeked ? "立即折叠回贴边书签" : "隐藏悬浮窗 (Ctrl/Cmd+Shift+M)"}
+            title={dockPeeked ? "立即折叠回贴边书签" : `隐藏悬浮窗 (${globalShortcut})`}
             onClick={() =>
               void (dockPeeked ? api.collapsePeekFloatingWindow() : api.toggleFloatingWindow())
             }
@@ -495,15 +525,7 @@ export function FloatingWindow() {
           menu={ctxMenu}
           lists={lists}
           onClose={() => setCtxMenu(null)}
-          onSetDate={(t, d) =>
-            void handlePatch(t, {
-              schedule: {
-                ...t.schedule,
-                all_day: d ? t.schedule.all_day || !t.schedule.due?.time : false,
-                due: d ? { date: d, time: t.schedule.all_day ? null : t.schedule.due?.time ?? null } : null,
-              },
-            })
-          }
+          onSetDate={(t, d) => void handleSetDate(t, d)}
           onSetPriority={(t, p: Priority) => void handlePatch(t, { priority: p })}
           onTogglePin={(t) => void handlePatch(t, { pinned: !t.pinned })}
           onToggleDone={(t) => void handleToggle(t)}
