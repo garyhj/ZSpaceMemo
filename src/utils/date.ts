@@ -1,4 +1,5 @@
 import type { Priority, Reminder, RepeatRule, Schedule, Task } from "../types";
+import { formatLunarDay, formatLunarMonth, getLunarCoords } from "./lunar";
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const WD = ["日", "一", "二", "三", "四", "五", "六"];
@@ -119,7 +120,14 @@ export function describeRepeatZh(r?: RepeatRule | null): string {
   const n = Math.max(1, r.interval || 1);
   let s = "";
   if (r.freq === "daily") {
-    s = r.day_filter === "mon_fri" ? "工作日（周一至周五）" : n === 1 ? "每天" : `每 ${n} 天`;
+    s =
+      r.day_filter === "cn_workday"
+        ? "法定工作日（含调休）"
+        : r.day_filter === "mon_fri"
+        ? "工作日（周一至周五）"
+        : n === 1
+        ? "每天"
+        : `每 ${n} 天`;
   } else if (r.freq === "weekly") {
     const wds = (r.by_weekday || [])
       .map((w) => {
@@ -129,20 +137,45 @@ export function describeRepeatZh(r?: RepeatRule | null): string {
       .join("、");
     s = `${n === 1 ? "每周" : `每 ${n} 周`}${wds ? " " + wds : ""}`;
   } else if (r.freq === "monthly") {
-    const prefix = n === 1 ? "每月" : `每 ${n} 个月`;
-    if (r.by_set_pos && r.by_weekday?.length) {
-      const idx = WK.indexOf(r.by_weekday[0].toUpperCase());
-      const wd = idx >= 0 ? WD[idx] : "一";
-      s = `${prefix} 第${r.by_set_pos === -1 ? "最后一" : r.by_set_pos}个周${wd}`;
+    if (r.calendar === "lunar") {
+      const prefix = n === 1 ? "每农历月" : `每 ${n} 个农历月`;
+      const isLast = r.by_month_day?.[0] === -1;
+      const dayS = isLast
+        ? "最后一天"
+        : formatLunarDay(r.lunar?.day ?? getLunarCoords(r.dtstart).day);
+      const leapHint = r.lunar?.leap === "both" ? "（含闰月）" : "";
+      s = `${prefix} ${dayS}${leapHint}`;
     } else {
-      const day = r.by_month_day?.[0] ?? parseDate(r.dtstart).getDate();
-      s = `${prefix} ${day === -1 ? "最后一天" : `${day} 日`}`;
+      const prefix = n === 1 ? "每月" : `每 ${n} 个月`;
+      if (r.by_set_pos && r.by_weekday?.length) {
+        const idx = WK.indexOf(r.by_weekday[0].toUpperCase());
+        const wd = idx >= 0 ? WD[idx] : "一";
+        s = `${prefix} 第${r.by_set_pos === -1 ? "最后一" : r.by_set_pos}个周${wd}`;
+      } else {
+        const day = r.by_month_day?.[0] ?? parseDate(r.dtstart).getDate();
+        s = `${prefix} ${day === -1 ? "最后一天" : `${day} 日`}`;
+      }
     }
   } else if (r.freq === "yearly") {
-    const sd = parseDate(r.dtstart);
-    const m = r.by_month?.[0] ?? sd.getMonth() + 1;
-    const d = r.by_month_day?.[0] ?? sd.getDate();
-    s = `${n === 1 ? "每年" : `每 ${n} 年`} ${m}月${d}日`;
+    if (r.calendar === "lunar") {
+      const prefix = n === 1 ? "每年" : `每 ${n} 年`;
+      const dtLun = getLunarCoords(r.dtstart);
+      const m = r.lunar?.month ?? dtLun.month;
+      const isLast = r.by_month_day?.[0] === -1;
+      const dayS = isLast ? "最后一天" : formatLunarDay(r.lunar?.day ?? dtLun.day);
+      const leapHint =
+        r.lunar?.leap === "both"
+          ? "（含闰月）"
+          : r.lunar?.leap === "only_leap"
+          ? "（仅闰月）"
+          : "";
+      s = `${prefix} 农历${formatLunarMonth(m)}${dayS}${leapHint}`;
+    } else {
+      const sd = parseDate(r.dtstart);
+      const m = r.by_month?.[0] ?? sd.getMonth() + 1;
+      const d = r.by_month_day?.[0] ?? sd.getDate();
+      s = `${n === 1 ? "每年" : `每 ${n} 年`} ${m}月${d}日`;
+    }
   }
   if (r.end.type === "count") s += `，共 ${r.end.count} 次`;
   if (r.end.type === "until") s += `，至 ${r.end.until}`;

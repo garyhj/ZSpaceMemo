@@ -1,6 +1,6 @@
 [package]
 name = "zspace-memo"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 license = "MIT"
 description = "ZSpace Memo Tauri 2 desktop application (Windows / macOS)"

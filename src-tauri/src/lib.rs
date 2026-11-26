@@ -25,9 +25,7 @@ use zspace_memo_core::provider::official_cli::{
     CliConnectionConfig, NasDoctorReport, OAuthStartInfo, OfficialCliNotebookProvider,
 };
 use zspace_memo_core::provider::{AuthStatus, NotebookProvider};
-use zspace_memo_core::recurrence::{
-    build_occurrence_timeline, describe_rule_zh, generate_occurrences,
-};
+use zspace_memo_core::recurrence::{describe_rule_zh, generate_occurrences};
 use zspace_memo_core::service::{SyncSummary, TaskService};
 use zspace_memo_core::sticky::{CreateStickyInput, StickyNote, StickyService, UpdateStickyInput};
 use zspace_memo_core::storage::{
@@ -939,10 +937,36 @@ async fn override_occurrence(
     occurrence_key: String,
     new_due_date: String,
     new_due_time: Option<String>,
+    new_all_day: Option<bool>,
+    new_title: Option<String>,
 ) -> Result<Task, String> {
     let task = state
         .service
-        .override_occurrence(id, &occurrence_key, &new_due_date, new_due_time.as_deref())
+        .override_occurrence_detail(
+            id,
+            &occurrence_key,
+            &new_due_date,
+            new_due_time.as_deref(),
+            new_all_day,
+            new_title.as_deref(),
+        )
+        .await
+        .map_err(map_err)?;
+    emit_changed(&app, &window);
+    Ok(task)
+}
+
+#[tauri::command]
+async fn clear_occurrence_override(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    id: i64,
+    occurrence_key: String,
+) -> Result<Task, String> {
+    let task = state
+        .service
+        .clear_occurrence_override(id, &occurrence_key)
         .await
         .map_err(map_err)?;
     emit_changed(&app, &window);
@@ -955,12 +979,11 @@ async fn get_occurrence_timeline(
     id: i64,
     future_count: usize,
 ) -> Result<Vec<OccurrenceView>, String> {
-    let task = state.service.get_task(id, false).await.map_err(map_err)?;
-    let (Some(rule), Some(series)) = (&task.repeat, &task.series) else {
-        return Ok(Vec::new());
-    };
-    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    build_occurrence_timeline(rule, series, &task.schedule, &today, future_count).map_err(map_err)
+    state
+        .service
+        .get_occurrence_timeline(id, future_count)
+        .await
+        .map_err(map_err)
 }
 
 #[tauri::command]
@@ -1955,6 +1978,7 @@ pub fn run() {
             delete_task,
             list_calendar_items,
             override_occurrence,
+            clear_occurrence_override,
             get_occurrence_timeline,
             preview_repeat,
             list_notifications,

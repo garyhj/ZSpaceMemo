@@ -48,6 +48,7 @@ import type {
   CalendarTaskItem,
   CreateTaskInput,
   Priority,
+  Schedule,
   Task,
   TaskSort,
   TaskView,
@@ -618,6 +619,40 @@ function MainWindow() {
     }
   }
 
+  async function handleOverrideOccurrence(
+    task: Task,
+    occurrenceKey: string,
+    nextSchedule: Schedule
+  ) {
+    if (!nextSchedule.due) return;
+    try {
+      await api.overrideOccurrence(
+        task.id,
+        occurrenceKey,
+        nextSchedule.due.date,
+        nextSchedule.all_day ? null : nextSchedule.due.time ?? null,
+        nextSchedule.all_day,
+        null
+      );
+      await refreshAll();
+      showToast(
+        `已将「${task.title}」本次调整到 ${dateLabel(nextSchedule.due.date)}`
+      );
+    } catch (e) {
+      showToast(`单独调整失败：${String(e)}`);
+    }
+  }
+
+  async function handleClearOccurrenceOverride(task: Task, occurrenceKey: string) {
+    try {
+      await api.clearOccurrenceOverride(task.id, occurrenceKey);
+      await refreshAll();
+      showToast(`已恢复「${task.title}」原定日期 (${dateLabel(occurrenceKey)})`);
+    } catch (e) {
+      showToast(`恢复失败：${String(e)}`);
+    }
+  }
+
   const displayedTasks = activeList
     ? tasks.filter((t) => t.list === activeList)
     : activeLabel
@@ -927,6 +962,8 @@ function MainWindow() {
                 onToggle={handleToggle}
                 onSkip={handleSkip}
                 onReopenOccurrence={handleReopenOccurrence}
+                onOverrideOccurrence={handleOverrideOccurrence}
+                onClearOccurrenceOverride={handleClearOccurrenceOverride}
                 onEndSeries={handleEndSeries}
                 onDelete={handleDelete}
                 onReloadTask={async (id) => {
@@ -1265,6 +1302,8 @@ function MainWindow() {
               onToggle={handleToggle}
               onSkip={handleSkip}
               onReopenOccurrence={handleReopenOccurrence}
+              onOverrideOccurrence={handleOverrideOccurrence}
+              onClearOccurrenceOverride={handleClearOccurrenceOverride}
               onEndSeries={handleEndSeries}
               onDelete={handleDelete}
               onReloadTask={async (id) => {

@@ -44,6 +44,8 @@ interface Props {
   onToggle: (task: Task) => Promise<void>;
   onSkip: (task: Task, key?: string) => Promise<void>;
   onReopenOccurrence: (task: Task, key: string) => Promise<void>;
+  onOverrideOccurrence?: (task: Task, occurrenceKey: string, nextSchedule: Schedule) => Promise<void>;
+  onClearOccurrenceOverride?: (task: Task, occurrenceKey: string) => Promise<void>;
   onEndSeries: (task: Task) => Promise<void>;
   onDelete: (task: Task) => Promise<void>;
   onReloadTask: (id: number) => Promise<void>;
@@ -62,6 +64,8 @@ export function TaskDetail({
   onToggle,
   onSkip,
   onReopenOccurrence,
+  onOverrideOccurrence,
+  onClearOccurrenceOverride,
   onEndSeries,
   onDelete,
   onReloadTask,
@@ -80,6 +84,7 @@ export function TaskDetail({
   const [timeline, setTimeline] = useState<OccurrenceView[]>([]);
   const [saving, setSaving] = useState<"idle" | "saving" | "saved">("idle");
   const [modal, setModal] = useState<"date" | "reminder" | "repeat" | null>(null);
+  const [editingOcc, setEditingOcc] = useState<OccurrenceView | null>(null);
   const [pendingPatch, setPendingPatch] = useState<UpdateTaskInput | null>(null);
   const [topPop, setTopPop] = useState<"pri" | "more" | null>(null);
   const topPopRef = useRef<HTMLDivElement>(null);
@@ -107,6 +112,7 @@ export function TaskDetail({
     setTab("detail");
     setPendingPatch(null);
     setTopPop(null);
+    setEditingOcc(null);
 
     if (task.repeat) {
       api
@@ -636,15 +642,33 @@ export function TaskDetail({
                     completed: ["✓", "text-emerald-600", "已完成"],
                     skipped: ["↷", "text-slate-400", "已跳过"],
                     missed: ["✕", "text-red-500", "错过"],
-                    pending: ["●", "text-blue-600", "待办（本次）"],
+                    pending: ["●", "text-blue-600", "待办"],
                     future: ["○", "text-slate-400", "未来"],
                   }[occ.state];
+                  const occDate = occ.schedule.due?.date ?? occ.key;
+                  const occTime =
+                    !occ.schedule.all_day && occ.schedule.due?.time
+                      ? ` ${formatTime(occ.schedule.due.time, prefs.timeFormat)}`
+                      : "";
+                  const canEditOcc =
+                    occ.state === "pending" || occ.state === "future" || occ.state === "missed";
                   return (
                     <div key={occ.key} className="flex items-center gap-2 py-1.5 text-xs">
-                      <span className={`w-4 text-center ${badge[1]}`}>{badge[0]}</span>
-                      <span className="w-28 text-slate-700">{dateLabel(occ.key)}</span>
-                      <span className={`w-20 ${badge[1]}`}>{badge[2]}</span>
-                      <div className="flex-1 text-right space-x-2">
+                      <span className={`w-3.5 shrink-0 text-center ${badge[1]}`}>{badge[0]}</span>
+                      <span className="min-w-0 truncate text-slate-700">
+                        {dateLabel(occDate)}
+                        {occTime}
+                      </span>
+                      <span className={`shrink-0 ${badge[1]}`}>{badge[2]}</span>
+                      {occ.overridden && (
+                        <span
+                          title={`原计划：${occ.key}`}
+                          className="shrink-0 rounded bg-amber-100/80 px-1 py-0.5 text-[10px] text-amber-700"
+                        >
+                          已改期
+                        </span>
+                      )}
+                      <div className="ml-auto flex shrink-0 items-center gap-2">
                         {occ.state === "pending" && (
                           <>
                             <button
@@ -652,7 +676,7 @@ export function TaskDetail({
                               onClick={() => void onToggle(task)}
                               className="text-blue-600 hover:underline"
                             >
-                              完成本次
+                              完成
                             </button>
                             <button
                               type="button"
@@ -662,6 +686,24 @@ export function TaskDetail({
                               跳过
                             </button>
                           </>
+                        )}
+                        {canEditOcc && onOverrideOccurrence && (
+                          <button
+                            type="button"
+                            onClick={() => setEditingOcc(occ)}
+                            className="text-slate-600 hover:text-blue-600 hover:underline"
+                          >
+                            改期
+                          </button>
+                        )}
+                        {canEditOcc && occ.overridden && onClearOccurrenceOverride && (
+                          <button
+                            type="button"
+                            onClick={() => void onClearOccurrenceOverride(task, occ.key)}
+                            className="text-amber-600 hover:underline"
+                          >
+                            恢复
+                          </button>
                         )}
                         {(occ.state === "completed" || occ.state === "skipped") && (
                           <button
@@ -704,6 +746,20 @@ export function TaskDetail({
           onSaveAndOpenRepeat={(next: Schedule) => {
             void savePatch({ schedule: next });
             setModal("repeat");
+          }}
+        />
+      )}
+
+      {editingOcc && onOverrideOccurrence && (
+        <DatePickerModal
+          schedule={editingOcc.schedule}
+          singleOccurrence
+          titleText={`单独调整「${dateLabel(editingOcc.key)}」这一期（不影响系列后续）`}
+          onClose={() => setEditingOcc(null)}
+          onSave={(next: Schedule) => {
+            const key = editingOcc.key;
+            setEditingOcc(null);
+            void onOverrideOccurrence(task, key, next);
           }}
         />
       )}

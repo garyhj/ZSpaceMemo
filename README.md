@@ -18,7 +18,7 @@
   - 笔记正文采用「中文可读摘要 + 用户备注 + 末尾 `<p>ZSM1:{...}</p>` 数据块」三段结构，支持在极空间官方客户端中直接查看、修改备注并安全回读（详见 [COMPATIBILITY.md](docs/COMPATIBILITY.md)）。
   - 支持 ETag 乐观并发冲突检测与元数据损坏自动恢复（保留用户在官方 App 修改的新备注）。
   - 7 个视图：今天（含逾期置顶）、即将到来（按天分组）、收集箱、已逾期、全部任务、已完成、重复任务；支持清单分类、多标签、优先级、置顶、全文搜索、清单拖拽归类、右键菜单与撤销 Toast。
-  - **完整重复引擎**：区分「系列」与「发生实例」，支持每天、工作日、每周多选、每月指定日/最后一天/第 N 个周几、每年、每 N 周期（如每半年）、不存在日期顺延或跳过、幂等完成/跳过/撤销及单实例覆盖。
+  - **完整重复引擎**：区分「系列」与「发生实例」，支持每天、中国法定工作日（含调休补班）、周一至周五、每周多选、每月/每年公历与 1901–2099 离线农历（含闰月策略与大小月处理）、每月第 N 个周几、每 N 周期（如每半年）、不存在日期顺延或跳过、幂等完成/跳过/撤销及单实例可视化改期/恢复。
 - **月视图（`Alt + 2`）**
   - 集成公历与农历 / 节气 / 法定节假日与调休标记，直接投射重复任务的未来发生实例。
   - 支持按清单配色区分胶囊、单日 `+N` 溢出浮层、拖拽改期、右键空白日期格内联快速新建任务。
@@ -56,7 +56,7 @@ flowchart LR
   end
   NAS[("极空间 NAS<br/>原生记事本(location=2) · 文件 · 系统 · Docker")]
 
-  UI <-->|64 个 Tauri IPC 命令 / Events| CORE
+  UI <-->|65 个 Tauri IPC 命令 / Events| CORE
   CORE --> DB
   CORE -->|OfficialCliNotebookProvider| CLI -->|HTTPS OAuth / LAN| NAS
 ```
@@ -114,6 +114,8 @@ ZSpaceMemo/
 │       │   ├── models.rs       # Task / Schedule / Reminder / RepeatRule / Series 模型
 │       │   ├── codec.rs        # <p>ZSM1:{...}</p> 双向编解码、实体归一化、富文本保护
 │       │   ├── recurrence.rs   # 纯函数重复规则引擎（系列 → 发生实例）
+│       │   ├── lunar.rs        # 离线中国农历换算（1901–2099）与法定工作日判断
+│       │   ├── lunar_tables.rs # 农历年表与 2001–2027 国务院法定调休节假日查找表
 │       │   ├── reminder.rs     # 纯函数提醒触发计算（IANA 时区 & 夏令时安全）
 │       │   ├── sticky.rs       # 云便签服务与 <p>ZSK1:{...}</p> 编解码（ZSpace Sticky）
 │       │   ├── toolbox.rs      # ToolboxService（快传箱、NAS 状态/事件、Docker 看板）
@@ -143,7 +145,7 @@ ZSpaceMemo/
 │   │   ├── main.rs             # 入口
 │   │   ├── logging.rs          # 2 MiB 脱敏滚动文件日志（Token/密码自动擦除）
 │   │   ├── updater.rs          # 应用内更新：流式下载、SHA-256 校验、自动覆盖安装与重启
-│   │   ├── lib.rs              # 64 个 IPC 命令、托盘、快捷键、窗口几何记忆、贴边展开、AUMID
+│   │   ├── lib.rs              # 65 个 IPC 命令、托盘、快捷键、窗口几何记忆、贴边展开、AUMID
 │   │   └── scheduler.rs        # 后台同步、15 秒原生提醒调度与 NAS 告警桥接循环
 │   ├── capabilities/           # Tauri 2 权限声明（notification / dialog / sticky-* 等）
 │   ├── icons/                  # ZSpace Kit 跨平台应用与托盘图标（.ico / .icns / PNG）
@@ -152,7 +154,7 @@ ZSpaceMemo/
 ├── scripts/
 │   └── fetch-sidecar.sh        # 本地开发一键下载并校验官方 zspace-cli 二进制
 ├── docs/                       # 设计、兼容验证、原型与需求归档
-│   ├── DESIGN.md               # 产品与技术设计（v0.5）
+│   ├── DESIGN.md               # 产品与技术设计（v0.6）
 │   ├── COMPATIBILITY.md        # M0 真机兼容性与 CLI 实测适配记录
 │   ├── prototype/index.html    # 早期待办交互原型（单文件 HTML）
 │   └── requirements/           # 原始调研与需求文档归档
@@ -205,13 +207,14 @@ ZSPACE_CLI_BIN=/path/to/zspace-cli ZSPACE_CLI_HOME=/path/to/cli-home \
 - [x] **M2 / M3**：完整三栏主界面、悬浮待办窗（全部分组与贴边隐藏）、月视图（农历/节假日/拖拽改期）、系统原生通知提醒、Windows/macOS 双端自动发布
 - [x] **v0.3.0 ~ v0.4.3**：工具箱成型、云便签、`Z4` 状态解析与可复制日志、窗口几何与贴边记忆、脱敏滚动日志、Windows AUMID 通知与流式校验应用内更新
 - [x] **v0.5.0**：极空间 LAN 内网直连与 `doctor` 连接诊断、文件快传箱文件夹递归上传、统一上传/下载队列与重试、批量下载与分页加载
-- [ ] **后续扩展**：重复引擎支持中国法定工作日/调休与农历重复、单次实例编辑、待办附件（复用官方 `file notes` 接口）、更多工具箱插件模块
+- [x] **v0.6.0**：重复引擎支持中国法定工作日/调休（`cn_workday`）、离线 1901–2099 农历重复与闰月策略、单次发生实例可视化改期与恢复
+- [ ] **后续扩展**：待办附件（复用官方 `file notes` 接口）、NAS 下载器看板（需先核验 CLI schema）、更多工具箱插件模块
 
 ---
 
 ## 文档导航
 
-- [产品与技术设计（v0.5）](docs/DESIGN.md)
+- [产品与技术设计（v0.6）](docs/DESIGN.md)
 - [版本变更记录（CHANGELOG）](CHANGELOG.md)
 - [M0 真机兼容性验证与 CLI 适配记录](docs/COMPATIBILITY.md)
 - [早期交互原型（单文件 HTML）](docs/prototype/index.html)

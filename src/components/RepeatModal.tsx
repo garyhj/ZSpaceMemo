@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { RepeatFreq, RepeatRule } from "../types";
 import { dateLabel, describeRepeatZh, parseDate, todayStr, weekdayCode } from "../utils/date";
+import { getLunarCoords, LUNAR_DAY_NAMES, LUNAR_MONTH_NAMES } from "../utils/lunar";
 
 interface Props {
   baseDate: string | null;
@@ -23,6 +24,7 @@ const WEEKDAYS = [
 export function RepeatModal({ baseDate, repeat, onSave, onClose }: Props) {
   const anchor = baseDate || todayStr();
   const anchorDate = parseDate(anchor);
+  const anchorLunar = getLunarCoords(anchor);
 
   const [rule, setRule] = useState<RepeatRule | null>(() =>
     repeat ? JSON.parse(JSON.stringify(repeat)) : null
@@ -66,6 +68,8 @@ export function RepeatModal({ baseDate, repeat, onSave, onClose }: Props) {
         return { ...(base as RepeatRule), freq: "daily" };
       case "workday":
         return { ...(base as RepeatRule), freq: "daily", day_filter: "mon_fri" };
+      case "cn_workday":
+        return { ...(base as RepeatRule), freq: "daily", day_filter: "cn_workday" };
       case "weekly":
         return { ...(base as RepeatRule), freq: "weekly", by_weekday: [weekdayCode(anchor)] };
       case "monthly":
@@ -84,6 +88,13 @@ export function RepeatModal({ baseDate, repeat, onSave, onClose }: Props) {
           by_month: [anchorDate.getMonth() + 1],
           by_month_day: [anchorDate.getDate()],
         };
+      case "lunar_yearly":
+        return {
+          ...(base as RepeatRule),
+          freq: "yearly",
+          calendar: "lunar",
+          lunar: { month: anchorLunar.month, day: anchorLunar.day, leap: "follow" },
+        };
       default:
         return rule ?? { ...(base as RepeatRule), freq: "monthly", by_month_day: [anchorDate.getDate()] };
     }
@@ -91,17 +102,54 @@ export function RepeatModal({ baseDate, repeat, onSave, onClose }: Props) {
 
   function updateFreq(freq: RepeatFreq) {
     if (!rule) return;
+    const isLunar = rule.calendar === "lunar" && (freq === "monthly" || freq === "yearly");
     const next: RepeatRule = {
       ...rule,
       freq,
+      calendar: isLunar ? "lunar" : "gregorian",
       by_weekday: freq === "weekly" ? [weekdayCode(anchor)] : null,
       by_set_pos: null,
       by_month_day:
-        freq === "monthly" || freq === "yearly" ? [anchorDate.getDate()] : null,
-      by_month: freq === "yearly" ? [anchorDate.getMonth() + 1] : null,
+        !isLunar && (freq === "monthly" || freq === "yearly") ? [anchorDate.getDate()] : null,
+      by_month: !isLunar && freq === "yearly" ? [anchorDate.getMonth() + 1] : null,
+      lunar: isLunar
+        ? {
+            month: rule.lunar?.month ?? anchorLunar.month,
+            day: rule.lunar?.day ?? anchorLunar.day,
+            leap: rule.lunar?.leap ?? "follow",
+          }
+        : null,
       day_filter: null,
     };
     setRule(next);
+  }
+
+  function switchCalendar(cal: "gregorian" | "lunar") {
+    if (!rule) return;
+    if (cal === "lunar") {
+      setRule({
+        ...rule,
+        calendar: "lunar",
+        by_weekday: null,
+        by_set_pos: null,
+        by_month: null,
+        by_month_day: rule.by_month_day?.[0] === -1 ? [-1] : null,
+        lunar: {
+          month: rule.lunar?.month ?? anchorLunar.month,
+          day: rule.lunar?.day ?? anchorLunar.day,
+          leap: rule.lunar?.leap ?? "follow",
+        },
+      });
+    } else {
+      setRule({
+        ...rule,
+        calendar: "gregorian",
+        lunar: null,
+        by_month: rule.freq === "yearly" ? [anchorDate.getMonth() + 1] : null,
+        by_month_day:
+          rule.by_month_day?.[0] === -1 ? [-1] : [anchorDate.getDate()],
+      });
+    }
   }
 
   function toggleWeekday(code: string) {
@@ -122,9 +170,33 @@ export function RepeatModal({ baseDate, repeat, onSave, onClose }: Props) {
     ["monthly", "每月"],
     ["half", "每半年"],
     ["yearly", "每年"],
-    ["workday", "工作日"],
+    ["cn_workday", "法定工作日"],
+    ["workday", "周一至周五"],
+    ["lunar_yearly", "每年农历"],
     ["custom", "自定义…"],
   ];
+
+  function isPresetSelected(k: string): boolean {
+    if (k === "none") return !rule;
+    if (k === "custom") return customOpen;
+    if (!rule || customOpen) return false;
+    if (k === "daily") return rule.freq === "daily" && !rule.day_filter && rule.interval === 1;
+    if (k === "cn_workday") return rule.freq === "daily" && rule.day_filter === "cn_workday";
+    if (k === "workday") return rule.freq === "daily" && rule.day_filter === "mon_fri";
+    if (k === "weekly") return rule.freq === "weekly" && rule.interval === 1;
+    if (k === "monthly")
+      return rule.freq === "monthly" && rule.calendar !== "lunar" && rule.interval === 1;
+    if (k === "half")
+      return rule.freq === "monthly" && rule.calendar !== "lunar" && rule.interval === 6;
+    if (k === "yearly")
+      return rule.freq === "yearly" && rule.calendar !== "lunar" && rule.interval === 1;
+    if (k === "lunar_yearly")
+      return rule.freq === "yearly" && rule.calendar === "lunar" && rule.interval === 1;
+    return false;
+  }
+
+  const isLunarMode =
+    rule?.calendar === "lunar" && (rule.freq === "monthly" || rule.freq === "yearly");
 
   return (
     <div
@@ -132,7 +204,7 @@ export function RepeatModal({ baseDate, repeat, onSave, onClose }: Props) {
       onClick={onClose}
     >
       <div
-        className="max-h-[90vh] w-full max-w-[440px] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4 shadow-xl"
+        className="max-h-[90vh] w-full max-w-[460px] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-baseline justify-between">
@@ -155,7 +227,7 @@ export function RepeatModal({ baseDate, repeat, onSave, onClose }: Props) {
                 }
               }}
               className={`rounded-full border px-2.5 py-1 text-xs transition ${
-                (k === "none" && !rule) || (k === "custom" && customOpen)
+                isPresetSelected(k)
                   ? "border-transparent bg-blue-600 text-white"
                   : "border-slate-200 text-slate-700 hover:bg-slate-100"
               }`}
@@ -167,7 +239,7 @@ export function RepeatModal({ baseDate, repeat, onSave, onClose }: Props) {
 
         {rule && customOpen && (
           <div className="mt-3 space-y-2.5 border-t border-slate-100 pt-3 text-xs">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span>每</span>
               <input
                 type="number"
@@ -188,19 +260,53 @@ export function RepeatModal({ baseDate, repeat, onSave, onClose }: Props) {
                 <option value="monthly">个月</option>
                 <option value="yearly">年</option>
               </select>
-              {rule.freq === "daily" && (
-                <label className="ml-2 flex items-center gap-1 text-slate-600">
-                  <input
-                    type="checkbox"
-                    checked={rule.day_filter === "mon_fri"}
-                    onChange={(e) =>
-                      setRule({ ...rule, day_filter: e.target.checked ? "mon_fri" : null })
-                    }
-                  />
-                  仅工作日
-                </label>
+
+              {(rule.freq === "monthly" || rule.freq === "yearly") && (
+                <div className="ml-auto flex rounded-lg bg-slate-100 p-0.5 text-[11px]">
+                  {(
+                    [
+                      ["gregorian", "公历"],
+                      ["lunar", "农历"],
+                    ] as const
+                  ).map(([cal, lbl]) => (
+                    <button
+                      key={cal}
+                      type="button"
+                      onClick={() => switchCalendar(cal)}
+                      className={`rounded-md px-2 py-0.5 ${
+                        (rule.calendar ?? "gregorian") === cal
+                          ? "bg-white font-medium text-blue-600 shadow-2xs"
+                          : "text-slate-500"
+                      }`}
+                    >
+                      {lbl}
+                    </button>
+                  ))}
+                </div>
               )}
             </div>
+
+            {rule.freq === "daily" && (
+              <div className="flex flex-wrap items-center gap-3 text-slate-600">
+                <span className="w-20 text-slate-500">日期过滤</span>
+                {(
+                  [
+                    [null, "每天"],
+                    ["cn_workday", "法定工作日（含调休）"],
+                    ["mon_fri", "周一至周五"],
+                  ] as const
+                ).map(([val, label]) => (
+                  <label key={label} className="flex items-center gap-1">
+                    <input
+                      type="radio"
+                      checked={(rule.day_filter ?? null) === val}
+                      onChange={() => setRule({ ...rule, day_filter: val })}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            )}
 
             {rule.freq === "weekly" && (
               <div className="flex gap-1">
@@ -224,7 +330,122 @@ export function RepeatModal({ baseDate, repeat, onSave, onClose }: Props) {
               </div>
             )}
 
-            {rule.freq === "monthly" && (
+            {isLunarMode && (
+              <div className="space-y-2 rounded-xl border border-amber-200/70 bg-amber-50/40 p-2.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-slate-600">农历</span>
+                  {rule.freq === "yearly" && (
+                    <select
+                      value={rule.lunar?.month ?? anchorLunar.month}
+                      onChange={(e) =>
+                        setRule({
+                          ...rule,
+                          lunar: {
+                            month: Number(e.target.value),
+                            day: rule.lunar?.day ?? anchorLunar.day,
+                            leap: rule.lunar?.leap ?? "follow",
+                          },
+                        })
+                      }
+                      className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs"
+                    >
+                      {LUNAR_MONTH_NAMES.map((name, idx) => (
+                        <option key={name} value={idx + 1}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+
+                  {rule.by_month_day?.[0] === -1 ? (
+                    <span className="rounded bg-white px-2 py-1 text-slate-700 border border-slate-200">
+                      最后一天（大小月自动适配廿九/三十）
+                    </span>
+                  ) : (
+                    <select
+                      value={rule.lunar?.day ?? anchorLunar.day}
+                      onChange={(e) =>
+                        setRule({
+                          ...rule,
+                          by_month_day: null,
+                          lunar: {
+                            month: rule.lunar?.month ?? anchorLunar.month,
+                            day: Number(e.target.value),
+                            leap: rule.lunar?.leap ?? "follow",
+                          },
+                        })
+                      }
+                      className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs"
+                    >
+                      {LUNAR_DAY_NAMES.map((name, idx) => (
+                        <option key={name} value={idx + 1}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+
+                  <label className="ml-auto flex items-center gap-1 text-[11px] text-slate-600">
+                    <input
+                      type="checkbox"
+                      checked={rule.by_month_day?.[0] === -1}
+                      onChange={(e) =>
+                        setRule({
+                          ...rule,
+                          by_month_day: e.target.checked ? [-1] : null,
+                          lunar: {
+                            month: rule.lunar?.month ?? anchorLunar.month,
+                            day: rule.lunar?.day ?? anchorLunar.day,
+                            leap: rule.lunar?.leap ?? "follow",
+                          },
+                        })
+                      }
+                    />
+                    每月/腊月最后一天
+                  </label>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-600">
+                  <span className="text-slate-500">闰月规则</span>
+                  <label className="flex items-center gap-1">
+                    <input
+                      type="radio"
+                      checked={(rule.lunar?.leap ?? "follow") === "follow"}
+                      onChange={() =>
+                        setRule({
+                          ...rule,
+                          lunar: {
+                            month: rule.lunar?.month ?? anchorLunar.month,
+                            day: rule.lunar?.day ?? anchorLunar.day,
+                            leap: "follow",
+                          },
+                        })
+                      }
+                    />
+                    仅常规月（不重复触发闰月）
+                  </label>
+                  <label className="flex items-center gap-1">
+                    <input
+                      type="radio"
+                      checked={rule.lunar?.leap === "both"}
+                      onChange={() =>
+                        setRule({
+                          ...rule,
+                          lunar: {
+                            month: rule.lunar?.month ?? anchorLunar.month,
+                            day: rule.lunar?.day ?? anchorLunar.day,
+                            leap: "both",
+                          },
+                        })
+                      }
+                    />
+                    包含同号闰月
+                  </label>
+                </div>
+              </div>
+            )}
+
+            {rule.freq === "monthly" && !isLunarMode && (
               <div className="space-y-1.5">
                 <label className="flex items-center gap-1.5">
                   <input
@@ -408,7 +629,13 @@ export function RepeatModal({ baseDate, repeat, onSave, onClose }: Props) {
           <div className="mt-1 text-slate-600">
             {rule
               ? previewDates.length > 0
-                ? `接下来 5 次：${previewDates.map((d) => dateLabel(d)).join(" → ")}`
+                ? `接下来 5 次：${previewDates
+                    .map((d) =>
+                      rule.calendar === "lunar"
+                        ? `${dateLabel(d)}(${getLunarCoords(d).label})`
+                        : dateLabel(d)
+                    )
+                    .join(" → ")}`
                 : "正在计算预览…"
               : "该任务只执行一次"}
           </div>

@@ -590,6 +590,20 @@ impl<P: NotebookProvider> TaskService<P> {
         new_due_date: &str,
         new_due_time: Option<&str>,
     ) -> AppResult<Task> {
+        self.override_occurrence_detail(id, occurrence_key, new_due_date, new_due_time, None, None)
+            .await
+    }
+
+    /// Override a single occurrence's due date/time/all_day or title without modifying the series template.
+    pub async fn override_occurrence_detail(
+        &self,
+        id: i64,
+        occurrence_key: &str,
+        new_due_date: &str,
+        new_due_time: Option<&str>,
+        new_all_day: Option<bool>,
+        new_title: Option<&str>,
+    ) -> AppResult<Task> {
         let _ = parse_date(new_due_date)?;
         let mut task = self.get_task(id, false).await?;
         if let Some(series) = &mut task.series {
@@ -597,32 +611,78 @@ impl<P: NotebookProvider> TaskService<P> {
                 .overrides
                 .entry(occurrence_key.to_string())
                 .or_insert_with(OccurrenceOverride::default);
-            let time = match new_due_time {
-                Some(t) => Some(t.to_string()),
-                None => task.schedule.due.as_ref().and_then(|d| d.time.clone()),
+            if let Some(title) = new_title.map(str::trim).filter(|s| !s.is_empty()) {
+                entry.title = Some(title.to_string());
+            }
+            let prev_sched = entry.schedule.as_ref();
+            let resolved_all_day = match new_all_day {
+                Some(ad) => ad,
+                None => match new_due_time {
+                    Some(_) => false,
+                    None => prev_sched.map(|s| s.all_day).unwrap_or(task.schedule.all_day),
+                },
+            };
+            let resolved_time = if resolved_all_day {
+                None
+            } else {
+                new_due_time
+                    .map(|s| s.to_string())
+                    .or_else(|| prev_sched.and_then(|s| s.due.as_ref()?.time.clone()))
+                    .or_else(|| task.schedule.due.as_ref().and_then(|d| d.time.clone()))
             };
             entry.schedule = Some(Schedule {
-                all_day: task.schedule.all_day && new_due_time.is_none(),
+                all_day: resolved_all_day,
                 due: Some(DateTimePoint {
                     date: new_due_date.to_string(),
-                    time: if task.schedule.all_day && new_due_time.is_none() {
-                        None
-                    } else {
-                        time
-                    },
+                    time: resolved_time,
                 }),
                 timezone: task.schedule.timezone.clone(),
             });
             return self.persist_task_update(task, None).await;
         }
         // Fallback for non-repeating task: update due date directly.
+        let resolved_all_day = new_all_day.unwrap_or_else(|| task.schedule.all_day && new_due_time.is_none());
+        task.schedule.all_day = resolved_all_day;
         task.schedule.due = Some(DateTimePoint {
             date: new_due_date.to_string(),
-            time: new_due_time
-                .map(|s| s.to_string())
-                .or_else(|| task.schedule.due.as_ref().and_then(|d| d.time.clone())),
+            time: if resolved_all_day {
+                None
+            } else {
+                new_due_time
+                    .map(|s| s.to_string())
+                    .or_else(|| task.schedule.due.as_ref().and_then(|d| d.time.clone()))
+            },
         });
         self.persist_task_update(task, None).await
+    }
+
+    /// Remove a single occurrence override so it falls back to the series template schedule.
+    pub async fn clear_occurrence_override(
+        &self,
+        id: i64,
+        occurrence_key: &str,
+    ) -> AppResult<Task> {
+        let mut task = self.get_task(id, false).await?;
+        if let Some(series) = &mut task.series {
+            if series.overrides.remove(occurrence_key).is_some() {
+                return self.persist_task_update(task, None).await;
+            }
+        }
+        Ok(task)
+    }
+
+    /// Build occurrence timeline for UI display using the task's configured IANA timezone.
+    pub async fn get_occurrence_timeline(
+        &self,
+        id: i64,
+        future_count: usize,
+    ) -> AppResult<Vec<crate::models::OccurrenceView>> {
+        let task = self.get_task(id, false).await?;
+        let (Some(rule), Some(series)) = (&task.repeat, &task.series) else {
+            return Ok(Vec::new());
+        };
+        let today = self.today_in_tz(&task.schedule.timezone);
+        crate::recurrence::build_occurrence_timeline(rule, series, &task.schedule, &today, future_count)
     }
 
     /// Expand all single tasks and repeating series occurrences falling within `[from, to]` (inclusive).
@@ -1196,6 +1256,19 @@ mod tests {
         assert_eq!(
             dates_after,
             vec!["2026-11-02", "2026-11-09", "2026-11-17", "2026-11-23", "2026-11-30"]
+        );
+
+        // Clear the single-instance override and ensure it snaps back to 2026-11-16.
+        svc.clear_occurrence_override(weekly.id, "2026-11-16")
+            .await
+            .unwrap();
+        let items_restored = svc
+            .list_calendar_items("2026-11-01", "2026-11-30", true)
+            .unwrap();
+        let dates_restored: Vec<&str> = items_restored.iter().map(|i| i.date.as_str()).collect();
+        assert_eq!(
+            dates_restored,
+            vec!["2026-11-02", "2026-11-09", "2026-11-16", "2026-11-23", "2026-11-30"]
         );
     }
 }

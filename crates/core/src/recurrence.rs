@@ -1,7 +1,13 @@
 use crate::error::{AppError, AppResult};
+use crate::lunar::{
+    is_cn_workday, lunar_day_zh, lunar_month_days, lunar_month_zh, lunar_to_solar,
+    solar_to_lunar, year_leap_month, year_month_sequence, LunarDate,
+};
+use crate::lunar_tables::LUNAR_MAX_YEAR;
 use crate::models::{
-    CatchUpPolicy, DateTimePoint, InvalidDatePolicy, OccurrenceActionStatus, OccurrenceState,
-    OccurrenceView, RepeatBasis, RepeatEnd, RepeatFreq, RepeatRule, Schedule, SeriesState,
+    CalendarKind, CatchUpPolicy, DateTimePoint, InvalidDatePolicy, OccurrenceActionStatus,
+    OccurrenceState, OccurrenceView, RepeatBasis, RepeatEnd, RepeatFreq, RepeatRule, Schedule,
+    SeriesState,
 };
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
 
@@ -57,6 +63,175 @@ fn add_months_ym(year: i32, month: u32, add: i32) -> (i32, u32) {
     (y, m)
 }
 
+fn resolve_lunar_day(month_days: u8, target_day: i8, policy: InvalidDatePolicy) -> Option<u8> {
+    if target_day == -1 {
+        Some(month_days)
+    } else if target_day > 0 {
+        let t = target_day as u8;
+        if t <= month_days {
+            Some(t)
+        } else {
+            match policy {
+                InvalidDatePolicy::Clamp => Some(month_days),
+                InvalidDatePolicy::Skip => None,
+            }
+        }
+    } else {
+        None
+    }
+}
+
+fn generate_lunar_occurrences(
+    rule: &RepeatRule,
+    dtstart: NaiveDate,
+    after_date: Option<NaiveDate>,
+    until_date: Option<NaiveDate>,
+    max_count: Option<usize>,
+    limit: usize,
+) -> AppResult<Vec<String>> {
+    let start_lunar = solar_to_lunar(dtstart).ok_or_else(|| {
+        AppError::Validation(format!(
+            "农历重复仅支持公历 1901-02-19 至 2099-12-31 范围：{dtstart}"
+        ))
+    })?;
+    let interval = rule.interval.max(1) as i32;
+    let leap_policy = rule
+        .lunar
+        .as_ref()
+        .map(|l| l.leap.trim().to_ascii_lowercase())
+        .unwrap_or_else(|| "follow".into());
+
+    let target_month = rule
+        .lunar
+        .as_ref()
+        .map(|l| l.month)
+        .or_else(|| rule.by_month.as_ref().and_then(|v| v.first().copied()))
+        .unwrap_or(start_lunar.month)
+        .clamp(1, 12);
+
+    let target_day: i8 = if rule.by_month_day.as_ref().and_then(|v| v.first().copied()) == Some(-1) {
+        -1
+    } else {
+        rule.lunar
+            .as_ref()
+            .map(|l| l.day as i8)
+            .or_else(|| rule.by_month_day.as_ref().and_then(|v| v.first().copied()))
+            .unwrap_or(start_lunar.day as i8)
+    };
+
+    let mut out = Vec::new();
+    let mut seq: usize = 0;
+
+    let mut try_push = |d: NaiveDate| -> bool {
+        if d < dtstart {
+            return true;
+        }
+        if let Some(u) = until_date {
+            if d > u {
+                return false;
+            }
+        }
+        seq += 1;
+        if let Some(mc) = max_count {
+            if seq > mc {
+                return false;
+            }
+        }
+        if after_date.map_or(true, |a| d > a) {
+            out.push(format_date(d));
+        }
+        out.len() < limit
+    };
+
+    match rule.freq {
+        RepeatFreq::Monthly => {
+            let mut valid_months = Vec::new();
+            let mut started = false;
+            for ly in start_lunar.year..=LUNAR_MAX_YEAR {
+                let Some((_, months)) = year_month_sequence(ly) else {
+                    break;
+                };
+                for m in months {
+                    if !started {
+                        if m.month == start_lunar.month && m.is_leap == start_lunar.is_leap {
+                            started = true;
+                        } else {
+                            continue;
+                        }
+                    }
+                    let include = match leap_policy.as_str() {
+                        "both" => true,
+                        "only_leap" => m.is_leap,
+                        _ => !m.is_leap || (m.year == start_lunar.year && m.month == start_lunar.month && start_lunar.is_leap),
+                    };
+                    if include {
+                        valid_months.push(m);
+                    }
+                }
+                if valid_months.len() > (limit + max_count.unwrap_or(0) + 64) * (interval as usize) {
+                    break;
+                }
+            }
+
+            let step = interval as usize;
+            let mut idx = 0usize;
+            while let Some(m) = valid_months.get(idx) {
+                idx += step;
+                if let Some(day) = resolve_lunar_day(m.days, target_day, rule.on_invalid_date) {
+                    if let Some(solar) = lunar_to_solar(LunarDate {
+                        year: m.year,
+                        month: m.month,
+                        day,
+                        is_leap: m.is_leap,
+                    }) {
+                        if !try_push(solar) {
+                            return Ok(out);
+                        }
+                    }
+                }
+            }
+        }
+        RepeatFreq::Yearly => {
+            for k in 0..200i32 {
+                let ly = start_lunar.year + k * interval;
+                if ly > LUNAR_MAX_YEAR {
+                    break;
+                }
+                let mut candidates = Vec::new();
+                if leap_policy != "only_leap" {
+                    candidates.push((target_month, false));
+                }
+                if year_leap_month(ly) == Some(target_month)
+                    && matches!(leap_policy.as_str(), "both" | "only_leap")
+                {
+                    candidates.push((target_month, true));
+                }
+
+                for (m_num, is_leap) in candidates {
+                    let Some(mdays) = lunar_month_days(ly, m_num, is_leap) else {
+                        continue;
+                    };
+                    if let Some(day) = resolve_lunar_day(mdays, target_day, rule.on_invalid_date) {
+                        if let Some(solar) = lunar_to_solar(LunarDate {
+                            year: ly,
+                            month: m_num,
+                            day,
+                            is_leap,
+                        }) {
+                            if !try_push(solar) {
+                                return Ok(out);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    Ok(out)
+}
+
 /// Generate up to `limit` occurrence keys (`YYYY-MM-DD`) strictly after `after` (if provided).
 pub fn generate_occurrences(
     rule: &RepeatRule,
@@ -79,8 +254,14 @@ pub fn generate_occurrences(
         RepeatEnd::Count { count } => Some(*count as usize),
         _ => None,
     };
-    let interval = rule.interval.max(1) as i32;
 
+    if rule.calendar == CalendarKind::Lunar
+        && matches!(rule.freq, RepeatFreq::Monthly | RepeatFreq::Yearly)
+    {
+        return generate_lunar_occurrences(rule, dtstart, after_date, until_date, max_count, limit);
+    }
+
+    let interval = rule.interval.max(1) as i32;
     let mut out = Vec::new();
     let mut seq: usize = 0;
 
@@ -115,6 +296,9 @@ pub fn generate_occurrences(
                 if rule.day_filter.as_deref() == Some("mon_fri")
                     && matches!(d.weekday(), Weekday::Sat | Weekday::Sun)
                 {
+                    continue;
+                }
+                if rule.day_filter.as_deref() == Some("cn_workday") && !is_cn_workday(d) {
                     continue;
                 }
                 candidates.push(d);
@@ -257,19 +441,75 @@ pub fn next_after_action(
         }
         RepeatBasis::Completion => {
             let iv = rule.interval.max(1) as i32;
-            let next_date = match rule.freq {
-                RepeatFreq::Daily => completed_on_date + Duration::days(iv as i64),
-                RepeatFreq::Weekly => completed_on_date + Duration::days((iv * 7) as i64),
-                RepeatFreq::Monthly => {
-                    let (y, m) = add_months_ym(completed_on_date.year(), completed_on_date.month(), iv);
-                    let d = completed_on_date.day().min(days_in_month(y, m));
-                    NaiveDate::from_ymd_opt(y, m, d).expect("valid clamped date")
+            let next_date = if rule.calendar == CalendarKind::Lunar
+                && matches!(rule.freq, RepeatFreq::Monthly | RepeatFreq::Yearly)
+            {
+                if let Some(lun) = solar_to_lunar(completed_on_date) {
+                    match rule.freq {
+                        RepeatFreq::Yearly => {
+                            let ty = lun.year + iv;
+                            let mdays = lunar_month_days(ty, lun.month, false).unwrap_or(29);
+                            let td = lun.day.min(mdays);
+                            lunar_to_solar(LunarDate {
+                                year: ty,
+                                month: lun.month,
+                                day: td,
+                                is_leap: false,
+                            })
+                            .unwrap_or(completed_on_date + Duration::days(365 * iv as i64))
+                        }
+                        RepeatFreq::Monthly => {
+                            let mut rem = iv as usize;
+                            let mut chosen = None;
+                            let mut started = false;
+                            'outer: for y in lun.year..=LUNAR_MAX_YEAR {
+                                let Some((_, ms)) = year_month_sequence(y) else {
+                                    break;
+                                };
+                                for m in ms {
+                                    if !started {
+                                        if m.month == lun.month && m.is_leap == lun.is_leap {
+                                            started = true;
+                                        }
+                                        continue;
+                                    }
+                                    if m.is_leap {
+                                        continue;
+                                    }
+                                    rem -= 1;
+                                    if rem == 0 {
+                                        chosen = lunar_to_solar(LunarDate {
+                                            year: m.year,
+                                            month: m.month,
+                                            day: lun.day.min(m.days),
+                                            is_leap: false,
+                                        });
+                                        break 'outer;
+                                    }
+                                }
+                            }
+                            chosen.unwrap_or(completed_on_date + Duration::days((iv * 30) as i64))
+                        }
+                        _ => completed_on_date,
+                    }
+                } else {
+                    completed_on_date + Duration::days((iv * 30) as i64)
                 }
-                RepeatFreq::Yearly => {
-                    let y = completed_on_date.year() + iv;
-                    let m = completed_on_date.month();
-                    let d = completed_on_date.day().min(days_in_month(y, m));
-                    NaiveDate::from_ymd_opt(y, m, d).expect("valid clamped date")
+            } else {
+                match rule.freq {
+                    RepeatFreq::Daily => completed_on_date + Duration::days(iv as i64),
+                    RepeatFreq::Weekly => completed_on_date + Duration::days((iv * 7) as i64),
+                    RepeatFreq::Monthly => {
+                        let (y, m) = add_months_ym(completed_on_date.year(), completed_on_date.month(), iv);
+                        let d = completed_on_date.day().min(days_in_month(y, m));
+                        NaiveDate::from_ymd_opt(y, m, d).expect("valid clamped date")
+                    }
+                    RepeatFreq::Yearly => {
+                        let y = completed_on_date.year() + iv;
+                        let m = completed_on_date.month();
+                        let d = completed_on_date.day().min(days_in_month(y, m));
+                        NaiveDate::from_ymd_opt(y, m, d).expect("valid clamped date")
+                    }
                 }
             };
             if let RepeatEnd::Until { until } = &rule.end {
@@ -283,7 +523,8 @@ pub fn next_after_action(
 }
 
 /// Compute the effective current occurrence key given `today` (YYYY-MM-DD).
-/// With `CatchUpPolicy::Latest`, overdue past occurrences automatically become `Missed` without writing to NAS.
+/// With `CatchUpPolicy::Latest`, overdue past occurrences automatically become `Missed` without writing to NAS,
+/// unless that occurrence was explicitly rescheduled via an override to `today` or later.
 pub fn effective_current_key(
     rule: &RepeatRule,
     series: &SeriesState,
@@ -293,7 +534,15 @@ pub fn effective_current_key(
         return Ok(None);
     }
     let mut cur = series.cursor.clone();
-    if rule.catch_up == CatchUpPolicy::Latest && cur.as_str() < today {
+    let effective_cur_date = series
+        .overrides
+        .get(&cur)
+        .and_then(|ov| ov.schedule.as_ref())
+        .and_then(|s| s.due.as_ref())
+        .map(|d| d.date.as_str())
+        .unwrap_or(cur.as_str());
+
+    if rule.catch_up == CatchUpPolicy::Latest && effective_cur_date < today {
         let mut seq = vec![cur.clone()];
         let more = generate_occurrences(rule, 500, Some(&cur))?;
         seq.extend(more);
@@ -364,6 +613,7 @@ pub fn build_occurrence_timeline(
             },
             schedule: schedule_for_occurrence(template, series, &h.key),
             acted_at: Some(h.at.clone()),
+            overridden: series.overrides.contains_key(&h.key),
         });
     }
     for mk in missed_keys(rule, series, today)? {
@@ -372,6 +622,7 @@ pub fn build_occurrence_timeline(
             state: OccurrenceState::Missed,
             schedule: schedule_for_occurrence(template, series, &mk),
             acted_at: None,
+            overridden: series.overrides.contains_key(&mk),
         });
     }
     if let Some(cur) = effective_current_key(rule, series, today)? {
@@ -380,6 +631,7 @@ pub fn build_occurrence_timeline(
             state: OccurrenceState::Pending,
             schedule: schedule_for_occurrence(template, series, &cur),
             acted_at: None,
+            overridden: series.overrides.contains_key(&cur),
         });
         for fk in generate_occurrences(rule, future_count, Some(&cur))? {
             items.push(OccurrenceView {
@@ -387,6 +639,7 @@ pub fn build_occurrence_timeline(
                 state: OccurrenceState::Future,
                 schedule: schedule_for_occurrence(template, series, &fk),
                 acted_at: None,
+                overridden: series.overrides.contains_key(&fk),
             });
         }
     }
@@ -398,7 +651,9 @@ pub fn describe_rule_zh(rule: &RepeatRule) -> String {
     let n = rule.interval.max(1);
     let mut s = match rule.freq {
         RepeatFreq::Daily => {
-            if rule.day_filter.as_deref() == Some("mon_fri") {
+            if rule.day_filter.as_deref() == Some("cn_workday") {
+                "法定工作日（含调休）".to_string()
+            } else if rule.day_filter.as_deref() == Some("mon_fri") {
                 "工作日（周一至周五）".to_string()
             } else if n == 1 {
                 "每天".to_string()
@@ -428,58 +683,121 @@ pub fn describe_rule_zh(rule: &RepeatRule) -> String {
             }
         }
         RepeatFreq::Monthly => {
-            let prefix = if n == 1 {
-                "每月".to_string()
-            } else {
-                format!("每 {n} 个月")
-            };
-            if let (Some(pos), Some(wds)) = (rule.by_set_pos, &rule.by_weekday) {
-                let wd = wds
-                    .first()
-                    .and_then(|w| parse_weekday(w))
-                    .map(weekday_zh)
-                    .unwrap_or("一");
-                let pos_s = if pos == -1 {
-                    "最后一".to_string()
+            if rule.calendar == CalendarKind::Lunar {
+                let prefix = if n == 1 {
+                    "每农历月".to_string()
                 } else {
-                    pos.to_string()
+                    format!("每 {n} 个农历月")
                 };
-                format!("{prefix} 第{pos_s}个周{wd}")
-            } else {
-                let day = rule
-                    .by_month_day
-                    .as_ref()
-                    .and_then(|v| v.first().copied())
-                    .unwrap_or_else(|| parse_date(&rule.dtstart).map(|d| d.day() as i8).unwrap_or(1));
-                if day == -1 {
-                    format!("{prefix} 最后一天")
+                let is_last = rule.by_month_day.as_ref().and_then(|v| v.first().copied()) == Some(-1);
+                let day_s = if is_last {
+                    "最后一天".to_string()
                 } else {
-                    format!("{prefix} {day} 日")
+                    let day = rule
+                        .lunar
+                        .as_ref()
+                        .map(|l| l.day)
+                        .or_else(|| {
+                            parse_date(&rule.dtstart)
+                                .ok()
+                                .and_then(solar_to_lunar)
+                                .map(|l| l.day)
+                        })
+                        .unwrap_or(1);
+                    lunar_day_zh(day)
+                };
+                let leap_hint = match rule.lunar.as_ref().map(|l| l.leap.as_str()) {
+                    Some("both") => "（含闰月）",
+                    _ => "",
+                };
+                format!("{prefix} {day_s}{leap_hint}")
+            } else {
+                let prefix = if n == 1 {
+                    "每月".to_string()
+                } else {
+                    format!("每 {n} 个月")
+                };
+                if let (Some(pos), Some(wds)) = (rule.by_set_pos, &rule.by_weekday) {
+                    let wd = wds
+                        .first()
+                        .and_then(|w| parse_weekday(w))
+                        .map(weekday_zh)
+                        .unwrap_or("一");
+                    let pos_s = if pos == -1 {
+                        "最后一".to_string()
+                    } else {
+                        pos.to_string()
+                    };
+                    format!("{prefix} 第{pos_s}个周{wd}")
+                } else {
+                    let day = rule
+                        .by_month_day
+                        .as_ref()
+                        .and_then(|v| v.first().copied())
+                        .unwrap_or_else(|| parse_date(&rule.dtstart).map(|d| d.day() as i8).unwrap_or(1));
+                    if day == -1 {
+                        format!("{prefix} 最后一天")
+                    } else {
+                        format!("{prefix} {day} 日")
+                    }
                 }
             }
         }
         RepeatFreq::Yearly => {
-            let prefix = if n == 1 {
-                "每年".to_string()
+            if rule.calendar == CalendarKind::Lunar {
+                let prefix = if n == 1 {
+                    "每年".to_string()
+                } else {
+                    format!("每 {n} 年")
+                };
+                let dt_lun = parse_date(&rule.dtstart).ok().and_then(solar_to_lunar);
+                let m = rule
+                    .lunar
+                    .as_ref()
+                    .map(|l| l.month)
+                    .or_else(|| dt_lun.map(|l| l.month))
+                    .unwrap_or(1);
+                let is_last = rule.by_month_day.as_ref().and_then(|v| v.first().copied()) == Some(-1);
+                let day_s = if is_last {
+                    "最后一天".to_string()
+                } else {
+                    let d = rule
+                        .lunar
+                        .as_ref()
+                        .map(|l| l.day)
+                        .or_else(|| dt_lun.map(|l| l.day))
+                        .unwrap_or(1);
+                    lunar_day_zh(d)
+                };
+                let leap_hint = match rule.lunar.as_ref().map(|l| l.leap.as_str()) {
+                    Some("both") => "（含闰月）",
+                    Some("only_leap") => "（仅闰月）",
+                    _ => "",
+                };
+                format!("{prefix} 农历{}{}{}", lunar_month_zh(m, false), day_s, leap_hint)
             } else {
-                format!("每 {n} 年")
-            };
-            let dt = parse_date(&rule.dtstart).ok();
-            let m = rule
-                .by_month
-                .as_ref()
-                .and_then(|v| v.first().copied())
-                .map(|x| x as u32)
-                .or_else(|| dt.map(|d| d.month()))
-                .unwrap_or(1);
-            let day = rule
-                .by_month_day
-                .as_ref()
-                .and_then(|v| v.first().copied())
-                .map(|x| x as u32)
-                .or_else(|| dt.map(|d| d.day()))
-                .unwrap_or(1);
-            format!("{prefix} {m}月{day}日")
+                let prefix = if n == 1 {
+                    "每年".to_string()
+                } else {
+                    format!("每 {n} 年")
+                };
+                let dt = parse_date(&rule.dtstart).ok();
+                let m = rule
+                    .by_month
+                    .as_ref()
+                    .and_then(|v| v.first().copied())
+                    .map(|x| x as u32)
+                    .or_else(|| dt.map(|d| d.month()))
+                    .unwrap_or(1);
+                let day = rule
+                    .by_month_day
+                    .as_ref()
+                    .and_then(|v| v.first().copied())
+                    .map(|x| x as u32)
+                    .or_else(|| dt.map(|d| d.day()))
+                    .unwrap_or(1);
+                format!("{prefix} {m}月{day}日")
+            }
         }
     };
 
@@ -605,5 +923,89 @@ mod tests {
         r.catch_up = CatchUpPolicy::Each;
         assert_eq!(effective_current_key(&r, &s, "2026-11-23").unwrap().as_deref(), Some("2026-11-20"));
         assert!(missed_keys(&r, &s, "2026-11-23").unwrap().is_empty());
+    }
+
+    #[test]
+    fn cn_workday_skips_national_day_and_includes_makeup_weekend() {
+        let mut r = base_rule(RepeatFreq::Daily, "2026-09-30");
+        r.day_filter = Some("cn_workday".into());
+        assert_eq!(describe_rule_zh(&r), "法定工作日（含调休）");
+        // 2026-10-01..10-07 are National Day holiday; 2026-10-10 (Sat) is adjusted workday.
+        assert_eq!(
+            generate_occurrences(&r, 5, None).unwrap(),
+            vec!["2026-09-30", "2026-10-08", "2026-10-09", "2026-10-10", "2026-10-12"]
+        );
+    }
+
+    #[test]
+    fn lunar_yearly_birthday_and_monthly_leap_policies() {
+        // Yearly Mid-Autumn Festival: 农历八月十五
+        let mut mid_autumn = base_rule(RepeatFreq::Yearly, "2026-09-25");
+        mid_autumn.calendar = CalendarKind::Lunar;
+        mid_autumn.lunar = Some(crate::models::LunarSpec {
+            month: 8,
+            day: 15,
+            leap: "follow".into(),
+        });
+        assert_eq!(describe_rule_zh(&mid_autumn), "每年 农历八月十五");
+        assert_eq!(
+            generate_occurrences(&mid_autumn, 3, None).unwrap(),
+            vec!["2026-09-25", "2027-09-15", "2028-10-03"]
+        );
+
+        // Monthly lunar 1st across 2025 leap June (2025-07-25 is 闰六月初一):
+        // follow skips leap June; both includes leap June.
+        let mut m_follow = base_rule(RepeatFreq::Monthly, "2025-06-25"); // 2025-06-25 = 六月初一
+        m_follow.calendar = CalendarKind::Lunar;
+        m_follow.lunar = Some(crate::models::LunarSpec {
+            month: 6,
+            day: 1,
+            leap: "follow".into(),
+        });
+        assert_eq!(describe_rule_zh(&m_follow), "每农历月 初一");
+        assert_eq!(
+            generate_occurrences(&m_follow, 3, None).unwrap(),
+            vec!["2025-06-25", "2025-08-23", "2025-09-22"]
+        );
+
+        m_follow.lunar.as_mut().unwrap().leap = "both".into();
+        assert_eq!(describe_rule_zh(&m_follow), "每农历月 初一（含闰月）");
+        assert_eq!(
+            generate_occurrences(&m_follow, 3, None).unwrap(),
+            vec!["2025-06-25", "2025-07-25", "2025-08-23"]
+        );
+    }
+
+    #[test]
+    fn postponed_override_keeps_cursor_until_override_date_passes() {
+        use crate::models::OccurrenceOverride;
+        let r = base_rule(RepeatFreq::Daily, "2026-11-26");
+        let mut overrides = BTreeMap::new();
+        overrides.insert(
+            "2026-11-26".to_string(),
+            OccurrenceOverride {
+                title: None,
+                schedule: Some(Schedule {
+                    all_day: true,
+                    due: Some(DateTimePoint {
+                        date: "2026-11-29".into(),
+                        time: None,
+                    }),
+                    timezone: "Asia/Shanghai".into(),
+                }),
+                priority: None,
+            },
+        );
+        let s = SeriesState {
+            cursor: "2026-11-26".into(),
+            overrides,
+            history: vec![],
+            history_summary: None,
+            ended_at: None,
+        };
+        // On 2026-11-28, postponed date 2026-11-29 is still in the future -> keep cursor 2026-11-26
+        assert_eq!(effective_current_key(&r, &s, "2026-11-28").unwrap().as_deref(), Some("2026-11-26"));
+        // Once past 2026-11-29 (say 2026-11-30), catch-up advances normally
+        assert_eq!(effective_current_key(&r, &s, "2026-11-30").unwrap().as_deref(), Some("2026-11-30"));
     }
 }

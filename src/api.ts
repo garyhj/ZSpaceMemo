@@ -49,14 +49,20 @@ export const api = {
     id: number,
     occurrenceKey: string,
     newDueDate: string,
-    newDueTime?: string | null
+    newDueTime?: string | null,
+    newAllDay?: boolean | null,
+    newTitle?: string | null
   ) =>
     invoke<Task>("override_occurrence", {
       id,
       occurrenceKey,
       newDueDate,
       newDueTime: newDueTime ?? null,
+      newAllDay: newAllDay ?? null,
+      newTitle: newTitle ?? null,
     }),
+  clearOccurrenceOverride: (id: number, occurrenceKey: string) =>
+    invoke<Task>("clear_occurrence_override", { id, occurrenceKey }),
   completeTask: (id: number, occurrenceKey?: string | null) =>
     invoke<Task>("complete_task", { id, occurrenceKey: occurrenceKey ?? null }),
   skipOccurrence: (id: number, occurrenceKey?: string | null) =>

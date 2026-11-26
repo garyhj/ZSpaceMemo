@@ -389,6 +389,8 @@ pub struct OccurrenceView {
     pub schedule: Schedule,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acted_at: Option<String>,
+    #[serde(default)]
+    pub overridden: bool,
 }
 
 /// Flattened calendar cell item (either a single task or one expanded occurrence of a repeating series).

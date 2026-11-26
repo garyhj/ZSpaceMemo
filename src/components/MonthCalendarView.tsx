@@ -621,6 +621,13 @@ export function MonthCalendarView({
                 {quickCard.item.list}
               </span>
             )}
+            {quickCard.item.is_repeating &&
+              quickCard.item.occurrence_key &&
+              quickCard.item.date !== quickCard.item.occurrence_key && (
+                <span className="rounded bg-amber-100/80 px-1.5 py-0.5 text-[10px] text-amber-700">
+                  本次已改期
+                </span>
+              )}
 
             <button
               type="button"

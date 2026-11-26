@@ -1,12 +1,13 @@
-# ZSpace Kit（极空工具箱）产品与技术设计（v0.5）
+# ZSpace Kit（极空工具箱）产品与技术设计（v0.6）
 
-> 状态：**v0.5.0 已实现并发布**（Windows / macOS 双端）。
+> 状态：**v0.6.0 已实现并发布**（Windows / macOS 双端）。
 > 变更记录：
 > - v0.1：初始设计（FastAPI 服务端 + `zspace_skill` + 多端）。
 > - v0.2：采用官方 `zspace-nas-agent-toolkit`（`zspace-cli` v0.3.11）OAuth2 授权与 `file notes` 契约；简化为**纯桌面客户端架构（Tauri 2 + 内置 `zspace-cli`）**，开机自启常驻托盘，零服务端部署；时间模型简化为**截止日期 + 截止时间 + 全天**。
 > - v0.3：定位由单一 Todo 扩展为**极空工具箱（ZSpace Kit）**：加入模块化主工作台（ToolRail + `TOOLBOX_MODULES`）、月视图（农历/节假日/拖拽/右键快建）、云便签与桌面便利贴（`ZSpace Sticky` / `ZSK1`）、文件快传箱、NAS 状态看板与告警桥接、Docker 容器看板；并用 **OS 系统原生通知**全面替代应用内通知中心。
 > - v0.4：桌面体验打磨、Z4 遥测适配、快传箱锁定与真应用内更新：Windows Toast AUMID 自动注册、`detail.list` 遥测解析与日志/JSON 复制、窗口几何与贴边记忆持久化、托盘动态计数与直达、2 MiB 脱敏滚动日志、文件快传箱严格锁定 `我的文件/downloads`，以及流式下载 + SHA-256 校验 + Windows `ShellExecuteW` `/P /UPDATE /R` 应用内更新。
 > - v0.5：LAN 内网直连模式（`--mode` / `--host` / `--clear-host`）、`zspace-cli doctor` 连接诊断、文件快传箱文件夹递归上传（实时进度 + 现有目录复用）、统一上传/下载队列与重试、批量下载与分页加载。
+> - v0.6：中国法定工作日/调休重复（`cn_workday`）、离线 1901–2099 中国农历重复引擎（`calendar: "lunar"` + 闰月策略）、单次发生实例改期/恢复 UI（新增 `clear_occurrence_override`，共 65 个 IPC 命令）。
 
 本项目的核心技术支柱有三项（外加 v0.3 引入的可扩展工具箱集成层）：
 
@@ -61,7 +62,7 @@ flowchart LR
   NAS[("极空间 NAS<br/>记事本 · 文件 · 系统 · Docker")]
 
   RAIL --> MODS
-  MODS & FLOAT & STICKY_W <-->|64 个 Tauri IPC 命令 / Events| Core
+  MODS & FLOAT & STICKY_W <-->|65 个 Tauri IPC 命令 / Events| Core
   TS --> RE
   TS & SS --> NP --> CLI -->|HTTPS OAuth / LAN| NAS
   TB --> NP
@@ -118,7 +119,7 @@ flowchart LR
 
 ### 3.1 RepeatRule
 
-支持 `daily | weekly | monthly | yearly` 频率、自定义 `interval`（如每 6 个月 = 半年）、`by_weekday`、`by_set_pos`（如每月第 1 个/最后一个周几）、`by_month_day`（含 `-1` 月末）、`by_month`、`mon_fri` 工作日过滤、`on_invalid_date`（`clamp | skip`）、`catch_up`（`latest | each`）与终止条件（`never | until | count`）。编辑器内置实时预览接下来 5 次发生日期与中文规则描述（`describe_rule_zh`）。
+支持 `daily | weekly | monthly | yearly` 频率、自定义 `interval`（如每 6 个月 = 半年）、`by_weekday`、`by_set_pos`（如每月第 1 个/最后一个周几）、`by_month_day`（含 `-1` 月末）、`by_month`、`cn_workday`（内置 `2001–2027` 国务院法定节假日与周末调休表，`lunar_tables.rs` + `lunar.rs`，2027 后回退 `mon_fri`）与 `mon_fri` 工作日过滤、公历（`gregorian`）/ 1901–2099 离线中国农历（`lunar`，支持每月/每年农历、闰月策略 `follow | both | only_leap` 与农历月末 `-1`）、`on_invalid_date`（`clamp | skip`）、`catch_up`（`latest | each`）、单次实例改期/恢复（`override_occurrence` / `clear_occurrence_override`）与终止条件（`never | until | count`）。编辑器内置实时预览接下来 5 次公历映射日期与中文规则描述（`describe_rule_zh` / `describeRepeatZh`）。
 
 ### 3.2 本地调度与系统原生通知（`scheduler.rs`）
 
@@ -165,5 +166,6 @@ flowchart LR
   M1 --> M2["M2 / M3 桌面待办完成 ✅<br/>三栏主窗 · 悬浮窗 · 月视图<br/>双端 CI 自动发布"]
   M2 --> V030["v0.3.0 ~ v0.4.3 体验成型 ✅<br/>ZSK1 便签 · Z4 遥测 · 几何记忆<br/>Windows 通知与应用内更新"]
   V030 --> V050["v0.5.0 连接与传输升级 ✅<br/>LAN 内网直连 · CLI Doctor<br/>文件夹递归上传 · 批量下载队列"]
-  V050 --> NEXT["后续演进（v0.6.0+）<br/>法定调休工作日 · 农历重复<br/>单次实例编辑 · NAS 下载器看板"]
+  V050 --> V060["v0.6.0 深度重复与农历 ✅<br/>法定调休工作日 · 1901-2099 农历<br/>单次实例可视化改期与恢复"]
+  V060 --> NEXT["后续演进（v0.7.0+）<br/>NAS 下载器看板 · 待办附件<br/>更多工具箱插件模块"]
 ```

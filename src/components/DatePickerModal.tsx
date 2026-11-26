@@ -8,14 +8,18 @@ import { TimePicker } from "./TimePicker";
 
 interface Props {
   schedule: Schedule;
+  titleText?: string;
+  singleOccurrence?: boolean;
   onSave: (next: Schedule) => void;
-  onSaveAndOpenReminder: (next: Schedule) => void;
-  onSaveAndOpenRepeat: (next: Schedule) => void;
+  onSaveAndOpenReminder?: (next: Schedule) => void;
+  onSaveAndOpenRepeat?: (next: Schedule) => void;
   onClose: () => void;
 }
 
 export function DatePickerModal({
   schedule,
+  titleText,
+  singleOccurrence = false,
   onSave,
   onSaveAndOpenReminder,
   onSaveAndOpenRepeat,
@@ -66,13 +70,20 @@ export function DatePickerModal({
     };
   });
 
-  const quicks: [string | null, string][] = [
-    [today, "今天"],
-    [addDays(today, 1), "明天"],
-    [addDays(today, 2), "后天"],
-    [nextMonday(), "下周一"],
-    [null, "清除"],
-  ];
+  const quicks: [string | null, string][] = singleOccurrence
+    ? [
+        [today, "今天"],
+        [addDays(today, 1), "明天"],
+        [addDays(today, 2), "后天"],
+        [nextMonday(), "下周一"],
+      ]
+    : [
+        [today, "今天"],
+        [addDays(today, 1), "明天"],
+        [addDays(today, 2), "后天"],
+        [nextMonday(), "下周一"],
+        [null, "清除"],
+      ];
 
   return (
     <div
@@ -83,6 +94,11 @@ export function DatePickerModal({
         className="w-full max-w-[360px] rounded-2xl border border-slate-200 bg-white p-4 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
+        {titleText && (
+          <div className="mb-2.5 text-xs font-medium text-blue-700 bg-blue-50/80 rounded-lg px-2.5 py-1.5">
+            {titleText}
+          </div>
+        )}
         <div className="mb-3 flex flex-wrap gap-1.5">
           {quicks.map(([d, label]) => (
             <button
@@ -208,22 +224,24 @@ export function DatePickerModal({
             )}
           </div>
 
-          <div className="flex justify-between pt-1 text-xs">
-            <button
-              type="button"
-              onClick={() => onSaveAndOpenReminder(buildSchedule())}
-              className="text-blue-600 hover:underline"
-            >
-              ⏰ 设置提醒 ›
-            </button>
-            <button
-              type="button"
-              onClick={() => onSaveAndOpenRepeat(buildSchedule())}
-              className="text-blue-600 hover:underline"
-            >
-              🔁 设置重复 ›
-            </button>
-          </div>
+          {!singleOccurrence && (
+            <div className="flex justify-between pt-1 text-xs">
+              <button
+                type="button"
+                onClick={() => onSaveAndOpenReminder?.(buildSchedule())}
+                className="text-blue-600 hover:underline"
+              >
+                ⏰ 设置提醒 ›
+              </button>
+              <button
+                type="button"
+                onClick={() => onSaveAndOpenRepeat?.(buildSchedule())}
+                className="text-blue-600 hover:underline"
+              >
+                🔁 设置重复 ›
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="mt-4 flex justify-end gap-2">
@@ -236,8 +254,9 @@ export function DatePickerModal({
           </button>
           <button
             type="button"
+            disabled={singleOccurrence && !dueDate}
             onClick={() => onSave(buildSchedule())}
-            className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+            className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           >
             确定
           </button>

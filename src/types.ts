@@ -42,6 +42,12 @@ export type RepeatEnd =
   | { type: "until"; until: string }
   | { type: "count"; count: number };
 
+export interface LunarSpec {
+  month: number;
+  day: number;
+  leap?: string;
+}
+
 export interface RepeatRule {
   freq: RepeatFreq;
   interval: number;
@@ -50,6 +56,7 @@ export interface RepeatRule {
   by_set_pos?: number | null;
   by_month_day?: number[] | null;
   by_month?: number[] | null;
+  lunar?: LunarSpec | null;
   day_filter?: string | null;
   on_invalid_date?: "clamp" | "skip";
   basis?: "schedule" | "completion";
@@ -99,6 +106,7 @@ export interface OccurrenceView {
   state: "completed" | "skipped" | "missed" | "pending" | "future";
   schedule: Schedule;
   acted_at?: string | null;
+  overridden?: boolean;
 }
 
 export interface CalendarTaskItem {

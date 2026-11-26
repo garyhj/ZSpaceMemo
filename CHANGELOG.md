@@ -2,6 +2,17 @@
 
 All notable changes to **ZSpace Kit（极空工具箱）** (repository `ZSpaceMemo`) are documented in this file.
 
+## [0.6.0] - 2026-11-26
+
+### Added
+- **中国法定工作日与调休重复（`cn_workday`）**：在每日重复规则与 Rust 调度核心中内置 `2001–2027` 国务院法定节假日及调休补班表（`crates/core/src/lunar_tables.rs`、`crates/core/src/lunar.rs`），支持自动跳过法定假日、识别周末调休上班日，并在 2027 年之后自动回退至周一至周五。
+- **离线中国农历重复（1901–2099）**：`RepeatRule` 新增 `calendar: "lunar"` 与 `lunar` 配置，支持「每月农历」「每年农历」及闰月策略（顺延至平月 `follow` / 闰月也触发 `both` / 仅闰月 `only_leap`）与无效日顺延或跳过；在重复编辑器 `RepeatModal` 中提供公历/农历切换、闰月策略选择与未来 5 次公历映射日期实时预览。
+- **单次发生实例改期与恢复 UI**：`TaskDetail` 重复时间轴与 `MonthCalendarView` 快速卡片支持直接查看「已改期」标记、单独改期单次发生实例（含日期/时间修改）并一键恢复原系列排期（新增 `clear_occurrence_override` IPC 命令，总计 65 个命令）。
+
+### Fixed & Improved
+- **逾期收拢策略与时区修复**：修复单次改期延后至今天或未来时 `CatchUpPolicy::Latest` 错误推进系列游标的问题；`get_occurrence_timeline` 改用任务配置时区计算当天日期基准。
+- **前端与文档同步**：更新 `RepeatRule`/`OccurrenceView` 类型定义、`describeRepeatZh` 中文描述、应用内版本基线与项目文档至 `v0.6.0`。
+
 ## [0.5.0] - 2026-11-26
 
 ### Added

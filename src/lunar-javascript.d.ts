@@ -1,5 +1,7 @@
 declare module "lunar-javascript" {
   export class Lunar {
+    getYear(): number;
+    getMonth(): number;
     getDay(): number;
     getDayInChinese(): string;
     getMonthInChinese(): string;
