@@ -62,7 +62,8 @@ impl<P: NotebookProvider> TaskService<P> {
     }
 
     pub fn save_settings(&self, settings: &AppSettings) -> AppResult<()> {
-        self.storage.save_settings(settings)
+        let normalized = settings.normalized_and_validated()?;
+        self.storage.save_settings(&normalized)
     }
 
     /// Resolve or initialize the dedicated Todo category (never duplicates if renamed by user).

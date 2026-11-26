@@ -11,6 +11,10 @@ pub struct AuthStatus {
     pub nas_id: Option<String>,
     pub expires_at: Option<i64>,
     pub profile: String,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub host: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

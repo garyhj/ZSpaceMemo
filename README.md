@@ -26,8 +26,8 @@
   - 同步到极空间原生独立记事本的 `ZSpace Sticky` 专用分类（正文采用 `<p>ZSK1:{...}</p>` 结构），官方客户端同样可见。
   - 支持 6 种便签色卡、置顶、800ms 防抖自动保存，并可将任意便签弹出为**独立桌面置顶便利贴窗口**。
 - **文件快传箱（`Alt + 4`）**
-  - 目录**严格锁定至极空间「个人空间 / 我的文件/downloads」**（自动探测或初始化创建，不切换其他目录），支持直接从桌面/资源管理器**拖拽本地文件**或批量选择文件快速投递。
-  - 支持关键词搜索 `downloads` 目录内文件并一键下载保存到本地。
+  - 目录**严格锁定至极空间「个人空间 / 我的文件/downloads」**（自动探测或初始化创建，不切换其他目录），支持直接从桌面/资源管理器**拖拽本地文件或整个文件夹**（自动按相对路径创建子目录并递归上传）或批量选择上传。
+  - 支持统一上传/下载队列（实时进度、失败重试）、多选批量下载到本地目录、列表分页加载以及关键词搜索 `downloads` 目录内文件。
 - **NAS 状态看板与消息（`Alt + 5`）**
   - 实时展示 NAS 硬件概览、CPU 负载、内存占用、风扇转速/核心温度、磁盘温度与存储池容量使用情况（兼容 Z4 等机型 `detail.list` 与 `polling` 结构）；原始 JSON 支持选中文本与一键复制。
   - 对接极空间 `system events` 消息通知流（默认展示「通知」），支持筛选、单条已读、全部已读；**自动将新产生的 NAS 告警桥接弹出为 Windows / macOS 系统原生通知**（SQLite 去重，首次启动静默建档不刷屏）。
@@ -37,10 +37,10 @@
 
 ### 2. 桌面原生体验
 
-- **官方 OAuth2 授权，零服务端部署**：内置官方 `zspace-nas-agent-toolkit`（`zspace-cli` v0.3.11），应用内一键发起浏览器授权，全程不接触、不保存 NAS 账号密码，access token 自动刷新。
+- **官方 OAuth2 授权与 LAN 内网直连，零服务端部署**：内置官方 `zspace-nas-agent-toolkit`（`zspace-cli` v0.3.11），应用内一键发起浏览器授权，全程不接触、不保存 NAS 账号密码；支持切换**自动 / 云代理 / LAN 内网直连（`--mode lan --host`）**并内置 `doctor` 连接诊断与超时保护。
 - **待办悬浮窄窗**：全局快捷键 `Ctrl+Shift+M` / `Cmd+Shift+M` 随时呼出并聚焦快速输入框（支持自然语言如 `明天 18:00 续费 eSIM !高 #个人`）；展示全部待办并按「已逾期 / 今天 / 本周 / 以后 / 无日期」分组；拖到屏幕边缘自动收起为书签后，**鼠标指向即贴边展开、移开自动折叠，按住顶栏拖离边缘或点「移开固定」即可常驻保留**，且窗口位置与停靠状态跨重启持久保存。
 - **系统原生通知与补提醒**：依托本地后台调度器，按时触发 Windows / macOS 系统通知（Windows 自动注册应用 AUMID 保障通知直达；支持多提醒、全天固定时刻、提示音开关）；关机或休眠错过的任务提醒会在下次启动后自动补发通知。
-- **桌面端细节打磨与真·应用内更新**：支持关闭隐藏到托盘（托盘右键支持「立即同步」与工作区直达，Tooltip 动态显示待办计数）、开机自启、单实例保护、脱敏滚动诊断日志、主窗/便利贴位置尺寸记忆，以及**应用内一键更新（下载进度条 + SHA-256 校验 + 自动安装重启）**。
+- **桌面端细节打磨与真·应用内更新**：支持关闭隐藏到托盘（托盘右键支持「立即同步」与工作区直达，Tooltip 动态显示待办计数）、开机自启、单实例保护、脱敏滚动诊断日志、主窗/便利贴位置尺寸记忆，以及**应用内一键更新（下载进度条 + SHA-256 校验 + Windows/macOS 自动安装重启）**。
 
 ---
 
@@ -56,7 +56,7 @@ flowchart LR
   end
   NAS[("极空间 NAS<br/>原生记事本(location=2) · 文件 · 系统 · Docker")]
 
-  UI <-->|61 个 Tauri IPC 命令 / Events| CORE
+  UI <-->|64 个 Tauri IPC 命令 / Events| CORE
   CORE --> DB
   CORE -->|OfficialCliNotebookProvider| CLI -->|HTTPS OAuth / LAN| NAS
 ```
@@ -143,7 +143,7 @@ ZSpaceMemo/
 │   │   ├── main.rs             # 入口
 │   │   ├── logging.rs          # 2 MiB 脱敏滚动文件日志（Token/密码自动擦除）
 │   │   ├── updater.rs          # 应用内更新：流式下载、SHA-256 校验、自动覆盖安装与重启
-│   │   ├── lib.rs              # 61 个 IPC 命令、托盘、快捷键、窗口几何记忆、贴边展开、AUMID
+│   │   ├── lib.rs              # 64 个 IPC 命令、托盘、快捷键、窗口几何记忆、贴边展开、AUMID
 │   │   └── scheduler.rs        # 后台同步、15 秒原生提醒调度与 NAS 告警桥接循环
 │   ├── capabilities/           # Tauri 2 权限声明（notification / dialog / sticky-* 等）
 │   ├── icons/                  # ZSpace Kit 跨平台应用与托盘图标（.ico / .icns / PNG）
@@ -152,7 +152,7 @@ ZSpaceMemo/
 ├── scripts/
 │   └── fetch-sidecar.sh        # 本地开发一键下载并校验官方 zspace-cli 二进制
 ├── docs/                       # 设计、兼容验证、原型与需求归档
-│   ├── DESIGN.md               # 产品与技术设计（v0.4）
+│   ├── DESIGN.md               # 产品与技术设计（v0.5）
 │   ├── COMPATIBILITY.md        # M0 真机兼容性与 CLI 实测适配记录
 │   ├── prototype/index.html    # 早期待办交互原型（单文件 HTML）
 │   └── requirements/           # 原始调研与需求文档归档
@@ -203,15 +203,15 @@ ZSPACE_CLI_BIN=/path/to/zspace-cli ZSPACE_CLI_HOME=/path/to/cli-home \
 - [x] **M0**：官方 `zspace-cli` OAuth2 与真实极空间 NAS / Windows 客户端兼容性验证（[COMPATIBILITY.md](docs/COMPATIBILITY.md)）
 - [x] **M1**：Rust 核心引擎（Codec、重复引擎、提醒计算、SQLite 缓存、`OfficialCliNotebookProvider`）与 Tauri 2 骨架
 - [x] **M2 / M3**：完整三栏主界面、悬浮待办窗（全部分组与贴边隐藏）、月视图（农历/节假日/拖拽改期）、系统原生通知提醒、Windows/macOS 双端自动发布
-- [x] **v0.3.0**：品牌升级为 **ZSpace Kit（极空工具箱）**、工具箱壳架构、云便签与桌面悬浮便利贴、`OS 原生提醒` 全面替换应用内通知弹窗
-- [x] **v0.3.1**：文件快传箱、NAS 状态看板与告警通知桥接、Docker 容器看板、单实例保护、便签防抖自动保存、右键菜单与任务栏图标修复
+- [x] **v0.3.0 ~ v0.4.3**：工具箱成型、云便签、`Z4` 状态解析与可复制日志、窗口几何与贴边记忆、脱敏滚动日志、Windows AUMID 通知与流式校验应用内更新
+- [x] **v0.5.0**：极空间 LAN 内网直连与 `doctor` 连接诊断、文件快传箱文件夹递归上传、统一上传/下载队列与重试、批量下载与分页加载
 - [ ] **后续扩展**：重复引擎支持中国法定工作日/调休与农历重复、单次实例编辑、待办附件（复用官方 `file notes` 接口）、更多工具箱插件模块
 
 ---
 
 ## 文档导航
 
-- [产品与技术设计（v0.3）](docs/DESIGN.md)
+- [产品与技术设计（v0.5）](docs/DESIGN.md)
 - [版本变更记录（CHANGELOG）](CHANGELOG.md)
 - [M0 真机兼容性验证与 CLI 适配记录](docs/COMPATIBILITY.md)
 - [早期交互原型（单文件 HTML）](docs/prototype/index.html)

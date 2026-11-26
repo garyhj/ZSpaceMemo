@@ -1,11 +1,12 @@
-# ZSpace Kit（极空工具箱）产品与技术设计（v0.4）
+# ZSpace Kit（极空工具箱）产品与技术设计（v0.5）
 
-> 状态：**v0.4.3 已实现并发布**（Windows / macOS 双端）。
+> 状态：**v0.5.0 已实现并发布**（Windows / macOS 双端）。
 > 变更记录：
 > - v0.1：初始设计（FastAPI 服务端 + `zspace_skill` + 多端）。
 > - v0.2：采用官方 `zspace-nas-agent-toolkit`（`zspace-cli` v0.3.11）OAuth2 授权与 `file notes` 契约；简化为**纯桌面客户端架构（Tauri 2 + 内置 `zspace-cli`）**，开机自启常驻托盘，零服务端部署；时间模型简化为**截止日期 + 截止时间 + 全天**。
 > - v0.3：定位由单一 Todo 扩展为**极空工具箱（ZSpace Kit）**：加入模块化主工作台（ToolRail + `TOOLBOX_MODULES`）、月视图（农历/节假日/拖拽/右键快建）、云便签与桌面便利贴（`ZSpace Sticky` / `ZSK1`）、文件快传箱、NAS 状态看板与告警桥接、Docker 容器看板；并用 **OS 系统原生通知**全面替代应用内通知中心。
-> - v0.4：桌面体验打磨、Z4 遥测适配、快传箱锁定与真应用内更新：Windows Toast AUMID 自动注册、`detail.list` 遥测解析与日志/JSON 复制、窗口几何与贴边记忆持久化、托盘动态计数与直达、2 MiB 脱敏滚动日志、文件快传箱严格锁定 `我的文件/downloads`，以及流式下载 + SHA-256 校验 + 自动覆写重启的应用内更新。
+> - v0.4：桌面体验打磨、Z4 遥测适配、快传箱锁定与真应用内更新：Windows Toast AUMID 自动注册、`detail.list` 遥测解析与日志/JSON 复制、窗口几何与贴边记忆持久化、托盘动态计数与直达、2 MiB 脱敏滚动日志、文件快传箱严格锁定 `我的文件/downloads`，以及流式下载 + SHA-256 校验 + Windows `ShellExecuteW` `/P /UPDATE /R` 应用内更新。
+> - v0.5：LAN 内网直连模式（`--mode` / `--host` / `--clear-host`）、`zspace-cli doctor` 连接诊断、文件快传箱文件夹递归上传（实时进度 + 现有目录复用）、统一上传/下载队列与重试、批量下载与分页加载。
 
 本项目的核心技术支柱有三项（外加 v0.3 引入的可扩展工具箱集成层）：
 
@@ -60,7 +61,7 @@ flowchart LR
   NAS[("极空间 NAS<br/>记事本 · 文件 · 系统 · Docker")]
 
   RAIL --> MODS
-  MODS & FLOAT & STICKY_W <-->|61 个 Tauri IPC 命令 / Events| Core
+  MODS & FLOAT & STICKY_W <-->|64 个 Tauri IPC 命令 / Events| Core
   TS --> RE
   TS & SS --> NP --> CLI -->|HTTPS OAuth / LAN| NAS
   TB --> NP
@@ -141,8 +142,9 @@ flowchart LR
 - 采用经典贴边自动隐藏交互：拖靠屏幕左/右/上边缘 20px 内自动收起为窄书签条；**鼠标指向即贴边滑出展开，离开窗体由 Rust 全局鼠标坐标监测自动折叠回书签；若需固定常驻，直接拖离边缘或点顶栏「移开固定」即可**。
 
 ### 4.3 文件快传箱（`FileDropView`）
-- 底层调用 `zspace-cli` 的 `file space` / `file list` / `file mkdir` / `file upload` / `file download` / `search files`。
-- **严格锁定至「个人空间 / 我的文件/downloads」**：自动扫描个人空间定位（或按需创建）`/<pool>/my/data/downloads`，不提供目录选择器与子目录浏览跳转，所有拖入拖拽（`onDragDropEvent`）与选择上传均直达 `我的文件/downloads`，并可在该目录内关键词搜索与本地下载。
+- 底层调用 `zspace-cli` 的 `file space` / `file list` / `file mkdir` / `file upload` / `file download` / `search files`，上传与下载均保障至少 `300s` 超时防断。
+- **严格锁定至「个人空间 / 我的文件/downloads」**：自动扫描个人空间定位（或按需创建）`/<pool>/my/data/downloads`，不提供目录选择器与子目录浏览跳转。
+- 支持**拖拽或选择文件与文件夹**（自动按相对路径创建并智能复用现有子目录、过滤系统垃圾文件、实时推送单文件进度事件 `files:transfer-progress`）、统一上传/下载队列与失败一键重试、多选批量下载到本地目录以及列表分页加载。
 
 ### 4.4 NAS 状态看板与消息（`NasStatusView`）
 - 并发聚合 `system info`（含 `include_polling: true` 实时指标，深度穿透 `detail.list[0]` / `polling` / `polling2` 等结构并兼容 Z4 `cpu.used` 比例与 `-1` 传感器占位数）、`storage info`（存储池 `pool_list` 与容量）与 `system disk`（磁盘健康与挂载状态）。
@@ -161,7 +163,7 @@ flowchart LR
 flowchart LR
   M0["M0 真机兼容性验证 ✅<br/>官方 OAuth · file notes<br/>ZSM1 格式定稿"] --> M1["M1 核心引擎 + CLI 适配 ✅<br/>Rust Codec · 重复引擎 · 提醒计算<br/>OfficialCli + SQLite"]
   M1 --> M2["M2 / M3 桌面待办完成 ✅<br/>三栏主窗 · 悬浮窗 · 月视图<br/>双端 CI 自动发布"]
-  M2 --> V030["v0.3.0 ~ v0.3.6 工具箱成型 ✅<br/>ZSK1 便签 · 快传/NAS/Docker<br/>QQ 式贴边 · Windows AUMID"]
-  V030 --> V040["v0.4.0 ~ v0.4.1 体验打磨与内更新 ✅<br/>窗口几何/贴边记忆 · 托盘增强 · Z4 遥测<br/>快传锁定 downloads · 真应用内更新"]
-  V040 --> NEXT["后续演进（v0.4.2+）<br/>LAN 直连 · 文件夹上传<br/>下载管理 · 法定调休重复"]
+  M2 --> V030["v0.3.0 ~ v0.4.3 体验成型 ✅<br/>ZSK1 便签 · Z4 遥测 · 几何记忆<br/>Windows 通知与应用内更新"]
+  V030 --> V050["v0.5.0 连接与传输升级 ✅<br/>LAN 内网直连 · CLI Doctor<br/>文件夹递归上传 · 批量下载队列"]
+  V050 --> NEXT["后续演进（v0.6.0+）<br/>法定调休工作日 · 农历重复<br/>单次实例编辑 · NAS 下载器看板"]
 ```

@@ -21,7 +21,9 @@ use zspace_memo_core::models::{
     CalendarTaskItem, CreateTaskInput, OccurrenceActionStatus, OccurrenceView, RepeatRule, Task,
     TaskSort, TaskView, UpdateTaskInput,
 };
-use zspace_memo_core::provider::official_cli::{OAuthStartInfo, OfficialCliNotebookProvider};
+use zspace_memo_core::provider::official_cli::{
+    CliConnectionConfig, NasDoctorReport, OAuthStartInfo, OfficialCliNotebookProvider,
+};
 use zspace_memo_core::provider::{AuthStatus, NotebookProvider};
 use zspace_memo_core::recurrence::{
     build_occurrence_timeline, describe_rule_zh, generate_occurrences,
@@ -31,7 +33,7 @@ use zspace_memo_core::sticky::{CreateStickyInput, StickyNote, StickyService, Upd
 use zspace_memo_core::storage::{
     AppSettings, LocalStorage, NotificationRecord, WindowGeometryRecord,
 };
-use zspace_memo_core::toolbox::{SystemOverview, ToolboxService};
+use zspace_memo_core::toolbox::{SystemOverview, ToolboxService, UploadBatchSummary};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -749,8 +751,22 @@ fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
 }
 
 #[tauri::command]
-fn save_settings(state: State<'_, AppState>, settings: AppSettings) -> Result<(), String> {
-    state.service.save_settings(&settings).map_err(map_err)
+async fn save_settings(state: State<'_, AppState>, settings: AppSettings) -> Result<(), String> {
+    let prev = state.storage.load_settings().ok();
+    let normalized = settings.normalized_and_validated().map_err(map_err)?;
+    state.service.save_settings(&normalized).map_err(map_err)?;
+
+    let should_clear_host = prev.as_ref().is_some_and(|p| {
+        (p.connection_mode == "lan" || p.lan_host.is_some())
+            && (normalized.connection_mode != "lan" || normalized.lan_host.is_none())
+    });
+    state
+        .provider
+        .set_connection_config(CliConnectionConfig::from(&normalized), should_clear_host);
+    if should_clear_host {
+        state.provider.flush_clear_host().await;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1241,6 +1257,31 @@ async fn nas_upload_file(
 }
 
 #[tauri::command]
+async fn nas_upload_paths(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    local_paths: Vec<String>,
+    dest_dir: String,
+    rename_on_conflict: Option<bool>,
+    batch_id: Option<String>,
+) -> Result<UploadBatchSummary, String> {
+    let bid = batch_id.unwrap_or_else(|| format!("up_{}", now_ms()));
+    state
+        .toolbox
+        .upload_paths(
+            &local_paths,
+            &dest_dir,
+            rename_on_conflict.unwrap_or(true),
+            &bid,
+            |ev| {
+                let _ = app.emit("files:transfer-progress", &ev);
+            },
+        )
+        .await
+        .map_err(map_err)
+}
+
+#[tauri::command]
 async fn nas_download_file(
     state: State<'_, AppState>,
     nas_path: String,
@@ -1251,6 +1292,11 @@ async fn nas_download_file(
         .download_file(&nas_path, &local_dest)
         .await
         .map_err(map_err)
+}
+
+#[tauri::command]
+async fn nas_doctor(state: State<'_, AppState>) -> Result<NasDoctorReport, String> {
+    Ok(state.provider.doctor().await)
 }
 
 #[tauri::command]
@@ -1517,6 +1563,9 @@ pub fn run() {
                 cli_home,
                 "zspace-memo",
             ));
+            if let Ok(saved_cfg) = storage.load_settings() {
+                provider.set_connection_config(CliConnectionConfig::from(&saved_cfg), false);
+            }
             let service = Arc::new(TaskService::new(provider.clone(), storage.clone()));
             let sticky = Arc::new(StickyService::new(provider.clone(), storage.clone()));
             let toolbox = Arc::new(ToolboxService::new(provider.clone(), storage.clone()));
@@ -1928,7 +1977,9 @@ pub fn run() {
             nas_search_files,
             nas_mkdir,
             nas_upload_file,
+            nas_upload_paths,
             nas_download_file,
+            nas_doctor,
             nas_system_overview,
             nas_list_events,
             nas_mark_events_read,

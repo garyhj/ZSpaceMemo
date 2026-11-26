@@ -6,6 +6,7 @@ import type {
   CalendarTaskItem,
   CreateStickyInput,
   CreateTaskInput,
+  NasDoctorReport,
   NotificationRecord,
   OAuthStartInfo,
   OccurrenceView,
@@ -18,6 +19,7 @@ import type {
   TaskView,
   UpdateStickyInput,
   UpdateTaskInput,
+  UploadBatchSummary,
 } from "./types";
 
 export const api = {
@@ -114,8 +116,21 @@ export const api = {
       destDir,
       renameOnConflict,
     }),
+  nasUploadPaths: (
+    localPaths: string[],
+    destDir: string,
+    renameOnConflict = true,
+    batchId?: string
+  ) =>
+    invoke<UploadBatchSummary>("nas_upload_paths", {
+      localPaths,
+      destDir,
+      renameOnConflict,
+      batchId: batchId ?? null,
+    }),
   nasDownloadFile: (nasPath: string, localDest: string) =>
     invoke<Record<string, unknown>>("nas_download_file", { nasPath, localDest }),
+  nasDoctor: () => invoke<NasDoctorReport>("nas_doctor"),
   nasSystemOverview: () => invoke<SystemOverview>("nas_system_overview"),
   nasListEvents: (eventType = "", num = 30) =>
     invoke<Record<string, unknown>>("nas_list_events", { eventType, num }),

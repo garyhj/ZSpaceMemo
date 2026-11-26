@@ -3,8 +3,12 @@ use crate::provider::official_cli::OfficialCliNotebookProvider;
 use crate::storage::LocalStorage;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::path::Path;
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+const MAX_UPLOAD_FILES_PER_BATCH: usize = 500;
+const MAX_UPLOAD_DIR_DEPTH: usize = 16;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NasEventNotice {
@@ -21,6 +25,221 @@ pub struct SystemOverview {
     pub storage: Option<Value>,
     pub disk: Option<Value>,
     pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RemoteMkdirOp {
+    pub parent: String,
+    pub name: String,
+    pub full_remote_dir: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PlannedUploadFile {
+    pub local_path: PathBuf,
+    pub display_name: String,
+    pub dest_dir: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UploadPlan {
+    pub directories: Vec<RemoteMkdirOp>,
+    pub files: Vec<PlannedUploadFile>,
+    pub skipped: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UploadBatchProgress {
+    pub batch_id: String,
+    pub job_id: String,
+    pub name: String,
+    pub local_path: String,
+    pub dest_dir: String,
+    pub status: String,
+    pub error: Option<String>,
+    pub current: usize,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UploadBatchSummary {
+    pub batch_id: String,
+    pub total_files: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub created_dirs: usize,
+    pub skipped_count: usize,
+}
+
+fn should_ignore_junk_name(name: &str) -> bool {
+    matches!(name, ".DS_Store" | "Thumbs.db" | "desktop.ini" | "._.DS_Store")
+}
+
+fn is_nas_entry_dir(val: &Value) -> bool {
+    for key in ["is_dir", "isDir", "dir", "is_folder", "isFolder"] {
+        if let Some(v) = val.get(key) {
+            if let Some(b) = v.as_bool() {
+                return b;
+            }
+            if let Some(n) = v.as_i64() {
+                return n == 1;
+            }
+            if let Some(s) = v.as_str() {
+                let lower = s.trim().to_ascii_lowercase();
+                return matches!(lower.as_str(), "1" | "true" | "yes" | "dir" | "folder");
+            }
+        }
+    }
+    let ftype = val
+        .get("ftype")
+        .or_else(|| val.get("type"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    matches!(ftype.as_str(), "dir" | "folder")
+}
+
+fn extract_dir_children(val: &Value, base_dir: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let arr = extract_array(val, &["list", "files", "items", "data", "rows"]);
+    let base = base_dir.trim_end_matches('/');
+    for item in arr {
+        if !is_nas_entry_dir(item) {
+            continue;
+        }
+        let Some(name) = pick_str(item, &["name", "file_name", "filename"]) else {
+            continue;
+        };
+        let path = pick_str(item, &["path", "file_path", "full_path"])
+            .unwrap_or_else(|| format!("{base}/{name}"));
+        map.insert(name, path);
+    }
+    map
+}
+
+fn walk_dir_for_upload(
+    local_dir: &Path,
+    remote_dir: &str,
+    rel_prefix: &str,
+    depth: usize,
+    seen_dirs: &mut BTreeSet<String>,
+    plan: &mut UploadPlan,
+) -> AppResult<()> {
+    if depth > MAX_UPLOAD_DIR_DEPTH {
+        plan.skipped
+            .push(format!("超过最大目录层级({MAX_UPLOAD_DIR_DEPTH}): {}", local_dir.display()));
+        return Ok(());
+    }
+    let rd = std::fs::read_dir(local_dir).map_err(|e| {
+        AppError::Validation(format!("读取目录失败 {}: {e}", local_dir.display()))
+    })?;
+    let mut entries: Vec<std::fs::DirEntry> = Vec::new();
+    for res in rd {
+        let entry = res.map_err(|e| {
+            AppError::Validation(format!("遍历目录失败 {}: {e}", local_dir.display()))
+        })?;
+        entries.push(entry);
+    }
+    entries.sort_by_key(|e| e.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if should_ignore_junk_name(&name) {
+            continue;
+        }
+        let meta = std::fs::symlink_metadata(&path).map_err(|e| {
+            AppError::Validation(format!("读取文件属性失败 {}: {e}", path.display()))
+        })?;
+        if meta.file_type().is_symlink() {
+            plan.skipped.push(format!("跳过符号链接: {}", path.display()));
+            continue;
+        }
+        if meta.is_dir() {
+            let child_remote = format!("{}/{name}", remote_dir.trim_end_matches('/'));
+            if seen_dirs.insert(child_remote.clone()) {
+                plan.directories.push(RemoteMkdirOp {
+                    parent: remote_dir.to_string(),
+                    name: name.clone(),
+                    full_remote_dir: child_remote.clone(),
+                });
+            }
+            let child_rel = format!("{rel_prefix}/{name}");
+            walk_dir_for_upload(&path, &child_remote, &child_rel, depth + 1, seen_dirs, plan)?;
+        } else if meta.is_file() {
+            if plan.files.len() >= MAX_UPLOAD_FILES_PER_BATCH {
+                return Err(AppError::Validation(format!(
+                    "单次最多批量上传 {MAX_UPLOAD_FILES_PER_BATCH} 个文件，请分批拖入"
+                )));
+            }
+            plan.files.push(PlannedUploadFile {
+                local_path: path,
+                display_name: format!("{rel_prefix}/{name}"),
+                dest_dir: remote_dir.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Build a deterministic top-down directory creation and file upload plan from local files/folders.
+pub fn build_upload_plan<P: AsRef<Path>>(
+    input_paths: &[P],
+    remote_base_dir: &str,
+) -> AppResult<UploadPlan> {
+    let base = remote_base_dir.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return Err(AppError::Validation("目标上传目录不能为空".into()));
+    }
+    let mut plan = UploadPlan {
+        directories: Vec::new(),
+        files: Vec::new(),
+        skipped: Vec::new(),
+    };
+    let mut seen_dirs = BTreeSet::new();
+
+    for raw in input_paths {
+        let path = raw.as_ref();
+        let meta = std::fs::symlink_metadata(path).map_err(|e| {
+            AppError::Validation(format!("本地路径不可访问 {}: {e}", path.display()))
+        })?;
+        if meta.file_type().is_symlink() {
+            plan.skipped.push(format!("跳过符号链接: {}", path.display()));
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| AppError::Validation(format!("无效文件名: {}", path.display())))?
+            .to_string();
+        if meta.is_dir() {
+            let child_remote = format!("{base}/{name}");
+            if seen_dirs.insert(child_remote.clone()) {
+                plan.directories.push(RemoteMkdirOp {
+                    parent: base.to_string(),
+                    name: name.clone(),
+                    full_remote_dir: child_remote.clone(),
+                });
+            }
+            walk_dir_for_upload(path, &child_remote, &name, 1, &mut seen_dirs, &mut plan)?;
+        } else if meta.is_file() {
+            if plan.files.len() >= MAX_UPLOAD_FILES_PER_BATCH {
+                return Err(AppError::Validation(format!(
+                    "单次最多批量上传 {MAX_UPLOAD_FILES_PER_BATCH} 个文件，请分批拖入"
+                )));
+            }
+            plan.files.push(PlannedUploadFile {
+                local_path: path.to_path_buf(),
+                display_name: name,
+                dest_dir: base.to_string(),
+            });
+        } else {
+            plan.skipped.push(format!("跳过非常规文件: {}", path.display()));
+        }
+    }
+
+    Ok(plan)
 }
 
 /// Official `zspace-cli` toolbox adapter (File Drop/Search, NAS Status & Events, Docker Dashboard).
@@ -114,8 +333,124 @@ impl ToolboxService {
         }
         let params = serde_json::to_string(&obj)?;
         self.provider
-            .run_cli(&["file", "upload", "--params", &params, "--yes"], Some(parent))
+            .run_cli_with_timeout(&["file", "upload", "--params", &params, "--yes"], Some(parent), Some(300))
             .await
+    }
+
+    /// Upload any mix of local files and folders into `dest_dir`, creating remote subdirectories
+    /// as needed (reusing matching existing subdirectories to prevent unwanted duplicates).
+    pub async fn upload_paths<F>(
+        &self,
+        local_paths: &[String],
+        dest_dir: &str,
+        rename_on_conflict: bool,
+        batch_id: &str,
+        mut on_progress: F,
+    ) -> AppResult<UploadBatchSummary>
+    where
+        F: FnMut(UploadBatchProgress),
+    {
+        let plan = build_upload_plan(local_paths, dest_dir)?;
+        let mut resolved_dirs: HashMap<String, String> = HashMap::new();
+        let mut existing_children: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut created_dirs = 0usize;
+
+        for op in &plan.directories {
+            let actual_parent = resolved_dirs
+                .get(&op.parent)
+                .cloned()
+                .unwrap_or_else(|| op.parent.clone());
+            if !existing_children.contains_key(&actual_parent) {
+                let children = match self.file_list(&actual_parent, 0, 200).await {
+                    Ok(v) => extract_dir_children(&v, &actual_parent),
+                    Err(_) => HashMap::new(),
+                };
+                existing_children.insert(actual_parent.clone(), children);
+            }
+            if let Some(existing_path) = existing_children
+                .get(&actual_parent)
+                .and_then(|m| m.get(&op.name))
+                .cloned()
+            {
+                resolved_dirs.insert(op.full_remote_dir.clone(), existing_path);
+                continue;
+            }
+
+            let created = self.mkdir(&actual_parent, &op.name).await?;
+            let actual_child = pick_str(&created, &["path", "file_path", "full_path"])
+                .unwrap_or_else(|| format!("{}/{}", actual_parent.trim_end_matches('/'), op.name));
+            existing_children
+                .entry(actual_parent)
+                .or_default()
+                .insert(op.name.clone(), actual_child.clone());
+            resolved_dirs.insert(op.full_remote_dir.clone(), actual_child);
+            created_dirs += 1;
+        }
+
+        let total = plan.files.len();
+        let mut succeeded = 0usize;
+        let mut failed = 0usize;
+
+        for (idx, file) in plan.files.iter().enumerate() {
+            let target_dir = resolved_dirs
+                .get(&file.dest_dir)
+                .cloned()
+                .unwrap_or_else(|| file.dest_dir.clone());
+            let job_id = format!("{batch_id}_{idx}");
+            let local_str = file.local_path.to_string_lossy().into_owned();
+
+            on_progress(UploadBatchProgress {
+                batch_id: batch_id.to_string(),
+                job_id: job_id.clone(),
+                name: file.display_name.clone(),
+                local_path: local_str.clone(),
+                dest_dir: target_dir.clone(),
+                status: "uploading".into(),
+                error: None,
+                current: idx + 1,
+                total,
+            });
+
+            match self.upload_file(&local_str, &target_dir, rename_on_conflict).await {
+                Ok(_) => {
+                    succeeded += 1;
+                    on_progress(UploadBatchProgress {
+                        batch_id: batch_id.to_string(),
+                        job_id,
+                        name: file.display_name.clone(),
+                        local_path: local_str,
+                        dest_dir: target_dir,
+                        status: "done".into(),
+                        error: None,
+                        current: idx + 1,
+                        total,
+                    });
+                }
+                Err(e) => {
+                    failed += 1;
+                    on_progress(UploadBatchProgress {
+                        batch_id: batch_id.to_string(),
+                        job_id,
+                        name: file.display_name.clone(),
+                        local_path: local_str,
+                        dest_dir: target_dir,
+                        status: "error".into(),
+                        error: Some(e.to_string()),
+                        current: idx + 1,
+                        total,
+                    });
+                }
+            }
+        }
+
+        Ok(UploadBatchSummary {
+            batch_id: batch_id.to_string(),
+            total_files: total,
+            succeeded,
+            failed,
+            created_dirs,
+            skipped_count: plan.skipped.len(),
+        })
     }
 
     pub async fn download_file(&self, nas_path: &str, local_dest: &str) -> AppResult<Value> {
@@ -133,9 +468,10 @@ impl ToolboxService {
             "overwrite": true
         }))?;
         self.provider
-            .run_cli(
+            .run_cli_with_timeout(
                 &["file", "download", "--params", &params, "--yes"],
                 Some(parent),
+                Some(300),
             )
             .await
     }
@@ -349,4 +685,70 @@ fn pick_str(val: &Value, keys: &[&str]) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn build_upload_plan_handles_files_folders_and_ignores_os_junk() {
+        let dir = tempdir().unwrap();
+        let top_file = dir.path().join("notes.txt");
+        fs::write(&top_file, "hello").unwrap();
+
+        let sub_dir = dir.path().join("Photos");
+        let nested = sub_dir.join("2026");
+        let empty = sub_dir.join("Empty");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&empty).unwrap();
+        fs::write(sub_dir.join(".DS_Store"), "junk").unwrap();
+        fs::write(sub_dir.join("cover.jpg"), "img").unwrap();
+        fs::write(nested.join("trip.png"), "png").unwrap();
+
+        let plan = build_upload_plan(&[top_file.clone(), sub_dir.clone()], "/pool/my/data/downloads/").unwrap();
+        assert_eq!(
+            plan.directories,
+            vec![
+                RemoteMkdirOp {
+                    parent: "/pool/my/data/downloads".into(),
+                    name: "Photos".into(),
+                    full_remote_dir: "/pool/my/data/downloads/Photos".into(),
+                },
+                RemoteMkdirOp {
+                    parent: "/pool/my/data/downloads/Photos".into(),
+                    name: "2026".into(),
+                    full_remote_dir: "/pool/my/data/downloads/Photos/2026".into(),
+                },
+                RemoteMkdirOp {
+                    parent: "/pool/my/data/downloads/Photos".into(),
+                    name: "Empty".into(),
+                    full_remote_dir: "/pool/my/data/downloads/Photos/Empty".into(),
+                },
+            ]
+        );
+        let rels: Vec<&str> = plan.files.iter().map(|f| f.display_name.as_str()).collect();
+        assert_eq!(rels, vec!["notes.txt", "Photos/2026/trip.png", "Photos/cover.jpg"]);
+        assert_eq!(plan.files[1].dest_dir, "/pool/my/data/downloads/Photos/2026");
+        assert_eq!(plan.files[2].dest_dir, "/pool/my/data/downloads/Photos");
+    }
+
+    #[test]
+    fn extract_dir_children_strictly_filters_string_zero_and_one() {
+        let payload = json!({
+            "list": [
+                { "name": "Photos", "path": "/p/downloads/Photos", "is_dir": "1" },
+                { "name": "movie.mp4", "path": "/p/downloads/movie.mp4", "is_dir": "0" },
+                { "name": "Logs", "is_dir": true },
+                { "name": "readme.txt", "is_dir": false }
+            ]
+        });
+        let map = extract_dir_children(&payload, "/p/downloads");
+        assert_eq!(map.get("Photos").map(String::as_str), Some("/p/downloads/Photos"));
+        assert_eq!(map.get("Logs").map(String::as_str), Some("/p/downloads/Logs"));
+        assert!(!map.contains_key("movie.mp4"));
+        assert!(!map.contains_key("readme.txt"));
+    }
 }

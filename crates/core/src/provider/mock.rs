@@ -70,6 +70,8 @@ impl NotebookProvider for MockNotebookProvider {
             nas_id: Some("MOCK-NAS".into()),
             expires_at: Some(Utc::now().timestamp() + 3600),
             profile: "mock".into(),
+            mode: Some("mock".into()),
+            host: None,
         })
     }
 

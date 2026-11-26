@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppSettings {
     pub todo_category_name: String,
     pub todo_category_id: Option<i64>,
@@ -30,6 +30,14 @@ pub struct AppSettings {
     pub nas_drop_dir: Option<String>,
     #[serde(default = "default_true")]
     pub bridge_nas_events: bool,
+    #[serde(default = "default_connection_mode")]
+    pub connection_mode: String,
+    #[serde(default)]
+    pub lan_host: Option<String>,
+    #[serde(default)]
+    pub allow_insecure_http: bool,
+    #[serde(default = "default_cli_timeout")]
+    pub cli_timeout_secs: u64,
 }
 
 fn default_true() -> bool {
@@ -38,6 +46,73 @@ fn default_true() -> bool {
 
 fn default_sticky_cat() -> String {
     "ZSpace Sticky".into()
+}
+
+fn default_connection_mode() -> String {
+    "auto".into()
+}
+
+fn default_cli_timeout() -> u64 {
+    30
+}
+
+impl AppSettings {
+    pub fn normalized_and_validated(&self) -> AppResult<Self> {
+        let mut next = self.clone();
+        let mode = next.connection_mode.trim().to_ascii_lowercase();
+        if !matches!(mode.as_str(), "auto" | "cloud" | "lan") {
+            return Err(crate::error::AppError::Validation(format!(
+                "不支持的连接模式：{mode}（仅支持 auto / cloud / lan）"
+            )));
+        }
+        next.connection_mode = mode;
+
+        next.lan_host = next
+            .lan_host
+            .take()
+            .map(|s| s.trim().trim_end_matches('/').to_string())
+            .filter(|s| !s.is_empty());
+
+        if let Some(host) = &next.lan_host {
+            if host.chars().any(|c| c.is_whitespace() || c.is_control()) {
+                return Err(crate::error::AppError::Validation(
+                    "内网 NAS 地址不能包含空格或控制字符".into(),
+                ));
+            }
+            let lower = host.to_ascii_lowercase();
+            let rest = if let Some(r) = lower.strip_prefix("https://") {
+                r
+            } else if let Some(r) = lower.strip_prefix("http://") {
+                r
+            } else {
+                return Err(crate::error::AppError::Validation(
+                    "内网 NAS 地址必须以 https:// 或 http:// 开头（例如 https://192.168.1.2:5056）"
+                        .into(),
+                ));
+            };
+            if rest.is_empty() || rest.starts_with('/') {
+                return Err(crate::error::AppError::Validation(
+                    "内网 NAS 地址缺少主机名或 IP".into(),
+                ));
+            }
+            if next.connection_mode == "lan"
+                && lower.starts_with("http://")
+                && !next.allow_insecure_http
+            {
+                return Err(crate::error::AppError::Validation(
+                    "使用 http:// 内网直连地址需勾选「允许不安全 HTTP 内网直连」，建议优先使用 https://"
+                        .into(),
+                ));
+            }
+        } else if next.connection_mode == "lan" {
+            return Err(crate::error::AppError::Validation(
+                "选择 LAN 内网直连模式时请填写 NAS 内网地址（如 https://192.168.1.2:5056）".into(),
+            ));
+        }
+
+        next.cli_timeout_secs = next.cli_timeout_secs.clamp(10, 600);
+        Ok(next)
+    }
 }
 
 impl Default for AppSettings {
@@ -58,6 +133,10 @@ impl Default for AppSettings {
             sticky_category_id: None,
             nas_drop_dir: None,
             bridge_nas_events: true,
+            connection_mode: default_connection_mode(),
+            lan_host: None,
+            allow_insecure_http: false,
+            cli_timeout_secs: default_cli_timeout(),
         }
     }
 }
@@ -624,5 +703,46 @@ mod tests {
 
         store.delete_window_geometry("floating").unwrap();
         assert_eq!(store.load_window_geometry("floating").unwrap(), None);
+    }
+
+    #[test]
+    fn legacy_settings_migrate_with_connection_defaults_and_validate_lan() {
+        let legacy_json = r#"{
+            "todo_category_name": "ZSpace Memo",
+            "todo_category_id": 2,
+            "timezone": "Asia/Shanghai",
+            "default_all_day_reminder_time": "09:00",
+            "upcoming_days": 7,
+            "sync_interval_secs": 300,
+            "show_overdue_in_today": true,
+            "close_to_tray": true,
+            "autostart": true
+        }"#;
+        let parsed: AppSettings = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(parsed.connection_mode, "auto");
+        assert_eq!(parsed.lan_host, None);
+        assert!(!parsed.allow_insecure_http);
+        assert_eq!(parsed.cli_timeout_secs, 30);
+
+        let mut bad_http = parsed.clone();
+        bad_http.connection_mode = "LAN".into();
+        bad_http.lan_host = Some("http://192.168.1.2:5055/".into());
+        assert!(bad_http.normalized_and_validated().is_err());
+
+        bad_http.allow_insecure_http = true;
+        bad_http.cli_timeout_secs = 2;
+        let ok = bad_http.normalized_and_validated().unwrap();
+        assert_eq!(ok.connection_mode, "lan");
+        assert_eq!(ok.lan_host.as_deref(), Some("http://192.168.1.2:5055"));
+        assert_eq!(ok.cli_timeout_secs, 10);
+
+        let mut missing_host = parsed.clone();
+        missing_host.connection_mode = "lan".into();
+        assert!(missing_host.normalized_and_validated().is_err());
+
+        let mut bad_scheme = parsed;
+        bad_scheme.connection_mode = "lan".into();
+        bad_scheme.lan_host = Some("192.168.1.2:5055".into());
+        assert!(bad_scheme.normalized_and_validated().is_err());
     }
 }

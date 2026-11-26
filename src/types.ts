@@ -119,12 +119,16 @@ export interface AuthStatus {
   nas_id?: string | null;
   expires_at?: number | null;
   profile: string;
+  mode?: string | null;
+  host?: string | null;
 }
 
 export interface OAuthStartInfo {
   url: string;
   expires_in: number;
 }
+
+export type ConnectionMode = "auto" | "cloud" | "lan";
 
 export interface AppSettings {
   todo_category_name: string;
@@ -142,6 +146,42 @@ export interface AppSettings {
   sticky_category_id?: number | null;
   nas_drop_dir?: string | null;
   bridge_nas_events: boolean;
+  connection_mode: ConnectionMode;
+  lan_host?: string | null;
+  allow_insecure_http: boolean;
+  cli_timeout_secs: number;
+}
+
+export interface NasDoctorReport {
+  ok: boolean;
+  configured_mode: string;
+  configured_host?: string | null;
+  effective_mode?: string | null;
+  effective_host?: string | null;
+  latency_ms: number;
+  details: Record<string, unknown> | null;
+  error?: string | null;
+}
+
+export interface UploadBatchProgress {
+  batch_id: string;
+  job_id: string;
+  name: string;
+  local_path: string;
+  dest_dir: string;
+  status: "uploading" | "done" | "error";
+  error?: string | null;
+  current: number;
+  total: number;
+}
+
+export interface UploadBatchSummary {
+  batch_id: string;
+  total_files: number;
+  succeeded: number;
+  failed: number;
+  created_dirs: number;
+  skipped_count: number;
 }
 
 export interface NasEventNotice {

@@ -813,10 +813,22 @@ function MainWindow() {
       {/* ZSpace Kit Modular Toolbox Navigation Rail */}
       <nav className="flex w-14 shrink-0 flex-col items-center border-r border-slate-200 bg-slate-100 py-3 gap-2">
         <div
-          title={`ZSpace Kit · 极空工具箱 (${auth.nas_id ?? ""})`}
-          className="mb-2 flex h-8 w-8 items-center justify-center rounded-xl bg-blue-600 text-[11px] font-bold tracking-tight text-white shadow-xs"
+          title={`ZSpace Kit · 极空工具箱 (${auth.nas_id ?? ""}) · 连接：${
+            settings?.connection_mode === "lan"
+              ? `LAN 直连 (${settings.lan_host ?? ""})`
+              : settings?.connection_mode === "cloud"
+              ? "云代理"
+              : auth.mode ?? "auto"
+          }`}
+          className="relative mb-2 flex h-8 w-8 items-center justify-center rounded-xl bg-blue-600 text-[11px] font-bold tracking-tight text-white shadow-xs"
         >
           ZK
+          {settings?.connection_mode === "lan" && (
+            <span
+              title="LAN 内网直连已开启"
+              className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-slate-100"
+            />
+          )}
         </div>
 
         {TOOLBOX_MODULES.map((mod) => (
@@ -1278,6 +1290,7 @@ function MainWindow() {
             if (info.has_update) setUpdateDismissed(false);
           }}
           onInstallUpdate={handleInstallUpdate}
+          onAuthRefreshed={(nextAuth) => setAuth(nextAuth)}
           onClose={() => setShowSettings(false)}
           onLogout={async () => {
             await api.logout();

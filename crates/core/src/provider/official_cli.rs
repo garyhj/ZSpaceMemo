@@ -1,13 +1,104 @@
 use crate::error::{AppError, AppResult};
 use crate::provider::{AuthStatus, NoteCategory, NoteHistoryEntry, NoteSummary, NotebookProvider, RawNote};
+use crate::storage::AppSettings;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::RwLock;
+use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
+
+/// Connection & timeout policy passed to `zspace-cli` global options.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CliConnectionConfig {
+    pub mode: String, // "auto" | "cloud" | "lan"
+    pub host: Option<String>,
+    pub allow_insecure_http: bool,
+    pub timeout_secs: u64,
+}
+
+impl Default for CliConnectionConfig {
+    fn default() -> Self {
+        Self {
+            mode: "auto".into(),
+            host: None,
+            allow_insecure_http: false,
+            timeout_secs: 30,
+        }
+    }
+}
+
+impl From<&AppSettings> for CliConnectionConfig {
+    fn from(s: &AppSettings) -> Self {
+        Self {
+            mode: s.connection_mode.clone(),
+            host: s.lan_host.clone(),
+            allow_insecure_http: s.allow_insecure_http,
+            timeout_secs: s.cli_timeout_secs,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NasDoctorReport {
+    pub ok: bool,
+    pub configured_mode: String,
+    pub configured_host: Option<String>,
+    pub effective_mode: Option<String>,
+    pub effective_host: Option<String>,
+    pub latency_ms: u64,
+    pub details: Value,
+    pub error: Option<String>,
+}
+
+/// Build global options placed strictly BEFORE the `zspace-cli` subcommand (`file`, `system`, etc.).
+pub fn build_global_cli_args(
+    profile: &str,
+    cfg: &CliConnectionConfig,
+    clear_host: bool,
+    timeout_override: Option<u64>,
+    local_root: Option<&Path>,
+) -> Vec<OsString> {
+    let mut args = vec![OsString::from("--profile"), OsString::from(profile)];
+
+    let mode = match cfg.mode.as_str() {
+        "lan" | "cloud" | "auto" => cfg.mode.as_str(),
+        _ => "auto",
+    };
+    args.push(OsString::from("--mode"));
+    args.push(OsString::from(mode));
+
+    let effective_timeout = timeout_override
+        .map(|t| t.max(cfg.timeout_secs))
+        .unwrap_or(cfg.timeout_secs)
+        .clamp(10, 1800);
+    args.push(OsString::from("--timeout"));
+    args.push(OsString::from(effective_timeout.to_string()));
+
+    if clear_host {
+        args.push(OsString::from("--clear-host"));
+    } else if mode == "lan" {
+        if let Some(host) = cfg.host.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            args.push(OsString::from("--host"));
+            args.push(OsString::from(host));
+            if host.to_ascii_lowercase().starts_with("http://") && cfg.allow_insecure_http {
+                args.push(OsString::from("--allow-insecure-http"));
+            }
+        }
+    }
+
+    if let Some(root) = local_root {
+        args.push(OsString::from("--local-root"));
+        args.push(root.as_os_str().to_os_string());
+    }
+    args
+}
 
 /// Active interactive OAuth2 login transaction (valid for 180s).
 /// Holds `stdout` open so the child process does not hit a broken pipe when printing the final JSON.
@@ -31,6 +122,8 @@ pub struct OfficialCliNotebookProvider {
     cli_home: PathBuf,
     profile: String,
     pending_login: Mutex<Option<PendingOAuthLogin>>,
+    connection: RwLock<CliConnectionConfig>,
+    pending_clear_host: AtomicBool,
 }
 
 impl OfficialCliNotebookProvider {
@@ -40,42 +133,130 @@ impl OfficialCliNotebookProvider {
             cli_home,
             profile: profile.into(),
             pending_login: Mutex::new(None),
+            connection: RwLock::new(CliConnectionConfig::default()),
+            pending_clear_host: AtomicBool::new(false),
         }
     }
 
-    fn base_command(&self) -> Command {
+    pub fn set_connection_config(&self, cfg: CliConnectionConfig, clear_persisted_host: bool) {
+        if let Ok(mut guard) = self.connection.write() {
+            *guard = cfg;
+        }
+        if clear_persisted_host {
+            self.pending_clear_host.store(true, Ordering::Release);
+        }
+    }
+
+    pub fn connection_config(&self) -> CliConnectionConfig {
+        self.connection
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
+    pub async fn flush_clear_host(&self) {
+        if self.pending_clear_host.load(Ordering::Acquire) {
+            let _ = self.run_json(&["status"]).await;
+        }
+    }
+
+    fn build_command(
+        &self,
+        timeout_override: Option<u64>,
+        local_root: Option<&Path>,
+        allow_clear_host: bool,
+    ) -> (Command, bool) {
         let mut cmd = Command::new(&self.cli_path);
-        cmd.env("ZSPACE_CLI_HOME", &self.cli_home)
-            .arg("--profile")
-            .arg(&self.profile);
+        cmd.env("ZSPACE_CLI_HOME", &self.cli_home);
+        let cfg = self.connection_config();
+        let clear_host = if allow_clear_host {
+            self.pending_clear_host.swap(false, Ordering::AcqRel)
+        } else {
+            false
+        };
+        let global_args =
+            build_global_cli_args(&self.profile, &cfg, clear_host, timeout_override, local_root);
+        cmd.args(global_args);
         #[cfg(windows)]
         {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
-        cmd
+        (cmd, clear_host)
+    }
+
+    fn base_command(&self) -> Command {
+        self.build_command(None, None, false).0
     }
 
     async fn run_json(&self, args: &[&str]) -> AppResult<Value> {
-        self.run_cli_raw(args, None).await
+        self.run_cli_raw(args, None, None).await
     }
 
     /// Execute any official `zspace-cli` subcommand and return its full `{ok, data}` JSON.
     pub async fn run_cli(&self, args: &[&str], local_root: Option<&Path>) -> AppResult<Value> {
-        let val = self.run_cli_raw(args, local_root).await?;
+        self.run_cli_with_timeout(args, local_root, None).await
+    }
+
+    /// Execute a `zspace-cli` subcommand with an optional minimum timeout override (e.g., 300s for uploads).
+    pub async fn run_cli_with_timeout(
+        &self,
+        args: &[&str],
+        local_root: Option<&Path>,
+        timeout_secs: Option<u64>,
+    ) -> AppResult<Value> {
+        let val = self.run_cli_raw(args, local_root, timeout_secs).await?;
         Ok(val.get("data").cloned().unwrap_or(val))
     }
 
-    async fn run_cli_raw(&self, args: &[&str], local_root: Option<&Path>) -> AppResult<Value> {
-        let mut cmd = self.base_command();
-        if let Some(root) = local_root {
-            cmd.arg("--local-root").arg(root);
+    /// Run `zspace-cli doctor` to diagnose credentials, local security storage, and NAS connectivity.
+    pub async fn doctor(&self) -> NasDoctorReport {
+        let cfg = self.connection_config();
+        let t0 = Instant::now();
+        let diag = self.run_cli_raw(&["doctor"], None, None).await;
+        let latency_ms = t0.elapsed().as_millis() as u64;
+        let st = self.auth_status().await.ok();
+
+        match diag {
+            Ok(val) => NasDoctorReport {
+                ok: true,
+                configured_mode: cfg.mode,
+                configured_host: cfg.host,
+                effective_mode: st.as_ref().and_then(|s| s.mode.clone()),
+                effective_host: st.as_ref().and_then(|s| s.host.clone()),
+                latency_ms,
+                details: val.get("data").cloned().unwrap_or(val),
+                error: None,
+            },
+            Err(e) => NasDoctorReport {
+                ok: false,
+                configured_mode: cfg.mode,
+                configured_host: cfg.host,
+                effective_mode: st.as_ref().and_then(|s| s.mode.clone()),
+                effective_host: st.as_ref().and_then(|s| s.host.clone()),
+                latency_ms,
+                details: Value::Null,
+                error: Some(e.to_string()),
+            },
         }
-        let output = cmd
-            .args(args)
-            .output()
-            .await
-            .map_err(|e| AppError::NasUnavailable(format!("无法启动 zspace-cli: {e}")))?;
+    }
+
+    async fn run_cli_raw(
+        &self,
+        args: &[&str],
+        local_root: Option<&Path>,
+        timeout_secs: Option<u64>,
+    ) -> AppResult<Value> {
+        let (mut cmd, cleared) = self.build_command(timeout_secs, local_root, true);
+        let output = match cmd.args(args).output().await {
+            Ok(out) => out,
+            Err(e) => {
+                if cleared {
+                    self.pending_clear_host.store(true, Ordering::Release);
+                }
+                return Err(AppError::NasUnavailable(format!("无法启动 zspace-cli: {e}")));
+            }
+        };
 
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -295,6 +476,14 @@ impl NotebookProvider for OfficialCliNotebookProvider {
                 .map(|s| s.to_string()),
             expires_at: data.get("expires_at").and_then(|v| v.as_i64()),
             profile: self.profile.clone(),
+            mode: data
+                .get("mode")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            host: data
+                .get("host")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
         })
     }
 
@@ -496,5 +685,80 @@ impl NotebookProvider for OfficialCliNotebookProvider {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn to_strings(v: Vec<OsString>) -> Vec<String> {
+        v.into_iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn global_cli_args_cover_auto_lan_http_and_clear_host() {
+        let auto_cfg = CliConnectionConfig::default();
+        assert_eq!(
+            to_strings(build_global_cli_args("zspace-memo", &auto_cfg, false, None, None)),
+            vec!["--profile", "zspace-memo", "--mode", "auto", "--timeout", "30"]
+        );
+
+        let lan_http = CliConnectionConfig {
+            mode: "lan".into(),
+            host: Some("http://192.168.1.2:5055".into()),
+            allow_insecure_http: true,
+            timeout_secs: 45,
+        };
+        assert_eq!(
+            to_strings(build_global_cli_args(
+                "zspace-memo",
+                &lan_http,
+                false,
+                Some(300),
+                Some(Path::new("/tmp/root")),
+            )),
+            vec![
+                "--profile",
+                "zspace-memo",
+                "--mode",
+                "lan",
+                "--timeout",
+                "300",
+                "--host",
+                "http://192.168.1.2:5055",
+                "--allow-insecure-http",
+                "--local-root",
+                "/tmp/root",
+            ]
+        );
+
+        let lan_https_no_flag = CliConnectionConfig {
+            mode: "lan".into(),
+            host: Some("http://192.168.1.2:5055".into()),
+            allow_insecure_http: false,
+            timeout_secs: 20,
+        };
+        assert_eq!(
+            to_strings(build_global_cli_args("p", &lan_https_no_flag, false, None, None)),
+            vec![
+                "--profile",
+                "p",
+                "--mode",
+                "lan",
+                "--timeout",
+                "20",
+                "--host",
+                "http://192.168.1.2:5055",
+            ]
+        );
+
+        // Switching back to cloud/auto with clear_host strips --host and passes --clear-host
+        assert_eq!(
+            to_strings(build_global_cli_args("p", &auto_cfg, true, None, None)),
+            vec!["--profile", "p", "--mode", "auto", "--timeout", "30", "--clear-host"]
+        );
     }
 }
