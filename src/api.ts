@@ -71,6 +71,12 @@ export const api = {
     invoke<Task>("reopen_task", { id, occurrenceKey: occurrenceKey ?? null }),
   endSeries: (id: number) => invoke<Task>("end_series", { id }),
   deleteTask: (id: number) => invoke<void>("delete_task", { id }),
+  uploadTaskAttachment: (id: number, localPath: string) =>
+    invoke<Task>("upload_task_attachment", { id, localPath }),
+  downloadTaskAttachment: (id: number, fileId: string, localDest: string) =>
+    invoke<void>("download_task_attachment", { id, fileId, localDest }),
+  removeTaskAttachment: (id: number, fileId: string) =>
+    invoke<Task>("remove_task_attachment", { id, fileId }),
 
   getOccurrenceTimeline: (id: number, futureCount = 3) =>
     invoke<OccurrenceView[]>("get_occurrence_timeline", { id, futureCount }),
@@ -108,7 +114,7 @@ export const api = {
   openStickyWindow: (id: number) => invoke<void>("open_sticky_window", { id }),
   closeStickyWindow: (id: number) => invoke<void>("close_sticky_window", { id }),
 
-  // ZSpace NAS Toolbox: Files, System + Events, Docker
+  // ZSpace NAS Toolbox: Files, System + Events, Docker, Downloader
   nasFileSpace: () => invoke<Record<string, unknown>>("nas_file_space"),
   nasFileList: (path: string, start = 0, num = 100) =>
     invoke<Record<string, unknown>>("nas_file_list", { path, start, num }),
@@ -149,6 +155,13 @@ export const api = {
     invoke<Record<string, unknown>>("nas_docker_action", { action, containerId }),
   nasDockerLogs: (containerId: string) =>
     invoke<Record<string, unknown>>("nas_docker_logs", { containerId }),
+  nasDownloadTasks: (taskType: "all" | "loading" | "complete" = "all", start = 0, size = 100) =>
+    invoke<Record<string, unknown>>("nas_download_tasks", { taskType, start, size }),
+  nasDownloadDirs: () => invoke<Record<string, unknown>>("nas_download_dirs"),
+  nasDownloadAdd: (uri: string, dir?: string | null) =>
+    invoke<Record<string, unknown>>("nas_download_add", { uri, dir: dir ?? null }),
+  nasDownloadAction: (action: "start" | "stop" | "delete", ids: (string | number)[]) =>
+    invoke<Record<string, unknown>>("nas_download_action", { action, ids }),
 
   openMainWindow: (taskId?: number) => invoke<void>("open_main_window", { taskId: taskId ?? null }),
   toggleFloatingWindow: () => invoke<void>("toggle_floating_window"),

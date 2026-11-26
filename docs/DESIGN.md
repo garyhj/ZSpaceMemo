@@ -1,6 +1,6 @@
-# ZSpace Kit（极空工具箱）产品与技术设计（v0.6）
+# ZSpace Kit（极空工具箱）产品与技术设计（v0.7）
 
-> 状态：**v0.6.0 已实现并发布**（Windows / macOS 双端）。
+> 状态：**v0.7.0 已实现并发布**（Windows / macOS 双端）。
 > 变更记录：
 > - v0.1：初始设计（FastAPI 服务端 + `zspace_skill` + 多端）。
 > - v0.2：采用官方 `zspace-nas-agent-toolkit`（`zspace-cli` v0.3.11）OAuth2 授权与 `file notes` 契约；简化为**纯桌面客户端架构（Tauri 2 + 内置 `zspace-cli`）**，开机自启常驻托盘，零服务端部署；时间模型简化为**截止日期 + 截止时间 + 全天**。
@@ -8,13 +8,14 @@
 > - v0.4：桌面体验打磨、Z4 遥测适配、快传箱锁定与真应用内更新：Windows Toast AUMID 自动注册、`detail.list` 遥测解析与日志/JSON 复制、窗口几何与贴边记忆持久化、托盘动态计数与直达、2 MiB 脱敏滚动日志、文件快传箱严格锁定 `我的文件/downloads`，以及流式下载 + SHA-256 校验 + Windows `ShellExecuteW` `/P /UPDATE /R` 应用内更新。
 > - v0.5：LAN 内网直连模式（`--mode` / `--host` / `--clear-host`）、`zspace-cli doctor` 连接诊断、文件快传箱文件夹递归上传（实时进度 + 现有目录复用）、统一上传/下载队列与重试、批量下载与分页加载。
 > - v0.6：中国法定工作日/调休重复（`cn_workday`）、离线 1901–2099 中国农历重复引擎（`calendar: "lunar"` + 闰月策略）、单次发生实例改期/恢复 UI（新增 `clear_occurrence_override`，共 65 个 IPC 命令）。
+> - v0.7：待办原生附件（复用 `file notes` `attachment_upload` / `attachment_download` 并在 `ZSM1` 与摘要行持久化）与 NAS 下载器看板（`Alt + 7`，封装 `download tasks` / `download control` / `download manage`，共 72 个 IPC 命令）。
 
 本项目的核心技术支柱有三项（外加 v0.3 引入的可扩展工具箱集成层）：
 
-1. **原生笔记兼容性**：结构化数据写入普通 HTML 笔记，官方记事本可正常浏览、修改备注且不丢失提醒、重复规则或便签样式。
+1. **原生笔记兼容性**：结构化数据写入普通 HTML 笔记，官方记事本可正常浏览、修改备注且不丢失提醒、重复规则、附件关联或便签样式。
 2. **重复任务引擎**：区分「系列」与「发生实例」，一个系列仅对应一条原生笔记并保留完成历史。
 3. **本地常驻提醒与告警桥接调度**：开机自启、常驻托盘，电脑运行期间按时弹出 Windows/macOS 原生通知，关机错过的提醒在开机后自动补发；同时将新到达的 NAS 系统告警桥接至桌面通知。
-4. **统一工具箱适配层（`ToolboxService`）**：基于官方 `zspace-cli` 统一封装文件上传/下载/搜索、系统/磁盘/事件状态、Docker 容器控制与日志。
+4. **统一工具箱适配层（`ToolboxService`）**：基于官方 `zspace-cli` 统一封装文件上传/下载/搜索、系统/磁盘/事件状态、Docker 容器控制与日志、NAS 下载器监控与创建。
 
 ---
 
@@ -22,12 +23,12 @@
 
 | # | 决策 |
 |---|---|
-| D1 | 一条普通任务对应一条原生笔记；一个重复**系列**也只对应一条原生笔记，实例历史记录在 `ZSM1` 元数据中 |
+| D1 | 一条普通任务对应一条原生笔记；一个重复**系列**也只对应一条原生笔记，实例历史与附件关联记录在 `ZSM1` 元数据中 |
 | D2 | 独立记事本 `location="2"`：待办使用 `ZSpace Memo` 分类（`<p>ZSM1:{...}</p>`），云便签使用 `ZSpace Sticky` 分类（`<p>ZSK1:{...}</p>`），均按分类 ID 识别 |
 | D3 | **纯桌面客户端**：Tauri 2（Windows + macOS）内置官方 `zspace-cli` v0.3.11 sidecar，零服务端部署，不依赖 NAS 端运行 Docker 伴侣 |
 | D4 | **官方 OAuth2 登录**：全程不接触、不存储 NAS 账号密码；由 `zspace-cli` 管理凭据并自动刷新（保留 `identifier="com.garyhj.zspacememo"` 确保跨版本配置与授权无缝延续） |
 | D5 | 笔记正文均采用「人类可读 HTML + 底部结构化数据块」，不依赖 HTML 注释、隐藏标签或自定义属性 |
-| D6 | **可扩展工具箱壳架构**：左侧 ToolRail 通过 `TOOLBOX_MODULES`（`Alt + 1 ~ 6` / macOS `Option + 1 ~ 6`）统一切换 6 个核心工作区（待办 / 月视图 / 便签 / 快传箱 / NAS / Docker） |
+| D6 | **可扩展工具箱壳架构**：左侧 ToolRail 通过 `TOOLBOX_MODULES`（`Alt + 1 ~ 7` / macOS `Option + 1 ~ 7`）统一切换 7 个核心工作区（待办 / 月视图 / 便签 / 快传箱 / NAS / Docker / 下载器） |
 | D7 | **三类桌面窗口**：完整主窗口（ToolRail + 工作区）· 置顶悬浮待办窗（`/?mode=floating`，按已逾期/今天/本周/以后/无日期全量分组 + 贴边悬停/点击展开）· 独立桌面便利贴窗（`/?mode=sticky&id={id}`） |
 | D8 | **时间模型精简**：不支持开始时间和时间段，只保留**截止日期 + 截止时间**（以及全天开关） |
 | D9 | **OS 原生通知替代应用内通知中心**：直接触发 Windows / macOS 原生系统通知（含提示音开关与权限检测），关闭重启后自动补发遗漏提醒；新增 `bridge_nas_events` 开关同步弹出新 NAS 告警 |
@@ -43,15 +44,15 @@ flowchart LR
   subgraph App["ZSpace Kit 桌面客户端（Tauri 2 · Windows / macOS）"]
     UI["React 19 + TypeScript + Tailwind v4"]
     subgraph Modules["多窗体工作区"]
-      RAIL["ToolRail 工具栏<br/>Alt/Option + 1..6"]
-      MODS["待办 · 月视图 · 便签板<br/>快传箱 · NAS 状态 · Docker 看板"]
+      RAIL["ToolRail 工具栏<br/>Alt/Option + 1..7"]
+      MODS["待办 · 月视图 · 便签板 · 快传箱<br/>NAS 状态 · Docker 看板 · 下载器"]
       FLOAT["悬浮待办窗 (floating)<br/>全部分组 · 右键菜单 · 贴边悬停/移开"]
       STICKY_W["独立便利贴窗 (sticky-{id})"]
     end
     subgraph Core["Rust 核心层（crates/core + src-tauri）"]
-      TS["TaskService（视图 · 冲突检测 · ETag）"]
+      TS["TaskService（视图 · 附件 · 冲突检测 · ETag）"]
       SS["StickyService（ZSK1 便签 · 搜索 · 自动同步）"]
-      TB["ToolboxService（文件 · 系统/事件 · Docker）"]
+      TB["ToolboxService（文件 · 系统/事件 · Docker · 下载器）"]
       RE["Recurrence Engine & Reminder"]
       SCH["Scheduler（同步 · 15s 提醒 · NAS 告警轮询）"]
       IDX[("本地 SQLite<br/>缓存 · 调度 · 已读事件")]
@@ -59,10 +60,10 @@ flowchart LR
     end
     CLI["官方 zspace-cli（sidecar v0.3.11）"]
   end
-  NAS[("极空间 NAS<br/>记事本 · 文件 · 系统 · Docker")]
+  NAS[("极空间 NAS<br/>记事本/附件 · 文件 · 系统 · Docker · 下载器")]
 
   RAIL --> MODS
-  MODS & FLOAT & STICKY_W <-->|65 个 Tauri IPC 命令 / Events| Core
+  MODS & FLOAT & STICKY_W <-->|72 个 Tauri IPC 命令 / Events| Core
   TS --> RE
   TS & SS --> NP --> CLI -->|HTTPS OAuth / LAN| NAS
   TB --> NP
@@ -82,6 +83,7 @@ flowchart LR
 - **Schedule**：仅含 `due: { date, time }`、`all_day`、`timezone`（IANA 时区）。无 `due` 的未完成单次任务归入「收集箱」。
 - **Reminder**：与截止独立，支持多条相对/绝对提醒；全天任务默认触发时刻可配置（默认 `09:00`）。
 - **Series（重复实例状态）**：保留当前游标 `cursor`、`overrides`（单实例覆盖）、最多 200 条倒序 `history` 及超限后的 `history_summary`。
+- **Attachments（原生待办附件）**：通过官方 `file notes` `attachment_upload` / `attachment_download`（`/v2/file/notepad/uploadfile` 与 `/v2/file/notepad/downloadfile`）上传或下载绑定到当前笔记 `id` 的二进制附件，并将 `file_id` / 文件名 / 体积保存在 `ZSM1` `attachments` 数组及摘要元数据行（`📎 附件 N 个`）中。
 - **正文三段结构（M0 真机验证定稿）**：
 
 ```html
@@ -156,6 +158,10 @@ flowchart LR
 - 调用 `zspace-cli docker containers` 查询容器列表（`action=list`）与实时资源占用（`action=stats`）。
 - 支持对容器执行 `start` / `stop` / `restart` 操作，以及弹窗查看并一键复制容器最近 100 行日志（`action=logs`）。
 
+### 4.6 NAS 下载器看板（`DownloaderView`）
+- 封装官方 `zspace-cli download control`（`tasks/details` 按 `all | loading | complete` 查询详情、`downloaddir` 读取默认保存目录）、`download tasks`（`/downloader/list`）与 `download manage`（`add` / `start` / `stop` / `delete`）。
+- 新建远程下载（HTTP/HTTPS/Magnet/ed2k/FTP）严格按官方安全契约附带 `--yes --allow-nas-fetch` 并在前端明确提示风险与目录补全；任务卡片展示完成度进度条、上下行速率与错误信息，支持单任务启停删除、可选 5 秒自动刷新及原始响应 JSON 复制。
+
 ---
 
 ## 5. 开发里程碑与当前进度
@@ -167,5 +173,6 @@ flowchart LR
   M2 --> V030["v0.3.0 ~ v0.4.3 体验成型 ✅<br/>ZSK1 便签 · Z4 遥测 · 几何记忆<br/>Windows 通知与应用内更新"]
   V030 --> V050["v0.5.0 连接与传输升级 ✅<br/>LAN 内网直连 · CLI Doctor<br/>文件夹递归上传 · 批量下载队列"]
   V050 --> V060["v0.6.0 深度重复与农历 ✅<br/>法定调休工作日 · 1901-2099 农历<br/>单次实例可视化改期与恢复"]
-  V060 --> NEXT["后续演进（v0.7.0+）<br/>NAS 下载器看板 · 待办附件<br/>更多工具箱插件模块"]
+  V060 --> V070["v0.7.0 附件与下载器 ✅<br/>待办原生附件上传/下载<br/>NAS 下载器监控与创建 (Alt+7)"]
+  V070 --> NEXT["后续演进（v0.8.0+）<br/>快传分享与标签管理<br/>Docker Compose/镜像看板"]
 ```

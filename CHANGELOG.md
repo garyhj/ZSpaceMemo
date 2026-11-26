@@ -2,6 +2,19 @@
 
 All notable changes to **ZSpace Kit（极空工具箱）** (repository `ZSpaceMemo`) are documented in this file.
 
+## [0.7.0] - 2026-11-26
+
+### Added
+- **待办原生附件（基于官方 `file notes` `attachment_upload` / `attachment_download`）**：
+  - 数据模型 [`TaskAttachment`](crates/core/src/models.rs) 嵌入 `ZSM1` 元数据，并在笔记可读摘要行自动渲染 `📎 附件 N 个（...）`。
+  - `TaskDetail` 新增「附件」区块，支持多文件选择上传（自动设置 `--local-root` 与 300s 超时）、本地另存为下载与关联移除；`TaskListItem` 同步展示曲别针附件数量角标。
+- **NAS 下载器看板（`Alt + 7` / macOS `Option + 7`）**：
+  - 工具箱新增第七个核心工作区 [DownloaderView](src/modules/downloader/DownloaderView.tsx)，聚合官方 `zspace-cli download control`（`tasks/details` / `downloaddir`）、`download tasks` 与 `download manage`。
+  - 支持按「全部 / 进行中 / 已完成」切换、关键词检索、进度条与上下行速率展示、可选 5 秒自动刷新、单任务「继续 / 暂停 / 删除」、原始响应 JSON 复制，以及带 `--allow-nas-fetch` 安全提示与目录补全的新建下载表单（HTTP/HTTPS/Magnet/ed2k/FTP）。
+
+### Changed
+- **IPC 与文档同步**：新增 7 个 Tauri IPC 命令（总计 72 个：`upload_task_attachment` / `download_task_attachment` / `remove_task_attachment` / `nas_download_tasks` / `nas_download_dirs` / `nas_download_add` / `nas_download_action`），更新快捷键说明与设计文档至 `v0.7.0`。
+
 ## [0.6.0] - 2026-11-26
 
 ### Added

@@ -2,8 +2,10 @@ pub mod mock;
 pub mod official_cli;
 
 use crate::error::AppResult;
+use crate::models::TaskAttachment;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthStatus {
@@ -92,4 +94,14 @@ pub trait NotebookProvider: Send + Sync {
     async fn pin_note(&self, id: i64, pinned: bool) -> AppResult<()>;
     async fn delete_note(&self, id: i64) -> AppResult<()>;
     async fn list_history(&self, note_id: i64) -> AppResult<Vec<NoteHistoryEntry>>;
+    async fn upload_note_attachment(
+        &self,
+        note_id: i64,
+        local_path: &Path,
+    ) -> AppResult<TaskAttachment>;
+    async fn download_note_attachment(
+        &self,
+        attachment: &TaskAttachment,
+        local_dest: &Path,
+    ) -> AppResult<()>;
 }

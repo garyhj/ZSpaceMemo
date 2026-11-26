@@ -31,6 +31,7 @@ import { TaskDetail } from "./components/TaskDetail";
 import { TaskListItem } from "./components/TaskListItem";
 import { TOOLBOX_MODULES, type WorkspaceId } from "./modules/registry";
 import { DockerBoardView } from "./modules/docker/DockerBoardView";
+import { DownloaderView } from "./modules/downloader/DownloaderView";
 import { FileDropView } from "./modules/files/FileDropView";
 import { NasStatusView } from "./modules/nas/NasStatusView";
 import { StickyBoard } from "./modules/sticky/StickyBoard";
@@ -50,6 +51,7 @@ import type {
   Priority,
   Schedule,
   Task,
+  TaskAttachment,
   TaskSort,
   TaskView,
   UpdateTaskInput,
@@ -447,6 +449,7 @@ function MainWindow() {
       schedule: patch.schedule ?? t.schedule,
       reminders: patch.reminders ?? t.reminders,
       repeat: patch.repeat !== undefined ? patch.repeat : t.repeat,
+      attachments: patch.attachments ?? t.attachments,
     }));
 
     try {
@@ -653,6 +656,38 @@ function MainWindow() {
     }
   }
 
+  async function handleUploadAttachment(task: Task, localPath: string) {
+    try {
+      const updated = await api.uploadTaskAttachment(task.id, localPath);
+      applyLocalTaskPatch(task.id, () => updated);
+      await refreshAll();
+      const name = localPath.split(/[\\/]/).pop() ?? localPath;
+      showToast(`已上传附件「${name}」`);
+    } catch (e) {
+      showToast(`附件上传失败：${String(e)}`);
+    }
+  }
+
+  async function handleDownloadAttachment(task: Task, att: TaskAttachment, localDest: string) {
+    try {
+      await api.downloadTaskAttachment(task.id, att.file_id, localDest);
+      showToast(`已保存附件「${att.name}」`);
+    } catch (e) {
+      showToast(`附件下载失败：${String(e)}`);
+    }
+  }
+
+  async function handleRemoveAttachment(task: Task, fileId: string) {
+    try {
+      const updated = await api.removeTaskAttachment(task.id, fileId);
+      applyLocalTaskPatch(task.id, () => updated);
+      await refreshAll();
+      showToast("已从待办移除附件");
+    } catch (e) {
+      showToast(`移除附件失败：${String(e)}`);
+    }
+  }
+
   const displayedTasks = activeList
     ? tasks.filter((t) => t.list === activeList)
     : activeLabel
@@ -760,7 +795,7 @@ function MainWindow() {
         return;
       }
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-        const idx = ["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6"].indexOf(e.code);
+        const idx = ["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7"].indexOf(e.code);
         if (idx >= 0) {
           e.preventDefault();
           const modEntry = TOOLBOX_MODULES[idx];
@@ -930,6 +965,8 @@ function MainWindow() {
         />
       ) : workspace === "docker" ? (
         <DockerBoardView onToast={(m) => showToast(m)} />
+      ) : workspace === "downloader" ? (
+        <DownloaderView settings={settings} onToast={(m) => showToast(m)} />
       ) : workspace === "calendar" ? (
         <div className="flex min-w-0 flex-1">
           <MonthCalendarView
@@ -964,6 +1001,9 @@ function MainWindow() {
                 onReopenOccurrence={handleReopenOccurrence}
                 onOverrideOccurrence={handleOverrideOccurrence}
                 onClearOccurrenceOverride={handleClearOccurrenceOverride}
+                onUploadAttachment={handleUploadAttachment}
+                onDownloadAttachment={handleDownloadAttachment}
+                onRemoveAttachment={handleRemoveAttachment}
                 onEndSeries={handleEndSeries}
                 onDelete={handleDelete}
                 onReloadTask={async (id) => {
@@ -1304,6 +1344,9 @@ function MainWindow() {
               onReopenOccurrence={handleReopenOccurrence}
               onOverrideOccurrence={handleOverrideOccurrence}
               onClearOccurrenceOverride={handleClearOccurrenceOverride}
+              onUploadAttachment={handleUploadAttachment}
+              onDownloadAttachment={handleDownloadAttachment}
+              onRemoveAttachment={handleRemoveAttachment}
               onEndSeries={handleEndSeries}
               onDelete={handleDelete}
               onReloadTask={async (id) => {

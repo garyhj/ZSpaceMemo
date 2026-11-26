@@ -916,6 +916,54 @@ async fn delete_task(
 }
 
 #[tauri::command]
+async fn upload_task_attachment(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    id: i64,
+    local_path: String,
+) -> Result<Task, String> {
+    let task = state
+        .service
+        .upload_task_attachment(id, &local_path)
+        .await
+        .map_err(map_err)?;
+    emit_changed(&app, &window);
+    Ok(task)
+}
+
+#[tauri::command]
+async fn download_task_attachment(
+    state: State<'_, AppState>,
+    id: i64,
+    file_id: String,
+    local_dest: String,
+) -> Result<(), String> {
+    state
+        .service
+        .download_task_attachment(id, &file_id, &local_dest)
+        .await
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn remove_task_attachment(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    id: i64,
+    file_id: String,
+) -> Result<Task, String> {
+    let task = state
+        .service
+        .remove_task_attachment(id, &file_id)
+        .await
+        .map_err(map_err)?;
+    emit_changed(&app, &window);
+    Ok(task)
+}
+
+#[tauri::command]
 fn list_calendar_items(
     state: State<'_, AppState>,
     from: String,
@@ -1381,6 +1429,55 @@ async fn nas_docker_logs(
     state
         .toolbox
         .docker_logs(&container_id)
+        .await
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn nas_download_tasks(
+    state: State<'_, AppState>,
+    task_type: Option<String>,
+    start: Option<u32>,
+    size: Option<u32>,
+) -> Result<Value, String> {
+    state
+        .toolbox
+        .download_tasks(
+            task_type.as_deref().unwrap_or("all"),
+            start.unwrap_or(0),
+            size.unwrap_or(100),
+        )
+        .await
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn nas_download_dirs(state: State<'_, AppState>) -> Result<Value, String> {
+    state.toolbox.download_dirs().await.map_err(map_err)
+}
+
+#[tauri::command]
+async fn nas_download_add(
+    state: State<'_, AppState>,
+    uri: String,
+    dir: Option<String>,
+) -> Result<Value, String> {
+    state
+        .toolbox
+        .download_add(&uri, dir.as_deref())
+        .await
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn nas_download_action(
+    state: State<'_, AppState>,
+    action: String,
+    ids: Vec<Value>,
+) -> Result<Value, String> {
+    state
+        .toolbox
+        .download_manage_action(&action, ids)
         .await
         .map_err(map_err)
 }
@@ -1976,6 +2073,9 @@ pub fn run() {
             reopen_task,
             end_series,
             delete_task,
+            upload_task_attachment,
+            download_task_attachment,
+            remove_task_attachment,
             list_calendar_items,
             override_occurrence,
             clear_occurrence_override,
@@ -2012,6 +2112,10 @@ pub fn run() {
             nas_docker_stats,
             nas_docker_action,
             nas_docker_logs,
+            nas_download_tasks,
+            nas_download_dirs,
+            nas_download_add,
+            nas_download_action,
             open_main_window,
             toggle_floating_window,
             dock_floating_window,

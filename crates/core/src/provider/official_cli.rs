@@ -1,4 +1,5 @@
 use crate::error::{AppError, AppResult};
+use crate::models::TaskAttachment;
 use crate::provider::{AuthStatus, NoteCategory, NoteHistoryEntry, NoteSummary, NotebookProvider, RawNote};
 use crate::storage::AppSettings;
 use async_trait::async_trait;
@@ -686,6 +687,163 @@ impl NotebookProvider for OfficialCliNotebookProvider {
         }
         Ok(out)
     }
+
+    async fn upload_note_attachment(
+        &self,
+        note_id: i64,
+        local_path: &Path,
+    ) -> AppResult<TaskAttachment> {
+        if !local_path.is_file() {
+            return Err(AppError::Validation(format!(
+                "仅支持上传本地文件作为待办附件：{}",
+                local_path.display()
+            )));
+        }
+        let parent = local_path
+            .parent()
+            .ok_or_else(|| AppError::Validation("无法解析附件所在本地目录".into()))?;
+        let file_name = local_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| AppError::Validation("无效附件文件名".into()))?;
+        let size = std::fs::metadata(local_path).ok().map(|m| m.len());
+
+        let params_str =
+            serde_json::to_string(&build_attachment_upload_params(note_id, file_name))?;
+        let val = self
+            .run_cli_with_timeout(
+                &["file", "notes", "--params", &params_str, "--yes"],
+                Some(parent),
+                Some(300),
+            )
+            .await?;
+
+        let (file_id, resource_path, safe_dir) = extract_uploaded_attachment_fields(&val)
+            .ok_or_else(|| {
+                AppError::Internal(
+                    "极空间返回结果缺少附件 file_id，请检查笔记后重试（避免重复上传）".into(),
+                )
+            })?;
+
+        Ok(TaskAttachment {
+            file_id,
+            name: file_name.to_string(),
+            size,
+            resource_path,
+            safe_dir,
+            uploaded_at: Some(chrono::Utc::now().to_rfc3339()),
+        })
+    }
+
+    async fn download_note_attachment(
+        &self,
+        attachment: &TaskAttachment,
+        local_dest: &Path,
+    ) -> AppResult<()> {
+        let parent = local_dest
+            .parent()
+            .ok_or_else(|| AppError::Validation("无法解析附件保存目录".into()))?;
+        let file_name = local_dest
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| AppError::Validation("无效附件保存文件名".into()))?;
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| AppError::Storage(format!("创建保存目录失败: {e}")))?;
+        }
+        let params_str = serde_json::to_string(&build_attachment_download_params(
+            attachment, file_name, true,
+        ))?;
+        self.run_cli_with_timeout(
+            &["file", "notes", "--params", &params_str, "--yes"],
+            Some(parent),
+            Some(300),
+        )
+        .await?;
+        Ok(())
+    }
+}
+
+/// Strictly match the whitelisted `attachment_upload` schema in `zspace-cli`.
+pub fn build_attachment_upload_params(note_id: i64, file_name: &str) -> Value {
+    json!({
+        "action": "attachment_upload",
+        "location": "2",
+        "id": note_id,
+        "local_path": file_name
+    })
+}
+
+/// Strictly match the whitelisted `attachment_download` schema in `zspace-cli`.
+pub fn build_attachment_download_params(
+    attachment: &TaskAttachment,
+    file_name: &str,
+    overwrite: bool,
+) -> Value {
+    let mut obj = json!({
+        "action": "attachment_download",
+        "location": "2",
+        "file_id": attachment.file_id,
+        "local_path": file_name,
+        "overwrite": overwrite
+    });
+    if let Some(sd) = attachment
+        .safe_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        obj["safe_dir"] = json!(sd);
+    }
+    obj
+}
+
+fn pick_json_id_or_str(obj: &Value, keys: &[&str]) -> Option<String> {
+    for k in keys {
+        if let Some(v) = obj.get(*k) {
+            if let Some(s) = v.as_str() {
+                let t = s.trim();
+                if !t.is_empty() {
+                    return Some(t.to_string());
+                }
+            } else if let Some(n) = v.as_i64() {
+                return Some(n.to_string());
+            } else if let Some(n) = v.as_u64() {
+                return Some(n.to_string());
+            }
+        }
+    }
+    None
+}
+
+pub fn extract_uploaded_attachment_fields(
+    val: &Value,
+) -> Option<(String, Option<String>, Option<String>)> {
+    let mut candidates = vec![val];
+    if let Some(d) = val.get("data") {
+        candidates.push(d);
+    }
+    if let Some(f) = val.get("file") {
+        candidates.push(f);
+    }
+    if let Some(d) = val.pointer("/data/file") {
+        candidates.push(d);
+    }
+    let mut file_id = None;
+    let mut resource_path = None;
+    let mut safe_dir = None;
+    for obj in candidates {
+        if file_id.is_none() {
+            file_id = pick_json_id_or_str(obj, &["file_id", "fileId", "id", "fid"]);
+        }
+        if resource_path.is_none() {
+            resource_path = pick_json_id_or_str(obj, &["resource_path", "resourcePath", "path"]);
+        }
+        if safe_dir.is_none() {
+            safe_dir = pick_json_id_or_str(obj, &["safe_dir", "safeDir", "dir"]);
+        }
+    }
+    file_id.map(|fid| (fid, resource_path, safe_dir))
 }
 
 #[cfg(test)]
@@ -760,5 +918,43 @@ mod tests {
             to_strings(build_global_cli_args("p", &auto_cfg, true, None, None)),
             vec!["--profile", "p", "--mode", "auto", "--timeout", "30", "--clear-host"]
         );
+    }
+
+    #[test]
+    fn attachment_params_strictly_match_cli_whitelists_and_extract_fields() {
+        let up = build_attachment_upload_params(42, "invoice.pdf");
+        let keys: Vec<&str> = up.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, vec!["action", "id", "local_path", "location"]);
+        assert_eq!(up["action"], "attachment_upload");
+        assert_eq!(up["id"], 42);
+        assert_eq!(up["location"], "2");
+        assert_eq!(up["local_path"], "invoice.pdf");
+
+        let parsed = extract_uploaded_attachment_fields(&json!({
+            "file_id": 98765,
+            "resource_path": "/notepad/res/98765.pdf"
+        }))
+        .unwrap();
+        assert_eq!(parsed.0, "98765");
+        assert_eq!(parsed.1.as_deref(), Some("/notepad/res/98765.pdf"));
+        assert_eq!(parsed.2, None);
+
+        let att = TaskAttachment {
+            file_id: parsed.0,
+            name: "invoice.pdf".into(),
+            size: Some(1024),
+            resource_path: parsed.1,
+            safe_dir: Some("/pool/notepad".into()),
+            uploaded_at: None,
+        };
+        let dl = build_attachment_download_params(&att, "invoice.pdf", true);
+        let dl_keys: Vec<&str> = dl.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(
+            dl_keys,
+            vec!["action", "file_id", "local_path", "location", "overwrite", "safe_dir"]
+        );
+        assert_eq!(dl["action"], "attachment_download");
+        assert_eq!(dl["file_id"], "98765");
+        assert_eq!(dl["safe_dir"], "/pool/notepad");
     }
 }

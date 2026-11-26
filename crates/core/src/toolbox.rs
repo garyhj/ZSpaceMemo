@@ -661,6 +661,139 @@ impl ToolboxService {
             .run_cli(&["docker", "containers", "--params", &params], None)
             .await
     }
+
+    // --- NAS Downloader Dashboard (`download tasks` / `download manage` / `download control`) ---
+
+    pub async fn download_tasks(
+        &self,
+        task_type: &str,
+        start: u32,
+        size: u32,
+    ) -> AppResult<Value> {
+        let clamped_size = size.clamp(1, 1000);
+        let norm_type = normalize_download_task_type(task_type);
+
+        let p_ctrl = serde_json::to_string(&json!({
+            "action": "tasks/details",
+            "task_type": norm_type,
+            "start": start,
+            "size": clamped_size
+        }))?;
+        let p_list = serde_json::to_string(&json!({
+            "start": start,
+            "num": clamped_size
+        }))?;
+
+        let a_ctrl = ["download", "control", "--params", p_ctrl.as_str()];
+        let a_list = ["download", "tasks", "--params", p_list.as_str()];
+        let (ctrl_res, list_res) = tokio::join!(
+            self.provider.run_cli(&a_ctrl, None),
+            self.provider.run_cli(&a_list, None),
+        );
+
+        match (ctrl_res, list_res) {
+            (Ok(ctrl), Ok(list)) => Ok(json!({
+                "control": ctrl,
+                "tasks": list,
+            })),
+            (Ok(ctrl), Err(e)) => Ok(json!({
+                "control": ctrl,
+                "list_error": e.to_string(),
+            })),
+            (Err(e), Ok(list)) => Ok(json!({
+                "tasks": list,
+                "control_error": e.to_string(),
+            })),
+            (Err(_), Err(e2)) => Err(e2),
+        }
+    }
+
+    pub async fn download_dirs(&self) -> AppResult<Value> {
+        let params = serde_json::to_string(&json!({ "action": "downloaddir" }))?;
+        self.provider
+            .run_cli(&["download", "control", "--params", &params], None)
+            .await
+    }
+
+    pub async fn download_add(&self, uri: &str, dir: Option<&str>) -> AppResult<Value> {
+        let clean_uri = validate_download_uri(uri)?;
+        let mut obj = json!({
+            "action": "add",
+            "uri": clean_uri
+        });
+        if let Some(d) = dir.map(str::trim).filter(|s| !s.is_empty()) {
+            obj["dir"] = json!(d);
+        }
+        let params = serde_json::to_string(&obj)?;
+        self.provider
+            .run_cli_with_timeout(
+                &[
+                    "download",
+                    "manage",
+                    "--params",
+                    &params,
+                    "--yes",
+                    "--allow-nas-fetch",
+                ],
+                None,
+                Some(60),
+            )
+            .await
+    }
+
+    pub async fn download_manage_action(
+        &self,
+        action: &str,
+        ids: Vec<Value>,
+    ) -> AppResult<Value> {
+        let params = build_download_manage_action_params(action, &ids)?;
+        let params_str = serde_json::to_string(&params)?;
+        self.provider
+            .run_cli(&["download", "manage", "--params", &params_str, "--yes"], None)
+            .await
+    }
+}
+
+pub fn normalize_download_task_type(task_type: &str) -> &'static str {
+    match task_type.trim().to_ascii_lowercase().as_str() {
+        "loading" | "downloading" | "active" => "loading",
+        "complete" | "completed" | "done" => "complete",
+        _ => "all",
+    }
+}
+
+pub fn validate_download_uri(raw: &str) -> AppResult<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Validation("请输入下载链接（HTTP/HTTPS/Magnet/ed2k）".into()));
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if !(lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("magnet:")
+        || lower.starts_with("ed2k://")
+        || lower.starts_with("ftp://"))
+    {
+        return Err(AppError::Validation(
+            "仅支持 HTTP(S)、Magnet 磁力链、ed2k 或 FTP 下载链接".into(),
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+pub fn build_download_manage_action_params(action: &str, ids: &[Value]) -> AppResult<Value> {
+    if !matches!(action, "start" | "stop" | "delete") {
+        return Err(AppError::Validation(format!(
+            "不支持的下载任务控制动作: {action}"
+        )));
+    }
+    if ids.is_empty() {
+        return Err(AppError::Validation("请至少选择一个下载任务 ID".into()));
+    }
+    Ok(json!({
+        "action": action,
+        "ids": ids
+    }))
 }
 
 fn extract_array<'a>(val: &'a Value, keys: &[&str]) -> Vec<&'a Value> {
@@ -750,5 +883,23 @@ mod tests {
         assert_eq!(map.get("Logs").map(String::as_str), Some("/p/downloads/Logs"));
         assert!(!map.contains_key("movie.mp4"));
         assert!(!map.contains_key("readme.txt"));
+    }
+
+    #[test]
+    fn download_validators_enforce_uri_and_manage_schema() {
+        assert_eq!(
+            validate_download_uri("  magnet:?xt=urn:btih:12345  ").unwrap(),
+            "magnet:?xt=urn:btih:12345"
+        );
+        assert!(validate_download_uri("/local/file.iso").is_err());
+        assert_eq!(normalize_download_task_type("downloading"), "loading");
+        assert_eq!(normalize_download_task_type("DONE"), "complete");
+        assert_eq!(normalize_download_task_type("unknown"), "all");
+
+        let p = build_download_manage_action_params("stop", &[json!(101)]).unwrap();
+        assert_eq!(p["action"], "stop");
+        assert_eq!(p["ids"], json!([101]));
+        assert!(build_download_manage_action_params("wipe", &[json!(1)]).is_err());
+        assert!(build_download_manage_action_params("start", &[]).is_err());
     }
 }

@@ -1,6 +1,6 @@
 use crate::models::{
     DateTimePoint, MetaState, OccurrenceActionStatus, Priority, Reminder, RepeatRule, Schedule,
-    SeriesState, Task, TaskStatus,
+    SeriesState, Task, TaskAttachment, TaskStatus,
 };
 use crate::recurrence::describe_rule_zh;
 use base64::Engine;
@@ -35,6 +35,8 @@ pub struct NoteMetaV1 {
     pub repeat: Option<RepeatRule>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub series: Option<SeriesState>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<TaskAttachment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -175,6 +177,21 @@ pub fn render_summary_lines(task: &Task) -> Vec<String> {
             meta_parts.push(format!("清单：{}", list.trim()));
         }
     }
+    if !task.attachments.is_empty() {
+        let preview: Vec<&str> = task
+            .attachments
+            .iter()
+            .take(3)
+            .map(|a| a.name.as_str())
+            .collect();
+        let suffix = if task.attachments.len() > 3 { "…" } else { "" };
+        meta_parts.push(format!(
+            "📎 附件 {} 个（{}{}）",
+            task.attachments.len(),
+            preview.join("、"),
+            suffix
+        ));
+    }
     lines.push(meta_parts.join(" · "));
 
     let mut st = format!("状态：{}", task.status.label_zh());
@@ -276,6 +293,7 @@ pub fn encode_task_note(task: &Task) -> EncodedNote {
         reminders: task.reminders.clone(),
         repeat: task.repeat.clone(),
         series: task.series.clone(),
+        attachments: task.attachments.clone(),
         completed_at: task.completed_at.clone(),
         created_at: task.created_at.clone(),
         sum: Some(sum),
@@ -445,6 +463,7 @@ pub fn decode_task_note(
             reminders: meta.reminders,
             repeat: meta.repeat,
             series: meta.series,
+            attachments: meta.attachments,
             completed_at: meta.completed_at,
             created_at: meta.created_at,
             updated_at,
@@ -491,6 +510,7 @@ pub fn decode_task_note(
         reminders: Vec::new(),
         repeat: None,
         series: None,
+        attachments: Vec::new(),
         completed_at: None,
         created_at: None,
         updated_at,
@@ -575,6 +595,7 @@ mod tests {
                 history_summary: None,
                 ended_at: None,
             }),
+            attachments: Vec::new(),
             completed_at: None,
             created_at: Some("2026-11-24T10:00:00+08:00".into()),
             updated_at: None,
@@ -651,5 +672,25 @@ mod tests {
         task = decoded.task;
         let reencoded = encode_task_note(&task);
         assert!(reencoded.body.contains(r#"<img src="x.png">"#));
+    }
+
+    #[test]
+    fn attachments_round_trip_in_zsm1_and_summary() {
+        let mut task = sample_task();
+        task.attachments = vec![TaskAttachment {
+            file_id: "9001".into(),
+            name: "合同.pdf".into(),
+            size: Some(20480),
+            resource_path: Some("/notepad/9001.pdf".into()),
+            safe_dir: None,
+            uploaded_at: Some("2026-11-26T08:00:00Z".into()),
+        }];
+        let encoded = encode_task_note(&task);
+        assert!(encoded.body.contains("📎 附件 1 个（合同.pdf）"));
+        let decoded = decode_task_note(12345, "续费 eSIM", &encoded.body, false, 1795491160);
+        assert_eq!(decoded.task.attachments.len(), 1);
+        assert_eq!(decoded.task.attachments[0].file_id, "9001");
+        assert_eq!(decoded.task.attachments[0].name, "合同.pdf");
+        assert_eq!(decoded.task.attachments[0].size, Some(20480));
     }
 }

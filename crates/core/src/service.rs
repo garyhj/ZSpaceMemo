@@ -298,6 +298,7 @@ impl<P: NotebookProvider> TaskService<P> {
             reminders: input.reminders,
             repeat: input.repeat,
             series,
+            attachments: Vec::new(),
             completed_at: None,
             created_at: Some(now_iso),
             updated_at: None,
@@ -449,6 +450,10 @@ impl<P: NotebookProvider> TaskService<P> {
             }
         }
 
+        if let Some(atts) = patch.attachments {
+            task.attachments = atts;
+        }
+
         let pin_changed = patch.pinned.map(|p| (p, p != task.pinned));
         if let Some((new_pin, _)) = pin_changed {
             task.pinned = new_pin;
@@ -580,6 +585,53 @@ impl<P: NotebookProvider> TaskService<P> {
         self.provider.delete_note(id).await?;
         self.storage.delete_cached_task(id)?;
         Ok(())
+    }
+
+    /// Upload a local file as a native ZSpace note attachment (`attachment_upload`) and record it in ZSM1.
+    pub async fn upload_task_attachment(&self, id: i64, local_path: &str) -> AppResult<Task> {
+        let path = std::path::Path::new(local_path);
+        if !path.is_file() {
+            return Err(AppError::Validation(format!(
+                "附件路径不存在或不是文件：{local_path}"
+            )));
+        }
+        let mut task = self.get_task(id, false).await?;
+        let att = self.provider.upload_note_attachment(id, path).await?;
+        task.attachments.retain(|existing| existing.file_id != att.file_id);
+        task.attachments.push(att);
+        self.persist_task_update(task, None).await
+    }
+
+    /// Download an attached file from the native ZSpace note to `local_dest`.
+    pub async fn download_task_attachment(
+        &self,
+        id: i64,
+        file_id: &str,
+        local_dest: &str,
+    ) -> AppResult<()> {
+        let task = self.get_task(id, false).await?;
+        let att = task
+            .attachments
+            .iter()
+            .find(|a| a.file_id == file_id)
+            .cloned()
+            .ok_or_else(|| {
+                AppError::OccurrenceNotFound(format!("该待办不存在附件 ID {file_id}"))
+            })?;
+        self.provider
+            .download_note_attachment(&att, std::path::Path::new(local_dest))
+            .await
+    }
+
+    /// Unlink an attachment entry from this task's ZSM1 metadata (does not purge NAS notepad file storage).
+    pub async fn remove_task_attachment(&self, id: i64, file_id: &str) -> AppResult<Task> {
+        let mut task = self.get_task(id, false).await?;
+        let prev_len = task.attachments.len();
+        task.attachments.retain(|a| a.file_id != file_id);
+        if task.attachments.len() == prev_len {
+            return Ok(task);
+        }
+        self.persist_task_update(task, None).await
     }
 
     /// Override a single occurrence's due date/time without modifying the rest of the repeating series.
@@ -1270,5 +1322,51 @@ mod tests {
             dates_restored,
             vec!["2026-11-02", "2026-11-09", "2026-11-16", "2026-11-23", "2026-11-30"]
         );
+    }
+
+    #[tokio::test]
+    async fn task_attachments_upload_download_and_remove() {
+        let (svc, _provider) = setup().await;
+        let task = svc
+            .create_task(CreateTaskInput {
+                title: "报销单".into(),
+                description: "附发票 PDF".into(),
+                priority: Priority::Normal,
+                list: None,
+                labels: vec![],
+                pinned: false,
+                schedule: Schedule::default(),
+                reminders: vec![],
+                repeat: None,
+            })
+            .await
+            .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let src_file = dir.path().join("receipt.txt");
+        std::fs::write(&src_file, b"invoice-12345").unwrap();
+
+        let updated = svc
+            .upload_task_attachment(task.id, src_file.to_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(updated.attachments.len(), 1);
+        assert_eq!(updated.attachments[0].name, "receipt.txt");
+        assert_eq!(updated.attachments[0].size, Some(13));
+        let fid = updated.attachments[0].file_id.clone();
+
+        // Reload directly from provider and ensure ZSM1 preserved attachment metadata.
+        let reloaded = svc.get_task(task.id, true).await.unwrap();
+        assert_eq!(reloaded.attachments.len(), 1);
+        assert_eq!(reloaded.attachments[0].file_id, fid);
+
+        let dest_file = dir.path().join("downloaded.txt");
+        svc.download_task_attachment(task.id, &fid, dest_file.to_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&dest_file).unwrap(), b"invoice-12345");
+
+        let removed = svc.remove_task_attachment(task.id, &fid).await.unwrap();
+        assert!(removed.attachments.is_empty());
     }
 }

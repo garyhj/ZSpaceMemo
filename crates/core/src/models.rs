@@ -320,6 +320,21 @@ pub enum MetaState {
     Conflict,
 }
 
+/// Binary attachment linked to a ZSpace task note (`file notes` `attachment_upload`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskAttachment {
+    pub file_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safe_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uploaded_at: Option<String>,
+}
+
 /// Full Task DTO shared across core, Tauri commands, and frontend.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Task {
@@ -351,6 +366,8 @@ pub struct Task {
     pub repeat: Option<RepeatRule>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub series: Option<SeriesState>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<TaskAttachment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -467,6 +484,8 @@ pub struct UpdateTaskInput {
     pub schedule: Option<Schedule>,
     pub reminders: Option<Vec<Reminder>>,
     pub repeat: Option<Option<RepeatRule>>,
+    #[serde(default)]
+    pub attachments: Option<Vec<TaskAttachment>>,
     pub etag: Option<String>,
     #[serde(default)]
     pub force: bool,

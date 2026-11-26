@@ -5,19 +5,20 @@
 
 面向极空间 NAS 的跨平台桌面外置工具箱（Windows / macOS，原项目名 **ZSpace Memo**）。
 
-零服务端部署、无需存储 NAS 账号密码——通过官方 OAuth2 授权安全连接你的极空间 NAS，将**极空间待办与重复任务、月历视图、云便签便利贴、文件快传箱、NAS 状态与消息看板、Docker 容器管理**整合到一个轻量的桌面客户端与系统托盘中。
+零服务端部署、无需存储 NAS 账号密码——通过官方 OAuth2 授权安全连接你的极空间 NAS，将**极空间待办与重复任务、月历视图、云便签便利贴、文件快传箱、NAS 状态与消息看板、Docker 容器管理、NAS 下载器看板**整合到一个轻量的桌面客户端与系统托盘中。
 
 ---
 
 ## 核心特性
 
-### 1. 极空工具箱六大模块（`Alt + 1 ~ 6` / macOS `Option + 1 ~ 6`）
+### 1. 极空工具箱七大模块（`Alt + 1 ~ 7` / macOS `Option + 1 ~ 7`）
 
 - **待办（`Alt + 1`）**
   - 基于**极空间原生独立记事本（`location="2"`）**：一条普通任务或一个重复系列只对应 `ZSpace Memo` 分类下的一条原生笔记。
   - 笔记正文采用「中文可读摘要 + 用户备注 + 末尾 `<p>ZSM1:{...}</p>` 数据块」三段结构，支持在极空间官方客户端中直接查看、修改备注并安全回读（详见 [COMPATIBILITY.md](docs/COMPATIBILITY.md)）。
   - 支持 ETag 乐观并发冲突检测与元数据损坏自动恢复（保留用户在官方 App 修改的新备注）。
   - 7 个视图：今天（含逾期置顶）、即将到来（按天分组）、收集箱、已逾期、全部任务、已完成、重复任务；支持清单分类、多标签、优先级、置顶、全文搜索、清单拖拽归类、右键菜单与撤销 Toast。
+  - **待办附件**：复用官方 `file notes` `attachment_upload` / `attachment_download` 接口直接为待办上传多份本地附件、保存下载与移除，附件清单写入 `ZSM1` 并在笔记摘要行展示。
   - **完整重复引擎**：区分「系列」与「发生实例」，支持每天、中国法定工作日（含调休补班）、周一至周五、每周多选、每月/每年公历与 1901–2099 离线农历（含闰月策略与大小月处理）、每月第 N 个周几、每 N 周期（如每半年）、不存在日期顺延或跳过、幂等完成/跳过/撤销及单实例可视化改期/恢复。
 - **月视图（`Alt + 2`）**
   - 集成公历与农历 / 节气 / 法定节假日与调休标记，直接投射重复任务的未来发生实例。
@@ -34,6 +35,9 @@
 - **Docker 看板（`Alt + 6`）**
   - 展示 NAS 上所有 Docker 容器运行状态与实时 CPU/内存占用。
   - 支持启动、停止、重启容器及查看/复制最近 100 行容器日志。
+- **NAS 下载器看板（`Alt + 7`）**
+  - 聚合官方 `zspace-cli download control` / `download tasks` / `download manage`，支持按进行中/已完成筛选、关键词搜索、上下行速率与进度展示及可选 5 秒自动刷新。
+  - 支持单任务继续、暂停、删除与新建远程下载链接（自动读取 NAS 默认下载目录配置）。
 
 ### 2. 桌面原生体验
 
@@ -49,14 +53,14 @@
 ```mermaid
 flowchart LR
   subgraph App["ZSpace Kit 桌面客户端（Tauri 2 · Windows / macOS）"]
-    UI["React + TypeScript + Tailwind v4<br/>主窗口（ToolRail + 6大模块）<br/>待办悬浮窗 · 独立便利贴窗"]
+    UI["React + TypeScript + Tailwind v4<br/>主窗口（ToolRail + 7大模块）<br/>待办悬浮窗 · 独立便利贴窗"]
     CORE["Rust 核心库（crates/core）<br/>TaskService · StickyService · ToolboxService<br/>Codec(ZSM1/ZSK1) · 重复引擎 · 提醒计算"]
     DB[("本地 SQLite<br/>设置 · 窗口几何记忆 · 缓存<br/>提醒作业 · NAS 已读告警去重")]
-    CLI["官方 zspace-cli（sidecar）<br/>OAuth2 · file/notes/search<br/>system/storage/docker"]
+    CLI["官方 zspace-cli（sidecar）<br/>OAuth2 · file/notes/search<br/>system/storage/docker/download"]
   end
-  NAS[("极空间 NAS<br/>原生记事本(location=2) · 文件 · 系统 · Docker")]
+  NAS[("极空间 NAS<br/>原生记事本/附件 · 文件 · 系统 · Docker · 下载器")]
 
-  UI <-->|65 个 Tauri IPC 命令 / Events| CORE
+  UI <-->|72 个 Tauri IPC 命令 / Events| CORE
   CORE --> DB
   CORE -->|OfficialCliNotebookProvider| CLI -->|HTTPS OAuth / LAN| NAS
 ```
@@ -87,7 +91,7 @@ flowchart LR
 | 快捷键 | 作用 |
 |---|---|
 | `Ctrl / Cmd + Shift + M` | 全局呼出 / 隐藏待办悬浮窗并聚焦快速输入框 |
-| `Alt / Option + 1 ~ 6` | 切换工作区：待办 / 月视图 / 便签 / 快传箱 / NAS 状态 / Docker |
+| `Alt / Option + 1 ~ 7` | 切换工作区：待办 / 月视图 / 便签 / 快传箱 / NAS 状态 / Docker / 下载器 |
 | `Ctrl / Cmd + K` 或 `/` | 聚焦任务搜索框 |
 | `N` | 聚焦快速新建任务输入框 |
 | `↑ / ↓` | 在任务列表中上下切换选中项 |
@@ -118,9 +122,9 @@ ZSpaceMemo/
 │       │   ├── lunar_tables.rs # 农历年表与 2001–2027 国务院法定调休节假日查找表
 │       │   ├── reminder.rs     # 纯函数提醒触发计算（IANA 时区 & 夏令时安全）
 │       │   ├── sticky.rs       # 云便签服务与 <p>ZSK1:{...}</p> 编解码（ZSpace Sticky）
-│       │   ├── toolbox.rs      # ToolboxService（快传箱、NAS 状态/事件、Docker 看板）
+│       │   ├── toolbox.rs      # ToolboxService（快传箱、NAS 状态/事件、Docker、下载器看板）
 │       │   ├── storage.rs      # 本地 SQLite（设置、任务/便签缓存、提醒作业、NAS 告警去重）
-│       │   ├── service.rs      # TaskService（增量同步、ETag 冲突、自动恢复、7 视图）
+│       │   ├── service.rs      # TaskService（增量同步、附件、ETag 冲突、自动恢复、7 视图）
 │       │   ├── error.rs        # 结构化错误码
 │       │   └── provider/
 │       │       ├── mod.rs          # NotebookProvider 抽象 trait
@@ -133,11 +137,12 @@ ZSpaceMemo/
 │   ├── api.ts                  # Tauri IPC 类型化封装
 │   ├── types.ts                # 前后端对齐的 DTO 类型定义
 │   ├── modules/                # 工具箱扩展模块
-│   │   ├── registry.tsx        # 模块注册表（Alt/Option + 1~6）
+│   │   ├── registry.tsx        # 模块注册表（Alt/Option + 1~7）
 │   │   ├── sticky/             # 云便签面板、色卡配置与独立悬浮便利贴窗
 │   │   ├── files/              # 文件快传箱（拖拽上传 / 浏览 / 搜索 / 下载）
 │   │   ├── nas/                # NAS 硬件状态看板与消息中心
-│   │   └── docker/             # Docker 容器监控、启停与日志查看
+│   │   ├── docker/             # Docker 容器监控、启停与日志查看
+│   │   └── downloader/         # NAS 下载器任务监控、控制与新建下载
 │   ├── components/             # 待办业务组件（Auth / MonthCalendar / Floating / Detail / Settings 等）
 │   └── utils/                  # 日期自然语言解析、农历节假日、UI 偏好设置、应用内更新桥接
 ├── src-tauri/                  # Tauri 2 桌面壳（Windows / macOS）
@@ -145,7 +150,7 @@ ZSpaceMemo/
 │   │   ├── main.rs             # 入口
 │   │   ├── logging.rs          # 2 MiB 脱敏滚动文件日志（Token/密码自动擦除）
 │   │   ├── updater.rs          # 应用内更新：流式下载、SHA-256 校验、自动覆盖安装与重启
-│   │   ├── lib.rs              # 65 个 IPC 命令、托盘、快捷键、窗口几何记忆、贴边展开、AUMID
+│   │   ├── lib.rs              # 72 个 IPC 命令、托盘、快捷键、窗口几何记忆、贴边展开、AUMID
 │   │   └── scheduler.rs        # 后台同步、15 秒原生提醒调度与 NAS 告警桥接循环
 │   ├── capabilities/           # Tauri 2 权限声明（notification / dialog / sticky-* 等）
 │   ├── icons/                  # ZSpace Kit 跨平台应用与托盘图标（.ico / .icns / PNG）
@@ -154,7 +159,7 @@ ZSpaceMemo/
 ├── scripts/
 │   └── fetch-sidecar.sh        # 本地开发一键下载并校验官方 zspace-cli 二进制
 ├── docs/                       # 设计、兼容验证、原型与需求归档
-│   ├── DESIGN.md               # 产品与技术设计（v0.6）
+│   ├── DESIGN.md               # 产品与技术设计（v0.7）
 │   ├── COMPATIBILITY.md        # M0 真机兼容性与 CLI 实测适配记录
 │   ├── prototype/index.html    # 早期待办交互原型（单文件 HTML）
 │   └── requirements/           # 原始调研与需求文档归档
@@ -208,13 +213,14 @@ ZSPACE_CLI_BIN=/path/to/zspace-cli ZSPACE_CLI_HOME=/path/to/cli-home \
 - [x] **v0.3.0 ~ v0.4.3**：工具箱成型、云便签、`Z4` 状态解析与可复制日志、窗口几何与贴边记忆、脱敏滚动日志、Windows AUMID 通知与流式校验应用内更新
 - [x] **v0.5.0**：极空间 LAN 内网直连与 `doctor` 连接诊断、文件快传箱文件夹递归上传、统一上传/下载队列与重试、批量下载与分页加载
 - [x] **v0.6.0**：重复引擎支持中国法定工作日/调休（`cn_workday`）、离线 1901–2099 农历重复与闰月策略、单次发生实例可视化改期与恢复
-- [ ] **后续扩展**：待办附件（复用官方 `file notes` 接口）、NAS 下载器看板（需先核验 CLI schema）、更多工具箱插件模块
+- [x] **v0.7.0**：待办原生附件上传/下载/关联（`file notes` `attachment_upload` / `attachment_download`）与 NAS 下载器看板（`Alt + 7`）
+- [ ] **后续扩展**：文件分享与标签快捷管理、Docker 镜像与 Compose 看板、存储池 SMART / 备份中心只读巡检
 
 ---
 
 ## 文档导航
 
-- [产品与技术设计（v0.6）](docs/DESIGN.md)
+- [产品与技术设计（v0.7）](docs/DESIGN.md)
 - [版本变更记录（CHANGELOG）](CHANGELOG.md)
 - [M0 真机兼容性验证与 CLI 适配记录](docs/COMPATIBILITY.md)
 - [早期交互原型（单文件 HTML）](docs/prototype/index.html)

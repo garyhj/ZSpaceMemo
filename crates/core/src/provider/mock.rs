@@ -1,17 +1,21 @@
 use crate::error::{AppError, AppResult};
+use crate::models::TaskAttachment;
 use crate::provider::{AuthStatus, NoteCategory, NoteHistoryEntry, NoteSummary, NotebookProvider, RawNote};
 use async_trait::async_trait;
 use chrono::Utc;
 use std::collections::BTreeMap;
+use std::path::Path;
 use tokio::sync::Mutex;
 
 #[derive(Default)]
 struct MockState {
     next_cat_id: i64,
     next_note_id: i64,
+    next_att_id: u64,
     categories: BTreeMap<i64, NoteCategory>,
     notes: BTreeMap<i64, RawNote>,
     history: BTreeMap<i64, Vec<NoteHistoryEntry>>,
+    attachments: BTreeMap<String, Vec<u8>>,
 }
 
 /// In-memory NotebookProvider for fast, deterministic unit & integration testing.
@@ -25,9 +29,11 @@ impl MockNotebookProvider {
             state: Mutex::new(MockState {
                 next_cat_id: 10,
                 next_note_id: 100,
+                next_att_id: 1,
                 categories: BTreeMap::new(),
                 notes: BTreeMap::new(),
                 history: BTreeMap::new(),
+                attachments: BTreeMap::new(),
             }),
         }
     }
@@ -177,5 +183,60 @@ impl NotebookProvider for MockNotebookProvider {
     async fn list_history(&self, note_id: i64) -> AppResult<Vec<NoteHistoryEntry>> {
         let s = self.state.lock().await;
         Ok(s.history.get(&note_id).cloned().unwrap_or_default())
+    }
+
+    async fn upload_note_attachment(
+        &self,
+        note_id: i64,
+        local_path: &Path,
+    ) -> AppResult<TaskAttachment> {
+        let bytes = std::fs::read(local_path).map_err(|e| {
+            AppError::Validation(format!("读取本地附件失败 {}: {e}", local_path.display()))
+        })?;
+        let name = local_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| AppError::Validation("无效附件文件名".into()))?
+            .to_string();
+        let mut s = self.state.lock().await;
+        if !s.notes.contains_key(&note_id) {
+            return Err(AppError::TaskNotFound(note_id));
+        }
+        let seq = s.next_att_id;
+        s.next_att_id += 1;
+        let file_id = format!("att_{note_id}_{seq}");
+        let size = bytes.len() as u64;
+        s.attachments.insert(file_id.clone(), bytes);
+        Ok(TaskAttachment {
+            file_id,
+            name,
+            size: Some(size),
+            resource_path: Some(format!("/mock/notepad/{note_id}/{seq}")),
+            safe_dir: None,
+            uploaded_at: Some(Utc::now().to_rfc3339()),
+        })
+    }
+
+    async fn download_note_attachment(
+        &self,
+        attachment: &TaskAttachment,
+        local_dest: &Path,
+    ) -> AppResult<()> {
+        let bytes = {
+            let s = self.state.lock().await;
+            s.attachments
+                .get(&attachment.file_id)
+                .cloned()
+                .ok_or_else(|| {
+                    AppError::OccurrenceNotFound(format!("未找到附件 {}", attachment.file_id))
+                })?
+        };
+        if let Some(parent) = local_dest.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| AppError::Storage(format!("创建保存目录失败: {e}")))?;
+        }
+        std::fs::write(local_dest, bytes)
+            .map_err(|e| AppError::Storage(format!("写入附件失败: {e}")))?;
+        Ok(())
     }
 }

@@ -78,6 +78,15 @@ export interface SeriesState {
   ended_at?: string | null;
 }
 
+export interface TaskAttachment {
+  file_id: string;
+  name: string;
+  size?: number | null;
+  resource_path?: string | null;
+  safe_dir?: string | null;
+  uploaded_at?: string | null;
+}
+
 export interface Task {
   id: number;
   title: string;
@@ -92,6 +101,7 @@ export interface Task {
   reminders: Reminder[];
   repeat?: RepeatRule | null;
   series?: SeriesState | null;
+  attachments?: TaskAttachment[];
   completed_at?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
@@ -280,6 +290,7 @@ export interface UpdateTaskInput {
   schedule?: Schedule;
   reminders?: Reminder[];
   repeat?: RepeatRule | null;
+  attachments?: TaskAttachment[];
   etag?: string;
   force?: boolean;
 }

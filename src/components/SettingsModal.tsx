@@ -59,7 +59,7 @@ export function SettingsModal({
   );
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [notifPerm, setNotifPerm] = useState<"granted" | "denied" | "prompt" | "unknown">("unknown");
-  const [appVersion, setAppVersion] = useState("0.6.0");
+  const [appVersion, setAppVersion] = useState("0.7.0");
   const [localUpdate, setLocalUpdate] = useState<ReleaseUpdateInfo | null>(updateInfo ?? null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
 
@@ -256,7 +256,7 @@ export function SettingsModal({
             <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
               {[
                 ["Ctrl / Cmd + Shift + M", "全局呼出 / 隐藏待办悬浮窗"],
-                ["Alt / Option + 1 ~ 6", "切换 待办/月视图/便签/快传/NAS/Docker"],
+                ["Alt / Option + 1 ~ 7", "切换 待办/月视图/便签/快传/NAS/Docker/下载器"],
                 ["Ctrl / Cmd + K 或 /", "聚焦搜索框"],
                 ["N", "快速新建任务"],
                 ["↑ / ↓", "上下切换选中任务"],

@@ -1,7 +1,14 @@
-import { Activity, Box, CalendarDays, CheckSquare, FolderUp, StickyNote } from "lucide-react";
+import { Activity, ArrowDownToLine, Box, CalendarDays, CheckSquare, FolderUp, StickyNote } from "lucide-react";
 import type { ReactNode } from "react";
 
-export type WorkspaceId = "tasks" | "calendar" | "sticky" | "files" | "nas" | "docker";
+export type WorkspaceId =
+  | "tasks"
+  | "calendar"
+  | "sticky"
+  | "files"
+  | "nas"
+  | "docker"
+  | "downloader";
 
 export interface ToolboxModuleMeta {
   id: WorkspaceId;
@@ -56,5 +63,12 @@ export const TOOLBOX_MODULES: ToolboxModuleMeta[] = [
     shortcut: "Alt + 6",
     description: "容器状态、启停与日志",
     icon: <Box className="h-5 w-5" />,
+  },
+  {
+    id: "downloader",
+    label: "下载器",
+    shortcut: "Alt + 7",
+    description: "极空间下载任务监控、创建与启停",
+    icon: <ArrowDownToLine className="h-5 w-5" />,
   },
 ];

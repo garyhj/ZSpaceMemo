@@ -1,4 +1,4 @@
-import { Bell, Calendar, Check, MoreHorizontal, Pin, Repeat } from "lucide-react";
+import { Bell, Calendar, Check, MoreHorizontal, Paperclip, Pin, Repeat } from "lucide-react";
 import { memo, useState } from "react";
 import type { Task } from "../types";
 import { dueLabel, effectiveDue, isTaskOverdue, PRIORITY_META, todayStr } from "../utils/date";
@@ -117,6 +117,15 @@ function TaskListItemImpl({ task, selected, compact, onSelect, onToggle, onOpenM
         )}
         {task.repeat && <Repeat className="h-3 w-3 text-slate-400" />}
         {task.reminders.length > 0 && <Bell className="h-3 w-3 text-slate-400" />}
+        {(task.attachments?.length ?? 0) > 0 && (
+          <span
+            title={`${task.attachments!.length} 个附件`}
+            className="inline-flex items-center gap-0.5 text-[10px] text-slate-400"
+          >
+            <Paperclip className="h-3 w-3" />
+            {task.attachments!.length > 1 && <span>{task.attachments!.length}</span>}
+          </span>
+        )}
         {due && (
           <span
             className={`tabular-nums ${
