@@ -424,6 +424,13 @@ impl<P: NotebookProvider> TaskService<P> {
                 "附件路径无效或不是常规文件：{local_path}"
             )));
         }
+        const MAX_NOTE_ATTACHMENT_BYTES: u64 = 16 * 1024 * 1024;
+        if meta.len() > MAX_NOTE_ATTACHMENT_BYTES {
+            let mb = meta.len() as f64 / (1024.0 * 1024.0);
+            return Err(AppError::Validation(format!(
+                "极空间待办附件上限为 16 MB（当前文件 {mb:.1} MB），大文件请改用左侧「文件快传」"
+            )));
+        }
         let lock = self.task_lock(id);
         let _guard = lock.lock().await;
         let mut task = self.load_fresh_for_mutation(id).await?;

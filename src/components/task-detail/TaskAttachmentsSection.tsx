@@ -35,6 +35,7 @@ export function TaskAttachmentsSection({
           <button
             type="button"
             disabled={attBusy}
+            title="上传待办附件（极空间笔记接口限制单个不超过 16 MB）"
             onClick={async () => {
               try {
                 const picked = await open({
