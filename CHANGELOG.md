@@ -2,6 +2,11 @@
 
 All notable changes to **ZSpace Kit（极空工具箱）** (repository `ZSpaceMemo`) are documented in this file.
 
+## [0.8.3] - 2026-11-27
+
+### Fixed
+- **Windows 系统提醒与应用内兜底**：规范 Windows 通知注册表 `IconUri` 为 `file:///` URI 格式，并在提醒触发与「测试提醒」时同步派发 `reminder:fired` 事件，在应用内弹出顶部提醒条并播放提示音兜底。
+
 ## [0.8.2] - 2026-11-27
 
 ### Added & Fixed
