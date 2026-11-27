@@ -71,19 +71,19 @@ pub struct UpdateProgressEvent {
 }
 
 fn compare_semver(a: &str, b: &str) -> std::cmp::Ordering {
-    let split_pre = |s: &str| -> (&str, Option<&str>) {
+    fn split_pre(s: &str) -> (&str, Option<&str>) {
         let trimmed = s.trim().trim_start_matches(['v', 'V']);
         let main = trimmed.split('+').next().unwrap_or("");
         match main.split_once('-') {
             Some((core, pre)) if !pre.is_empty() => (core, Some(pre)),
             _ => (main, None),
         }
-    };
-    let parse_nums = |core: &str| -> Vec<u64> {
+    }
+    fn parse_nums(core: &str) -> Vec<u64> {
         core.split('.')
             .map(|p| p.parse::<u64>().unwrap_or(0))
             .collect()
-    };
+    }
 
     let (ca, pa_pre) = split_pre(a);
     let (cb, pb_pre) = split_pre(b);
