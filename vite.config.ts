@@ -20,6 +20,7 @@ export default defineConfig({
       : undefined,
   },
   build: {
+    target: ["chrome114", "safari17.0"],
     rollupOptions: {
       output: {
         manualChunks: {
@@ -30,7 +31,6 @@ export default defineConfig({
             "@tauri-apps/plugin-opener",
           ],
           "vendor-icons": ["lucide-react"],
-          "vendor-lunar": ["lunar-javascript"],
         },
       },
     },

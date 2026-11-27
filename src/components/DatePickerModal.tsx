@@ -1,9 +1,10 @@
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { Schedule } from "../types";
 import { addDays, addMonths, dateLabel, formatDate, nextMonday, parseDate, todayStr } from "../utils/date";
 import { getDayCalendarMeta } from "../utils/lunar";
 import { gridOffset, usePrefs, weekdayHeaders } from "../utils/prefs";
+import { ModalDialog } from "./Modal";
 import { TimePicker } from "./TimePicker";
 
 interface Props {
@@ -31,14 +32,6 @@ export function DatePickerModal({
   const [allDay, setAllDay] = useState(schedule.all_day || !schedule.due?.time);
   const [dueDate, setDueDate] = useState<string | null>(schedule.due?.date ?? null);
   const [dueTime, setDueTime] = useState<string | null>(schedule.due?.time ?? null);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   function buildSchedule(): Schedule {
     const isAllDay = allDay || !dueTime;
@@ -86,14 +79,13 @@ export function DatePickerModal({
       ];
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 p-4"
-      onClick={onClose}
+    <ModalDialog
+      open
+      ariaLabel={titleText ?? "选择日期"}
+      onClose={onClose}
+      dialogClassName="w-[min(360px,calc(100vw-2rem))]"
+      className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xl"
     >
-      <div
-        className="w-full max-w-[360px] rounded-2xl border border-slate-200 bg-white p-4 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
         {titleText && (
           <div className="mb-2.5 text-xs font-medium text-blue-700 bg-blue-50/80 rounded-lg px-2.5 py-1.5">
             {titleText}
@@ -261,7 +253,6 @@ export function DatePickerModal({
             确定
           </button>
         </div>
-      </div>
-    </div>
+    </ModalDialog>
   );
 }

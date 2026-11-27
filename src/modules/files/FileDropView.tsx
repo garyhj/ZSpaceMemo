@@ -23,6 +23,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api";
 import type { AppSettings } from "../../types";
+import { formatBytes } from "../../utils/format";
 import {
   clearTransferJobs,
   initTransferListener,
@@ -48,18 +49,6 @@ interface NasEntry {
 }
 
 const PAGE_SIZE = 100;
-
-function formatBytes(bytes: number): string {
-  if (!bytes || bytes <= 0) return "-";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let n = bytes;
-  let i = 0;
-  while (n >= 1024 && i < units.length - 1) {
-    n /= 1024;
-    i++;
-  }
-  return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
-}
 
 function parseBoolFlag(v: unknown): boolean {
   if (typeof v === "boolean") return v;
@@ -306,7 +295,7 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
       onToast(error);
       return { ok: false, error };
     }
-    const batchId = `up_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const batchId = `up_${crypto.randomUUID()}`;
     try {
       const summary = await api.nasUploadPaths(paths, targetDir, true, batchId);
       setTransferBatchStatus("");
@@ -359,7 +348,7 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
     const localDest = await save({ defaultPath: entry.name });
     if (!localDest) return;
     const job: TransferJob = {
-      id: `dl_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: `dl_${crypto.randomUUID()}`,
       direction: "download",
       name: entry.name,
       localPath: localDest,
@@ -382,10 +371,10 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
     if (!targetDir || Array.isArray(targetDir)) return;
 
     const usedNames = new Set<string>();
-    const batchJobs: TransferJob[] = selectedFiles.map((entry, idx) => {
+    const batchJobs: TransferJob[] = selectedFiles.map((entry) => {
       const localName = uniqueDownloadFilename(entry.name, usedNames);
       return {
-        id: `dl_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 5)}`,
+        id: `dl_${crypto.randomUUID()}`,
         direction: "download",
         name: localName,
         localPath: joinLocalPath(targetDir, localName),
@@ -587,7 +576,7 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
               清空记录
             </button>
           </div>
-          <div className="max-h-28 space-y-1 overflow-y-auto">
+          <div className="max-h-28 space-y-1 overscroll-contain overflow-y-auto">
             {jobs.map((j) => (
               <div key={j.id} className="flex items-center gap-2 text-xs">
                 {j.direction === "upload" ? (
@@ -661,7 +650,7 @@ export function FileDropView({ settings, onSettingsChanged, onToast }: Props) {
       )}
 
       {/* File List */}
-      <div className="flex-1 overflow-y-auto px-3 py-2">
+      <div className="flex-1 overscroll-contain overflow-y-auto px-3 py-2">
         {searchMode && (
           <div className="mb-2 flex items-center justify-between px-2 text-xs text-blue-600">
             <span>在「我的文件/downloads」中搜索「{query}」的结果（共 {entries.length} 项）</span>

@@ -11,9 +11,10 @@ import {
   Trash2,
   XCircle,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { Priority, Task } from "../types";
 import { addDays, nextMonday, PRIORITY_META, todayStr } from "../utils/date";
+import { AnchoredPopover } from "./AnchoredPopover";
 
 export interface ContextMenuState {
   task: Task;
@@ -49,34 +50,16 @@ export function TaskContextMenu({
   onCopyTitle,
   onDelete,
 }: Props) {
-  const ref = useRef<HTMLDivElement>(null);
   const [showLists, setShowLists] = useState(false);
 
   useEffect(() => {
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKey);
     window.addEventListener("blur", onClose);
-    return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("blur", onClose);
-    };
+    return () => window.removeEventListener("blur", onClose);
   }, [onClose]);
 
   const { task } = menu;
   const done = task.status === "completed" || task.status === "ended";
   const t = todayStr();
-
-  const width = menu.mode === "date" ? 188 : 228;
-  const estHeight = menu.mode === "date" ? 168 : 340;
-  const left = Math.max(8, Math.min(menu.x, window.innerWidth - width - 12));
-  const top = Math.max(8, Math.min(menu.y, window.innerHeight - estHeight - 12));
 
   const dateShortcuts: [string | null, string, React.ReactNode][] = [
     [t, "今天", <Sun className="h-3.5 w-3.5 text-amber-500" />],
@@ -87,10 +70,13 @@ export function TaskContextMenu({
 
   if (menu.mode === "date") {
     return (
-      <div
-        ref={ref}
-        style={{ left, top, width }}
-        className="fixed z-50 rounded-xl border border-slate-200 bg-white p-1 text-xs shadow-xl animate-pop-in"
+      <AnchoredPopover
+        open
+        onClose={onClose}
+        anchorPoint={{ x: menu.x, y: menu.y }}
+        align="left"
+        side="bottom"
+        className="w-[188px] rounded-xl border border-slate-200 bg-white p-1 text-xs shadow-xl"
       >
         <div className="px-2 py-1 text-[11px] font-medium text-slate-400">快速改期</div>
         {dateShortcuts.map(([d, label, icon]) => (
@@ -108,15 +94,18 @@ export function TaskContextMenu({
             {task.schedule.due?.date === d && <Check className="h-3.5 w-3.5 text-blue-600" />}
           </button>
         ))}
-      </div>
+      </AnchoredPopover>
     );
   }
 
   return (
-    <div
-      ref={ref}
-      style={{ left, top, width }}
-      className="fixed z-50 rounded-xl border border-slate-200 bg-white p-1.5 text-[13px] shadow-xl animate-pop-in"
+    <AnchoredPopover
+      open
+      onClose={onClose}
+      anchorPoint={{ x: menu.x, y: menu.y }}
+      align="left"
+      side="bottom"
+      className="max-h-[calc(100vh-16px)] w-[228px] overscroll-contain overflow-y-auto rounded-xl border border-slate-200 bg-white p-1.5 text-[13px] shadow-xl"
     >
       {/* Quick date row */}
       <div className="px-1.5 pb-1 pt-0.5 text-[11px] text-slate-400">日期</div>
@@ -210,7 +199,7 @@ export function TaskContextMenu({
           <span className="text-[10px] text-slate-400">{task.list ?? "无"}</span>
         </button>
         {showLists && (
-          <div className="mt-0.5 max-h-36 overflow-y-auto rounded-lg border border-slate-100 bg-slate-50/80 p-1">
+          <div className="mt-0.5 max-h-36 overscroll-contain overflow-y-auto rounded-lg border border-slate-100 bg-slate-50/80 p-1">
             <button
               type="button"
               onClick={() => {
@@ -265,6 +254,6 @@ export function TaskContextMenu({
         <Trash2 className="h-3.5 w-3.5" />
         <span>删除</span>
       </button>
-    </div>
+    </AnchoredPopover>
   );
 }

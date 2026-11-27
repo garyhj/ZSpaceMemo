@@ -15,7 +15,6 @@
     "@tauri-apps/plugin-dialog": "^2.8.4",
     "@tauri-apps/plugin-opener": "^2.2.0",
     "lucide-react": "^0.469.0",
-    "lunar-javascript": "^1.7.8",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

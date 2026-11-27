@@ -1,5 +1,7 @@
 import { api } from "../api";
 
+export { formatBytesCompact } from "./format";
+
 export interface ReleaseUpdateInfo {
   current_version: string;
   latest_version: string;
@@ -35,10 +37,4 @@ export async function startInAppUpdate(info: ReleaseUpdateInfo): Promise<void> {
     info.asset_name,
     info.asset_sha256 ?? null
   );
-}
-
-export function formatBytesCompact(bytes?: number | null): string {
-  if (!bytes || bytes <= 0) return "";
-  const mb = bytes / (1024 * 1024);
-  return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`;
 }

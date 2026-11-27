@@ -3,6 +3,7 @@ import { api } from "../api";
 import type { RepeatFreq, RepeatRule } from "../types";
 import { addDays, dateLabel, describeRepeatZh, parseDate, todayStr, weekdayCode } from "../utils/date";
 import { getLunarCoords, LUNAR_DAY_NAMES, LUNAR_MONTH_NAMES } from "../utils/lunar";
+import { ModalDialog } from "./Modal";
 
 interface Props {
   baseDate: string | null;
@@ -27,7 +28,7 @@ export function RepeatModal({ baseDate, repeat, onSave, onClose }: Props) {
   const anchorLunar = getLunarCoords(anchor);
 
   const [rule, setRule] = useState<RepeatRule | null>(() =>
-    repeat ? JSON.parse(JSON.stringify(repeat)) : null
+    repeat ? structuredClone(repeat) : null
   );
   const [customOpen, setCustomOpen] = useState(Boolean(repeat));
   const [previewDates, setPreviewDates] = useState<string[]>([]);
@@ -199,14 +200,13 @@ export function RepeatModal({ baseDate, repeat, onSave, onClose }: Props) {
     rule?.calendar === "lunar" && (rule.freq === "monthly" || rule.freq === "yearly");
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 p-4"
-      onClick={onClose}
+    <ModalDialog
+      open
+      ariaLabel="自定义重复"
+      onClose={onClose}
+      dialogClassName="w-[min(460px,calc(100vw-2rem))]"
+      className="max-h-[90vh] overscroll-contain overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4 shadow-xl"
     >
-      <div
-        className="max-h-[90vh] w-full max-w-[460px] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
         <div className="flex items-baseline justify-between">
           <span className="font-semibold text-sm">重复规则</span>
           <span className="text-[11px] text-slate-400">整个系列对应一条极空间笔记</span>
@@ -689,7 +689,6 @@ export function RepeatModal({ baseDate, repeat, onSave, onClose }: Props) {
             确定
           </button>
         </div>
-      </div>
-    </div>
+    </ModalDialog>
   );
 }

@@ -2,6 +2,7 @@ import { X } from "lucide-react";
 import { useState } from "react";
 import type { Reminder, Schedule } from "../types";
 import { previewFireTime, reminderLabel } from "../utils/date";
+import { ModalDialog } from "./Modal";
 
 interface Props {
   schedule: Schedule;
@@ -48,25 +49,24 @@ export function ReminderModal({
     if (idx >= 0) {
       setList(list.filter((_, i) => i !== idx));
     } else {
-      setList([...list, { ...r, id: `r_${Date.now()}_${list.length}` }]);
+      setList([...list, { ...r, id: `r_${crypto.randomUUID()}` }]);
     }
   }
 
   function addCustom() {
     const mult = { m: 1, h: 60, d: 1440, w: 10080 }[customUnit];
     const mins = -Math.max(1, customNum) * mult;
-    toggle({ type: "relative", id: `c_${Date.now()}`, offset_minutes: mins });
+    toggle({ type: "relative", id: `c_${crypto.randomUUID()}`, offset_minutes: mins });
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 p-4"
-      onClick={onClose}
+    <ModalDialog
+      open
+      ariaLabel="提醒设置"
+      onClose={onClose}
+      dialogClassName="w-[min(390px,calc(100vw-2rem))]"
+      className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xl"
     >
-      <div
-        className="w-full max-w-[390px] rounded-2xl border border-slate-200 bg-white p-4 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
         <div className="font-semibold text-sm">提醒设置</div>
         <p className="mt-0.5 text-xs text-slate-500">
           提醒与截止时间相互独立，支持设置多个。由桌面端常驻托盘调度；关机错过的提醒将在下次开机时补发。
@@ -167,7 +167,6 @@ export function ReminderModal({
             确定
           </button>
         </div>
-      </div>
-    </div>
+    </ModalDialog>
   );
 }

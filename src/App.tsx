@@ -24,11 +24,13 @@ import {
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "./api";
 import { AuthScreen } from "./components/AuthScreen";
+import { ConfirmDialogHost, confirmAction } from "./components/ConfirmDialog";
 import { QuickAddBar } from "./components/QuickAddBar";
 import { TaskContextMenu, type ContextMenuState } from "./components/TaskContextMenu";
 import { TaskDetail } from "./components/TaskDetail";
 import { TaskListItem } from "./components/TaskListItem";
 import { TOOLBOX_MODULES, type WorkspaceId } from "./modules/registry";
+import { groupByKey } from "./utils/format";
 
 const FloatingWindow = lazy(() =>
   import("./components/FloatingWindow").then((m) => ({ default: m.FloatingWindow }))
@@ -172,9 +174,12 @@ export default function App() {
 
   if (mode === "floating") {
     return (
-      <Suspense fallback={<WorkspaceLoadingShell compact />}>
-        <FloatingWindow />
-      </Suspense>
+      <>
+        <Suspense fallback={<WorkspaceLoadingShell compact />}>
+          <FloatingWindow />
+        </Suspense>
+        <ConfirmDialogHost />
+      </>
     );
   }
   if (mode === "sticky") {
@@ -182,26 +187,37 @@ export default function App() {
     const id = Number(rawId || "0");
     if (Number.isInteger(id) && id > 0) {
       return (
-        <Suspense fallback={<WorkspaceLoadingShell compact />}>
-          <StickyFloatingCard noteId={id} />
-        </Suspense>
+        <>
+          <Suspense fallback={<WorkspaceLoadingShell compact />}>
+            <StickyFloatingCard noteId={id} />
+          </Suspense>
+          <ConfirmDialogHost />
+        </>
       );
     }
     return (
-      <div className="flex h-screen flex-col items-center justify-center gap-2 bg-amber-50 p-4 text-center text-xs text-slate-600">
-        <div>无效的桌面便签参数（id={rawId ?? "空"}）</div>
-        <button
-          type="button"
-          onClick={() => window.close()}
-          className="rounded-lg bg-slate-800 px-3 py-1 text-white hover:bg-slate-700"
-        >
-          关闭窗口
-        </button>
-      </div>
+      <>
+        <div className="flex h-screen flex-col items-center justify-center gap-2 bg-amber-50 p-4 text-center text-xs text-slate-600">
+          <div>无效的桌面便签参数（id={rawId ?? "空"}）</div>
+          <button
+            type="button"
+            onClick={() => window.close()}
+            className="rounded-lg bg-slate-800 px-3 py-1 text-white hover:bg-slate-700"
+          >
+            关闭窗口
+          </button>
+        </div>
+        <ConfirmDialogHost />
+      </>
     );
   }
 
-  return <MainWindow />;
+  return (
+    <>
+      <MainWindow />
+      <ConfirmDialogHost />
+    </>
+  );
 }
 
 function MainWindow() {
@@ -887,11 +903,7 @@ function MainWindow() {
   const upcomingGroups =
     noSubFilter && view === "upcoming"
       ? Object.entries(
-          displayedTasks.reduce<Record<string, Task[]>>((acc, t) => {
-            const d = effectiveDue(t)?.date ?? "未安排";
-            (acc[d] ??= []).push(t);
-            return acc;
-          }, {})
+          groupByKey(displayedTasks, (t) => effectiveDue(t)?.date ?? "未安排")
         ).sort(([a], [b]) => (a === "未安排" ? 1 : b === "未安排" ? -1 : a.localeCompare(b)))
       : [];
 
@@ -1038,7 +1050,9 @@ function MainWindow() {
             target.isContentEditable)
       );
       const hasDialog = Boolean(
-        ctxMenu || showSettings || document.querySelector('[role="dialog"], .fixed.z-50')
+        ctxMenu ||
+          showSettings ||
+          document.querySelector('[role="dialog"], dialog[open], :popover-open, .fixed.z-50')
       );
       const mod = e.metaKey || e.ctrlKey;
       const noMods = !e.ctrlKey && !e.metaKey && !e.altKey;
@@ -1067,7 +1081,9 @@ function MainWindow() {
           return;
         }
         if (showSettings) return;
-        if (document.querySelector('[role="dialog"], .fixed.z-50')) return;
+        if (document.querySelector('[role="dialog"], dialog[open], :popover-open, .fixed.z-50')) {
+          return;
+        }
         if (editing) {
           target?.blur();
           return;
@@ -1118,9 +1134,19 @@ function MainWindow() {
         void handleToggle(selected);
       } else if (selected && (e.key === "Delete" || e.key === "Backspace") && noMods) {
         e.preventDefault();
-        if (window.confirm(`确定删除「${selected.title}」吗？`)) {
-          void handleDelete(selected);
-        }
+        const targetTask = selected;
+        void (async () => {
+          if (
+            await confirmAction({
+              title: "删除任务",
+              message: `确定删除「${targetTask.title}」吗？`,
+              confirmText: "删除",
+              danger: true,
+            })
+          ) {
+            await handleDelete(targetTask);
+          }
+        })();
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -1660,7 +1686,7 @@ function MainWindow() {
               <QuickAddBar inputRef={quickAddRef} lists={lists} onCreate={handleCreate} />
             </div>
 
-            <div className="flex-1 overflow-y-auto px-2 pb-6">
+            <div className="flex-1 overscroll-contain overflow-y-auto px-2 pb-6">
               {!loaded ? (
                 <div className="space-y-3 px-2.5 pt-4">
                   {[72, 55, 64, 40, 58].map((w, i) => (
@@ -1722,22 +1748,23 @@ function MainWindow() {
               )}
 
               {loaded && completedForView.length > 0 && (
-                <div className="mt-2">
-                  <button
-                    type="button"
-                    onClick={() => setPrefs({ showCompletedGroup: !prefs.showCompletedGroup })}
-                    className="flex w-full items-center gap-1 px-2.5 pb-1 pt-3 text-xs font-semibold text-slate-400 hover:text-slate-600"
-                  >
-                    <ChevronRight
-                      className={`h-3.5 w-3.5 transition-transform ${prefs.showCompletedGroup ? "rotate-90" : ""}`}
-                    />
+                <details
+                  open={prefs.showCompletedGroup}
+                  onToggle={(e) => {
+                    const nextOpen = e.currentTarget.open;
+                    if (nextOpen !== prefs.showCompletedGroup) {
+                      setPrefs({ showCompletedGroup: nextOpen });
+                    }
+                  }}
+                  className="group/completed mt-2"
+                >
+                  <summary className="flex cursor-pointer list-none items-center gap-1 px-2.5 pb-1 pt-3 text-xs font-semibold text-slate-400 select-none hover:text-slate-600 [&::-webkit-details-marker]:hidden">
+                    <ChevronRight className="h-3.5 w-3.5 transition-transform group-open/completed:rotate-90" />
                     已完成
                     <span className="font-normal">{completedForView.length}</span>
-                  </button>
-                  {prefs.showCompletedGroup && (
-                    <div className="animate-fade-in">{completedForView.map(renderTask)}</div>
-                  )}
-                </div>
+                  </summary>
+                  <div className="animate-fade-in">{completedForView.map(renderTask)}</div>
+                </details>
               )}
             </div>
           </main>
@@ -1907,9 +1934,18 @@ function MainWindow() {
             showToast("已复制任务标题");
           }}
           onDelete={(t) => {
-            if (window.confirm(`确定删除「${t.title}」吗？`)) {
-              void handleDelete(t);
-            }
+            void (async () => {
+              if (
+                await confirmAction({
+                  title: "删除任务",
+                  message: `确定删除「${t.title}」吗？`,
+                  confirmText: "删除",
+                  danger: true,
+                })
+              ) {
+                await handleDelete(t);
+              }
+            })();
           }}
         />
       )}

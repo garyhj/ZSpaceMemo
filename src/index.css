@@ -66,6 +66,10 @@
   }
 }
 
+:root {
+  color-scheme: light;
+}
+
 html,
 body,
 #root {
@@ -87,23 +91,83 @@ code,
   user-select: text;
 }
 
-/* Thin, unobtrusive scrollbars (Windows WebView2 shows chunky ones by default) */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: #d4d4d8 transparent;
+@layer base {
+  dialog.zsm-dialog {
+    margin: auto;
+    border: none;
+    padding: 0;
+    background: transparent;
+    color: inherit;
+    max-width: calc(100vw - 2rem);
+    max-height: calc(100dvh - 2rem);
+    overflow: visible;
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    transition:
+      opacity 140ms ease-out,
+      transform 140ms ease-out;
+  }
+
+  dialog.zsm-dialog::backdrop {
+    background: rgb(15 23 42 / 0.35);
+    transition: background-color 140ms ease-out;
+  }
+
+  @starting-style {
+    dialog.zsm-dialog[open] {
+      opacity: 0;
+      transform: translateY(4px) scale(0.985);
+    }
+
+    dialog.zsm-dialog[open]::backdrop {
+      background: rgb(15 23 42 / 0);
+    }
+  }
+
+  [popover].zsm-popover {
+    margin: 0;
+    border: none;
+    padding: 0;
+    background: transparent;
+    color: inherit;
+    overflow: visible;
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    transition:
+      opacity 120ms ease-out,
+      transform 120ms ease-out;
+  }
+
+  @starting-style {
+    [popover].zsm-popover:popover-open {
+      opacity: 0;
+      transform: translateY(4px) scale(0.98);
+    }
+  }
 }
-*::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+
+/* Thin, unobtrusive scrollbars: avoid standard/webkit cascade conflicts on Chromium 121+ */
+@supports (scrollbar-width: thin) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #d4d4d8 transparent;
+  }
 }
-*::-webkit-scrollbar-thumb {
-  background: #d4d4d8;
-  border-radius: 8px;
-  border: 2px solid transparent;
-  background-clip: content-box;
-}
-*::-webkit-scrollbar-track {
-  background: transparent;
+
+@supports not (scrollbar-width: thin) {
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: #d4d4d8;
+    border-radius: 8px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
 }
 
 .skeleton {
@@ -118,5 +182,15 @@ code,
   }
   100% {
     background-position: 0 50%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

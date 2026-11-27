@@ -13,9 +13,6 @@ interface Props {
   onOpenMenu?: (task: Task, x: number, y: number, mode?: "full" | "date") => void;
 }
 
-/** Delay before a just-checked task leaves the list, so the user sees the tick + strike-through. */
-const DONE_ANIM_MS = 320;
-
 function TaskListItemImpl({ task, selected, compact, onSelect, onToggle, onOpenMenu }: Props) {
   const prefs = usePrefs();
   const [completing, setCompleting] = useState(false);
@@ -29,15 +26,14 @@ function TaskListItemImpl({ task, selected, compact, onSelect, onToggle, onOpenM
   function handleCheck(e: React.MouseEvent) {
     e.stopPropagation();
     if (completing) return;
-    if (done) {
+    const prefersReducedMotion =
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (done || task.repeat || prefersReducedMotion) {
       onToggle(task);
       return;
     }
     setCompleting(true);
-    window.setTimeout(() => {
-      onToggle(task);
-      setCompleting(false);
-    }, DONE_ANIM_MS);
   }
 
   return (
@@ -48,6 +44,12 @@ function TaskListItemImpl({ task, selected, compact, onSelect, onToggle, onOpenM
         if (compact) return;
         e.dataTransfer.setData("text/x-zsm-task-id", String(task.id));
         e.dataTransfer.effectAllowed = "move";
+      }}
+      onAnimationEnd={(e) => {
+        if (e.animationName === "task-done" && completing) {
+          setCompleting(false);
+          onToggle(task);
+        }
       }}
       onClick={() => onSelect(task)}
       onContextMenu={(e) => {

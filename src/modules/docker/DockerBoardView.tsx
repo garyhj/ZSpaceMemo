@@ -1,6 +1,8 @@
 import { Box, Check, Copy, Play, RefreshCw, RotateCw, Search, Square, Terminal, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../../api";
+import { confirmAction } from "../../components/ConfirmDialog";
+import { ModalDialog } from "../../components/Modal";
 
 interface Props {
   onToast: (msg: string) => void;
@@ -107,7 +109,17 @@ export function DockerBoardView({ onToast }: Props) {
 
   async function runAction(c: ContainerItem, action: "start" | "stop" | "restart") {
     const zh = action === "start" ? "启动" : action === "stop" ? "停止" : "重启";
-    if (action === "stop" && !window.confirm(`确定停止容器「${c.name}」吗？`)) return;
+    if (
+      action === "stop" &&
+      !(await confirmAction({
+        title: "停止容器",
+        message: `确定停止容器「${c.name}」吗？`,
+        confirmText: "停止",
+        danger: true,
+      }))
+    ) {
+      return;
+    }
     setActingId(c.id);
     try {
       await api.nasDockerAction(action, c.id);
@@ -305,14 +317,13 @@ export function DockerBoardView({ onToast }: Props) {
       </div>
 
       {logsTarget && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-6"
-          onClick={() => setLogsTarget(null)}
+        <ModalDialog
+          open
+          ariaLabel="容器日志"
+          onClose={() => setLogsTarget(null)}
+          dialogClassName="w-[min(48rem,calc(100vw-3rem))]"
+          className="flex max-h-[80vh] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 text-slate-100 shadow-2xl"
         >
-          <div
-            className="flex max-h-[80vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 text-slate-100 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
             <div className="flex items-center justify-between border-b border-slate-800 px-4 py-2.5">
               <span className="text-xs font-semibold">容器日志 · {logsTarget.name}</span>
               <div className="flex items-center gap-1.5">
@@ -337,11 +348,10 @@ export function DockerBoardView({ onToast }: Props) {
                 </button>
               </div>
             </div>
-            <pre className="select-text flex-1 overflow-auto p-4 font-mono text-[11px] leading-relaxed text-slate-200 whitespace-pre-wrap">
+            <pre className="select-text flex-1 overscroll-contain overflow-auto p-4 font-mono text-[11px] leading-relaxed text-slate-200 whitespace-pre-wrap">
               {logsTarget.text}
             </pre>
-          </div>
-        </div>
+        </ModalDialog>
       )}
     </div>
   );

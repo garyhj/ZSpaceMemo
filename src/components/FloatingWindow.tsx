@@ -15,6 +15,7 @@ import { api } from "../api";
 import type { CreateTaskInput, Priority, Task } from "../types";
 import { addDays, effectiveDue, isTaskOverdue, parseDate, todayStr } from "../utils/date";
 import { usePrefs } from "../utils/prefs";
+import { confirmAction } from "./ConfirmDialog";
 import { QuickAddBar } from "./QuickAddBar";
 import { TaskContextMenu, type ContextMenuState } from "./TaskContextMenu";
 import { TaskListItem } from "./TaskListItem";
@@ -223,7 +224,16 @@ export function FloatingWindow() {
   }
 
   async function handleDelete(task: Task) {
-    if (!window.confirm(`确定删除「${task.title}」吗？`)) return;
+    if (
+      !(await confirmAction({
+        title: "删除任务",
+        message: `确定删除「${task.title}」吗？`,
+        confirmText: "删除",
+        danger: true,
+      }))
+    ) {
+      return;
+    }
     const prev = tasks;
     setTasks((cur) => cur.filter((t) => t.id !== task.id));
     try {
@@ -462,7 +472,7 @@ export function FloatingWindow() {
         <QuickAddBar compact inputRef={inputRef} busy={busy} onCreate={handleCreate} />
       </div>
 
-      <div className="flex-1 overflow-y-auto px-1 pb-2">
+      <div className="flex-1 overscroll-contain overflow-y-auto px-1 pb-2">
         {groups.length === 0 ? (
           <div className="p-8 text-center text-xs text-slate-400">暂无待办 🎉</div>
         ) : (

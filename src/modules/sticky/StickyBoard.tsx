@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api";
+import { confirmAction } from "../../components/ConfirmDialog";
 import type { CreateTaskInput, StickyColor, StickyNote } from "../../types";
 import { STICKY_COLORS, STICKY_COLOR_KEYS } from "./stickyColors";
 
@@ -102,7 +103,16 @@ export function StickyBoard({ onConvertToTodo, onToast }: Props) {
   }
 
   async function handleDelete(note: StickyNote) {
-    if (!window.confirm(`确定删除便签「${note.title || "无标题"}」吗？`)) return;
+    if (
+      !(await confirmAction({
+        title: "删除便签",
+        message: `确定删除便签「${note.title || "无标题"}」吗？`,
+        confirmText: "删除",
+        danger: true,
+      }))
+    ) {
+      return;
+    }
     const prev = notesRef.current.find((n) => n.id === note.id);
     setNotes((cur) => cur.filter((n) => n.id !== note.id));
     try {
@@ -228,7 +238,7 @@ export function StickyBoard({ onConvertToTodo, onToast }: Props) {
       </div>
 
       {/* Cards Grid */}
-      <div className="flex-1 overflow-y-auto bg-slate-50/50 p-5">
+      <div className="flex-1 overscroll-contain overflow-y-auto bg-slate-50/50 p-5">
         {!loaded ? (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
             {[1, 2, 3].map((i) => (

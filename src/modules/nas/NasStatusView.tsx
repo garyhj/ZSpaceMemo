@@ -523,7 +523,7 @@ export function NasStatusView({ settings, onSettingsChanged, onToast }: Props) {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto bg-slate-50/50 p-5 space-y-5">
+      <div className="flex-1 overscroll-contain overflow-y-auto bg-slate-50/50 p-5 space-y-5">
         {/* Hardware Cards */}
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <StatCard

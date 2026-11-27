@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api";
+import { confirmAction } from "../../components/ConfirmDialog";
 import type { AppSettings } from "../../types";
 
 interface Props {
@@ -333,7 +334,17 @@ export function DownloaderView({ settings, onToast }: Props) {
 
   async function handleTaskAction(item: DownloadTaskItem, action: "start" | "stop" | "delete") {
     const zh = action === "start" ? "继续" : action === "stop" ? "暂停" : "删除";
-    if (action === "delete" && !window.confirm(`确定从 NAS 下载器删除「${item.name}」吗？`)) return;
+    if (
+      action === "delete" &&
+      !(await confirmAction({
+        title: "删除下载任务",
+        message: `确定从 NAS 下载器删除「${item.name}」吗？`,
+        confirmText: "删除",
+        danger: true,
+      }))
+    ) {
+      return;
+    }
     setActingId(item.idKey);
     try {
       await api.nasDownloadAction(action, [item.id]);
@@ -522,7 +533,7 @@ export function DownloaderView({ settings, onToast }: Props) {
         </form>
       )}
 
-      <div className="flex-1 overflow-y-auto bg-slate-50/50 p-5 space-y-4">
+      <div className="flex-1 overscroll-contain overflow-y-auto bg-slate-50/50 p-5 space-y-4">
         {showRaw && rawJson && (
           <div className="rounded-2xl border border-slate-200 bg-white p-3.5 space-y-2">
             <div className="flex items-center justify-between">
@@ -538,7 +549,7 @@ export function DownloaderView({ settings, onToast }: Props) {
                 {copiedRaw ? "已复制" : "复制 JSON"}
               </button>
             </div>
-            <pre className="max-h-56 overflow-auto rounded-xl bg-slate-900 p-3 font-mono text-[11px] text-slate-100 select-text">
+            <pre className="max-h-56 overscroll-contain overflow-auto rounded-xl bg-slate-900 p-3 font-mono text-[11px] text-slate-100 select-text">
               {JSON.stringify(rawJson, null, 2)}
             </pre>
           </div>

@@ -24,6 +24,8 @@ import {
   type ReleaseUpdateInfo,
   type UpdateProgressEvent,
 } from "../utils/updater";
+import { confirmAction } from "./ConfirmDialog";
+import { ModalDialog } from "./Modal";
 import { TimePicker } from "./TimePicker";
 
 interface Props {
@@ -150,16 +152,6 @@ export function SettingsModal({
       .catch(() => {});
   }, [loadInitialSettings]);
 
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !installingUpdate && !recordingShortcut) {
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [installingUpdate, recordingShortcut, onClose]);
-
   function handleRequestClose() {
     if (!installingUpdate) onClose();
   }
@@ -199,17 +191,15 @@ export function SettingsModal({
 
   if (!settings) {
     return (
-      <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 p-4"
-        onClick={handleRequestClose}
+      <ModalDialog
+        open
+        ariaLabel="设置"
+        closeOnEsc={!installingUpdate && !recordingShortcut}
+        closeOnBackdrop={!installingUpdate}
+        onClose={handleRequestClose}
+        dialogClassName="w-[min(28rem,calc(100vw-2rem))]"
+        className="flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl"
       >
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="设置"
-          className="flex w-full max-w-md flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl"
-          onClick={(e) => e.stopPropagation()}
-        >
           <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
             <h2 className="text-base font-semibold text-slate-900">设置</h2>
             <button
@@ -237,8 +227,7 @@ export function SettingsModal({
               <div>正在加载配置…</div>
             )}
           </div>
-        </div>
-      </div>
+      </ModalDialog>
     );
   }
 
@@ -337,17 +326,15 @@ export function SettingsModal({
   const isInsecureHttp = lanHost.trim().toLowerCase().startsWith("http://");
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 p-4"
-      onClick={handleRequestClose}
+    <ModalDialog
+      open
+      ariaLabel="设置"
+      closeOnEsc={!installingUpdate && !recordingShortcut}
+      closeOnBackdrop={!installingUpdate}
+      onClose={handleRequestClose}
+      dialogClassName="w-[min(42rem,calc(100vw-2rem))]"
+      className="flex max-h-[92vh] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl"
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="设置"
-        className="flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
         {/* Fixed Modal Header */}
         <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-5 py-3">
           <div className="flex items-center gap-3">
@@ -375,7 +362,7 @@ export function SettingsModal({
         </div>
 
         {/* Fixed-Height Content Area (prevents layout jitter across tabs) */}
-        <div className="h-[420px] max-h-[calc(92vh-96px)] overflow-y-auto px-5 py-3.5 [scrollbar-gutter:stable]">
+        <div className="h-[420px] max-h-[calc(92vh-96px)] overscroll-contain overflow-y-auto px-5 py-3.5 [scrollbar-gutter:stable]">
           {tab === "shortcuts" ? (
             <div className="space-y-3 text-xs">
               <div className="space-y-2.5 rounded-xl border border-blue-200/80 bg-blue-50/50 p-3.5">
@@ -614,9 +601,18 @@ export function SettingsModal({
                       type="button"
                       disabled={busy}
                       onClick={() => {
-                        if (window.confirm("确定退出当前极空间授权？")) {
-                          void onLogout();
-                        }
+                        void (async () => {
+                          if (
+                            await confirmAction({
+                              title: "退出极空间授权",
+                              message: "确定退出当前极空间授权？",
+                              confirmText: "退出授权",
+                              danger: true,
+                            })
+                          ) {
+                            await onLogout();
+                          }
+                        })();
                       }}
                       className="ml-auto inline-flex items-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1 text-red-600 hover:bg-red-50"
                     >
@@ -1042,8 +1038,7 @@ export function SettingsModal({
             打开日志目录
           </button>
         </div>
-      </div>
-    </div>
+    </ModalDialog>
   );
 }
 

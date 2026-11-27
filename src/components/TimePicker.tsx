@@ -1,6 +1,7 @@
 import { Clock, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { formatTime, usePrefs } from "../utils/prefs";
+import { AnchoredPopover } from "./AnchoredPopover";
 
 interface Props {
   value: string | null; // "HH:MM" (24h) or null
@@ -63,25 +64,23 @@ export function TimePicker({
 }: Props) {
   const prefs = usePrefs();
   const is12 = prefs.timeFormat === "12h";
-  const [open, setOpen] = useState(false);
+  const [open, setRawOpen] = useState(false);
   const [focused, setFocused] = useState(false);
   const [text, setText] = useState(value ?? "");
   const containerRef = useRef<HTMLDivElement>(null);
+  const closedAtRef = useRef(0);
+
+  function setOpen(next: React.SetStateAction<boolean>) {
+    setRawOpen((prev) => {
+      const val = typeof next === "function" ? next(prev) : next;
+      if (val && !prev && Date.now() - closedAtRef.current < 200) return false;
+      return val;
+    });
+  }
 
   useEffect(() => {
     setText(value ?? "");
   }, [value]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    window.addEventListener("mousedown", onDown);
-    return () => window.removeEventListener("mousedown", onDown);
-  }, [open]);
 
   const [curH, curM] = (value ?? "18:00").split(":");
 
@@ -153,81 +152,91 @@ export function TimePicker({
         )}
       </div>
 
-      {open && !disabled && (
-        <div className="absolute right-0 bottom-full z-50 mb-1.5 w-60 rounded-xl border border-slate-200 bg-white p-2.5 shadow-xl">
-          <div className="mb-2 flex flex-wrap gap-1">
-            {QUICK_TIMES.map((val) => (
-              <button
-                key={val}
-                type="button"
-                onClick={() => {
-                  onChange(val);
-                  setText(val);
-                  setOpen(false);
-                }}
-                className={`rounded-md px-2 py-0.5 text-[11px] transition ${
-                  value === val
-                    ? "bg-blue-600 text-white"
-                    : "bg-slate-100 text-slate-600 hover:bg-blue-50 hover:text-blue-700"
-                }`}
-              >
-                {formatTime(val, prefs.timeFormat)}
-              </button>
-            ))}
+      <AnchoredPopover
+        open={Boolean(open && !disabled)}
+        onClose={() => {
+          closedAtRef.current = Date.now();
+          setRawOpen(false);
+        }}
+        anchorEl={containerRef}
+        align="right"
+        side="top"
+        gap={6}
+        onMouseDown={(e) => e.preventDefault()}
+        className="w-60 rounded-xl border border-slate-200 bg-white p-2.5 shadow-xl"
+      >
+        <div className="mb-2 flex flex-wrap gap-1">
+          {QUICK_TIMES.map((val) => (
+            <button
+              key={val}
+              type="button"
+              onClick={() => {
+                onChange(val);
+                setText(val);
+                setOpen(false);
+              }}
+              className={`rounded-md px-2 py-0.5 text-[11px] transition ${
+                value === val
+                  ? "bg-blue-600 text-white"
+                  : "bg-slate-100 text-slate-600 hover:bg-blue-50 hover:text-blue-700"
+              }`}
+            >
+              {formatTime(val, prefs.timeFormat)}
+            </button>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 border-t border-slate-100 pt-2">
+          <div>
+            <div className="mb-1 text-center text-[10px] text-slate-400">时</div>
+            <div className="max-h-36 overscroll-contain overflow-y-auto space-y-0.5 pr-0.5">
+              {HOURS.map((h) => (
+                <button
+                  key={h}
+                  type="button"
+                  onClick={() => {
+                    const next = `${h}:${curM || "00"}`;
+                    onChange(next);
+                    setText(next);
+                  }}
+                  className={`w-full rounded py-0.5 text-center font-mono text-xs ${
+                    curH === h && value
+                      ? "bg-blue-600 font-medium text-white"
+                      : "text-slate-700 hover:bg-slate-100"
+                  }`}
+                >
+                  {is12 ? formatTime(`${h}:00`, "12h").replace(":00", "") : h}
+                </button>
+              ))}
+            </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 border-t border-slate-100 pt-2">
-            <div>
-              <div className="mb-1 text-center text-[10px] text-slate-400">时</div>
-              <div className="max-h-36 overflow-y-auto space-y-0.5 pr-0.5">
-                {HOURS.map((h) => (
-                  <button
-                    key={h}
-                    type="button"
-                    onClick={() => {
-                      const next = `${h}:${curM || "00"}`;
-                      onChange(next);
-                      setText(next);
-                    }}
-                    className={`w-full rounded py-0.5 text-center font-mono text-xs ${
-                      curH === h && value
-                        ? "bg-blue-600 font-medium text-white"
-                        : "text-slate-700 hover:bg-slate-100"
-                    }`}
-                  >
-                    {is12 ? formatTime(`${h}:00`, "12h").replace(":00", "") : h}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <div className="mb-1 text-center text-[10px] text-slate-400">分</div>
-              <div className="max-h-36 overflow-y-auto space-y-0.5 pr-0.5">
-                {MINUTES.map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    onClick={() => {
-                      const next = `${curH || "09"}:${m}`;
-                      onChange(next);
-                      setText(next);
-                      setOpen(false);
-                    }}
-                    className={`w-full rounded py-0.5 text-center font-mono text-xs ${
-                      curM === m && value
-                        ? "bg-blue-600 font-medium text-white"
-                        : "text-slate-700 hover:bg-slate-100"
-                    }`}
-                  >
-                    {m}
-                  </button>
-                ))}
-              </div>
+          <div>
+            <div className="mb-1 text-center text-[10px] text-slate-400">分</div>
+            <div className="max-h-36 overscroll-contain overflow-y-auto space-y-0.5 pr-0.5">
+              {MINUTES.map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => {
+                    const next = `${curH || "09"}:${m}`;
+                    onChange(next);
+                    setText(next);
+                    setOpen(false);
+                  }}
+                  className={`w-full rounded py-0.5 text-center font-mono text-xs ${
+                    curM === m && value
+                      ? "bg-blue-600 font-medium text-white"
+                      : "text-slate-700 hover:bg-slate-100"
+                  }`}
+                >
+                  {m}
+                </button>
+              ))}
             </div>
           </div>
         </div>
-      )}
+      </AnchoredPopover>
     </div>
   );
 }

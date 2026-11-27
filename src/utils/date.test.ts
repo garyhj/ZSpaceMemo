@@ -154,4 +154,29 @@ test("date helpers handle non-date strings and lunar metadata offline", () => {
   assert.equal(spring.month, 1);
   assert.equal(spring.day, 1);
   assert.equal(spring.label, "正月初一");
+
+  // 除夕 (lunar eve of 2026 CNY)
+  const eve = getDayCalendarMeta("2026-02-16");
+  assert.equal(eve.lunarText, "除夕");
+  assert.equal(eve.isHighlight, true);
+
+  // 清明节气 + 假期角标
+  const qingming = getDayCalendarMeta("2026-04-05");
+  assert.equal(qingming.lunarText, "清明");
+  assert.equal(qingming.isHighlight, true);
+
+  // 母亲节 (5月第2个周日: 2026-05-10)
+  const mothersDay = getDayCalendarMeta("2026-05-10");
+  assert.equal(mothersDay.lunarText, "母亲节");
+  assert.equal(mothersDay.isHighlight, true);
+
+  // 2025 闰六月初一 (2025-07-25)
+  const leapJune = getLunarCoords("2025-07-25");
+  assert.equal(leapJune.year, 2025);
+  assert.equal(leapJune.month, 6);
+  assert.equal(leapJune.day, 1);
+  assert.equal(leapJune.isLeap, true);
+  assert.equal(leapJune.label, "闰六月初一");
+  const leapJuneMeta = getDayCalendarMeta("2025-07-25");
+  assert.equal(leapJuneMeta.lunarText, "闰六月");
 });

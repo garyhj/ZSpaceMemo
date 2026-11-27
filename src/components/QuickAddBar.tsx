@@ -1,5 +1,5 @@
 import { Calendar, Check, Flag, Hash, Plus } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { CreateTaskInput, Priority } from "../types";
 import {
   addDays,
@@ -11,6 +11,7 @@ import {
   type QuickTokenKind,
 } from "../utils/date";
 import { formatTime, usePrefs } from "../utils/prefs";
+import { AnchoredPopover } from "./AnchoredPopover";
 
 interface Props {
   compact?: boolean;
@@ -43,6 +44,7 @@ export function QuickAddBar({ compact, inputRef, lists = [], onCreate }: Props) 
   const ref = inputRef ?? internalRef;
   const mirrorRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const closedPopoverRef = useRef<{ key: Popover; ts: number }>({ key: null, ts: 0 });
   const [raw, setRaw] = useState("");
   const [focused, setFocused] = useState(false);
   const [composing, setComposing] = useState(false);
@@ -55,14 +57,19 @@ export function QuickAddBar({ compact, inputRef, lists = [], onCreate }: Props) 
   const parsed = quickParse(raw, defaultDate, defaultPri, defaultList);
   const active = focused || raw.length > 0 || popover !== null;
 
-  useEffect(() => {
-    if (!popover) return;
-    const onDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setPopover(null);
-    };
-    window.addEventListener("mousedown", onDown);
-    return () => window.removeEventListener("mousedown", onDown);
-  }, [popover]);
+  function togglePopover(next: Exclude<Popover, null>) {
+    setPopover((prev) => {
+      if (prev === next) return null;
+      if (
+        prev === null &&
+        closedPopoverRef.current.key === next &&
+        Date.now() - closedPopoverRef.current.ts < 200
+      ) {
+        return null;
+      }
+      return next;
+    });
+  }
 
   function syncScroll() {
     if (mirrorRef.current && ref.current) mirrorRef.current.scrollLeft = ref.current.scrollLeft;
@@ -207,7 +214,7 @@ export function QuickAddBar({ compact, inputRef, lists = [], onCreate }: Props) 
               type="button"
               title="日期"
               onMouseDown={(e) => e.preventDefault()}
-              onClick={() => setPopover((p) => (p === "date" ? null : "date"))}
+              onClick={() => togglePopover("date")}
               className={iconBtn("date", Boolean(parsed.dueDate))}
             >
               <Calendar className="h-4 w-4" />
@@ -216,7 +223,7 @@ export function QuickAddBar({ compact, inputRef, lists = [], onCreate }: Props) 
               type="button"
               title="优先级"
               onMouseDown={(e) => e.preventDefault()}
-              onClick={() => setPopover((p) => (p === "pri" ? null : "pri"))}
+              onClick={() => togglePopover("pri")}
               className={iconBtn("pri", false)}
               style={parsed.priority !== "normal" ? { color: PRIORITY_META[parsed.priority].hex } : undefined}
             >
@@ -227,7 +234,7 @@ export function QuickAddBar({ compact, inputRef, lists = [], onCreate }: Props) 
                 type="button"
                 title="清单"
                 onMouseDown={(e) => e.preventDefault()}
-                onClick={() => setPopover((p) => (p === "list" ? null : "list"))}
+                onClick={() => togglePopover("list")}
                 className={iconBtn("list", Boolean(parsed.list))}
               >
                 <Hash className="h-4 w-4" />
@@ -268,91 +275,100 @@ export function QuickAddBar({ compact, inputRef, lists = [], onCreate }: Props) 
         </div>
       )}
 
-      {popover && (
-        <div
-          onMouseDown={(e) => e.preventDefault()}
-          className="absolute right-0 top-full z-40 mt-1 w-44 rounded-xl border border-slate-200 bg-white p-1 text-sm shadow-lg animate-pop-in"
-        >
-          {popover === "date" &&
-            dateChips.map(([d, label]) => {
-              const on = parsed.dueDate === d;
-              return (
-                <button
-                  key={label}
-                  type="button"
-                  onClick={() => {
-                    setDefaultDate(d);
-                    setPopover(null);
-                    ref.current?.focus();
-                  }}
-                  className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-[13px] text-slate-700 hover:bg-slate-100"
-                >
-                  <span>{label}</span>
-                  <span className="flex items-center gap-1 text-[11px] text-slate-400">
-                    {d ? dueLabel(d) === label ? "" : dueLabel(d) : ""}
-                    {on && <Check className="h-3.5 w-3.5 text-blue-600" />}
-                  </span>
-                </button>
-              );
-            })}
-
-          {popover === "pri" &&
-            PRI_ORDER.map((p) => (
+      <AnchoredPopover
+        open={Boolean(popover)}
+        onClose={() => {
+          setPopover((cur) => {
+            if (cur) closedPopoverRef.current = { key: cur, ts: Date.now() };
+            return null;
+          });
+        }}
+        anchorEl={rootRef}
+        align="right"
+        side="bottom"
+        gap={4}
+        onMouseDown={(e) => e.preventDefault()}
+        className="w-44 rounded-xl border border-slate-200 bg-white p-1 text-sm shadow-lg"
+      >
+        {popover === "date" &&
+          dateChips.map(([d, label]) => {
+            const on = parsed.dueDate === d;
+            return (
               <button
-                key={p}
+                key={label}
                 type="button"
                 onClick={() => {
-                  setDefaultPri(p);
+                  setDefaultDate(d);
+                  setPopover(null);
+                  ref.current?.focus();
+                }}
+                className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-[13px] text-slate-700 hover:bg-slate-100"
+              >
+                <span>{label}</span>
+                <span className="flex items-center gap-1 text-[11px] text-slate-400">
+                  {d ? dueLabel(d) === label ? "" : dueLabel(d) : ""}
+                  {on && <Check className="h-3.5 w-3.5 text-blue-600" />}
+                </span>
+              </button>
+            );
+          })}
+
+        {popover === "pri" &&
+          PRI_ORDER.map((p) => (
+            <button
+              key={p}
+              type="button"
+              onClick={() => {
+                setDefaultPri(p);
+                setPopover(null);
+                ref.current?.focus();
+              }}
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-slate-700 hover:bg-slate-100"
+            >
+              <Flag className="h-3.5 w-3.5" style={{ color: PRIORITY_META[p].hex }} />
+              <span className="flex-1">{PRIORITY_META[p].label}优先级</span>
+              {parsed.priority === p && <Check className="h-3.5 w-3.5 text-blue-600" />}
+            </button>
+          ))}
+
+        {popover === "list" && (
+          <div className="max-h-56 overscroll-contain overflow-y-auto">
+            <button
+              type="button"
+              onClick={() => {
+                setDefaultList(null);
+                setPopover(null);
+                ref.current?.focus();
+              }}
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-slate-500 hover:bg-slate-100"
+            >
+              <span className="flex-1">不指定清单</span>
+              {!parsed.list && <Check className="h-3.5 w-3.5 text-blue-600" />}
+            </button>
+            {lists.length === 0 && (
+              <div className="px-2.5 py-1.5 text-[11px] text-slate-400">
+                还没有清单，可在输入框里用 #名称 创建
+              </div>
+            )}
+            {lists.map((l) => (
+              <button
+                key={l}
+                type="button"
+                onClick={() => {
+                  setDefaultList(l);
                   setPopover(null);
                   ref.current?.focus();
                 }}
                 className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-slate-700 hover:bg-slate-100"
               >
-                <Flag className="h-3.5 w-3.5" style={{ color: PRIORITY_META[p].hex }} />
-                <span className="flex-1">{PRIORITY_META[p].label}优先级</span>
-                {parsed.priority === p && <Check className="h-3.5 w-3.5 text-blue-600" />}
+                <Hash className="h-3.5 w-3.5 text-slate-400" />
+                <span className="flex-1 truncate">{l}</span>
+                {parsed.list === l && <Check className="h-3.5 w-3.5 text-blue-600" />}
               </button>
             ))}
-
-          {popover === "list" && (
-            <div className="max-h-56 overflow-y-auto">
-              <button
-                type="button"
-                onClick={() => {
-                  setDefaultList(null);
-                  setPopover(null);
-                  ref.current?.focus();
-                }}
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-slate-500 hover:bg-slate-100"
-              >
-                <span className="flex-1">不指定清单</span>
-                {!parsed.list && <Check className="h-3.5 w-3.5 text-blue-600" />}
-              </button>
-              {lists.length === 0 && (
-                <div className="px-2.5 py-1.5 text-[11px] text-slate-400">
-                  还没有清单，可在输入框里用 #名称 创建
-                </div>
-              )}
-              {lists.map((l) => (
-                <button
-                  key={l}
-                  type="button"
-                  onClick={() => {
-                    setDefaultList(l);
-                    setPopover(null);
-                    ref.current?.focus();
-                  }}
-                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-slate-700 hover:bg-slate-100"
-                >
-                  <Hash className="h-3.5 w-3.5 text-slate-400" />
-                  <span className="flex-1 truncate">{l}</span>
-                  {parsed.list === l && <Check className="h-3.5 w-3.5 text-blue-600" />}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+          </div>
+        )}
+      </AnchoredPopover>
     </div>
   );
 }
