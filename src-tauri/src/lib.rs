@@ -559,7 +559,8 @@ fn ensure_windows_aumid(app: Option<&AppHandle>) {
                     let _ = std::fs::write(&icon_path, include_bytes!("../icons/128x128.png"));
                 }
                 if let Some(s) = icon_path.to_str() {
-                    let _ = key.set_string("IconUri", s);
+                    let uri = format!("file:///{}", s.replace('\\', "/").trim_start_matches('/'));
+                    let _ = key.set_string("IconUri", &uri);
                 }
             }
             WINDOWS_AUMID_DONE.store(true, std::sync::atomic::Ordering::Release);
@@ -616,12 +617,16 @@ fn send_test_notification(app: AppHandle, state: State<'_, AppState>) -> Result<
         .get_settings()
         .map(|s| s.notification_sound)
         .unwrap_or(true);
-    send_native_notification(
-        &app,
-        "ZSpace Kit 系统提醒测试",
-        "收到这条系统通知，说明你的 Windows / macOS 任务提醒已正常打通！",
-        sound,
-    )
+    let title = "ZSpace Kit 系统提醒测试";
+    let body = "收到这条系统通知，说明你的 Windows / macOS 任务提醒已正常打通！";
+    let _ = app.emit(
+        "reminder:fired",
+        serde_json::json!({
+            "title": title,
+            "body": body,
+        }),
+    );
+    send_native_notification(&app, title, body, sound)
 }
 
 // --- Sticky Notes Commands ---

@@ -386,6 +386,30 @@ function MainWindow() {
         setWorkspace(ws);
       }
     });
+    const unReminder = listen<{ title?: string; body?: string }>("reminder:fired", (ev) => {
+      const t = ev.payload?.title || "任务提醒";
+      const b = ev.payload?.body || "";
+      showToast(b ? `⏰ ${t}：${b}` : `⏰ ${t}`);
+      try {
+        const AudioCtx = window.AudioContext;
+        if (AudioCtx) {
+          const ctx = new AudioCtx();
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(880, ctx.currentTime);
+          gain.gain.setValueAtTime(0.06, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start();
+          osc.stop(ctx.currentTime + 0.26);
+          setTimeout(() => void ctx.close(), 400);
+        }
+      } catch {
+        // Ignore audio errors when autoplay is restricted
+      }
+    });
     const unUpdateProg = listen<UpdateProgressEvent>("update:progress", (ev) => {
       const payload = ev.payload;
       if (!installingUpdateRef.current) return;
@@ -415,6 +439,7 @@ function MainWindow() {
       void unChanged.then((f) => f());
       void unSelect.then((f) => f());
       void unNavigate.then((f) => f());
+      void unReminder.then((f) => f());
       void unUpdateProg.then((f) => f());
     };
   }, []);
