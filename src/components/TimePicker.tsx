@@ -68,6 +68,8 @@ export function TimePicker({
   const [focused, setFocused] = useState(false);
   const [text, setText] = useState(value ?? "");
   const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const pointerDownRef = useRef(false);
   const closedAtRef = useRef(0);
 
   function setOpen(next: React.SetStateAction<boolean>) {
@@ -102,6 +104,16 @@ export function TimePicker({
   return (
     <div ref={containerRef} className="relative">
       <div
+        onMouseDown={() => {
+          pointerDownRef.current = true;
+        }}
+        onClick={(e) => {
+          pointerDownRef.current = false;
+          if (disabled) return;
+          if ((e.target as HTMLElement).closest('button[data-clear="true"]')) return;
+          setOpen(true);
+          inputRef.current?.focus();
+        }}
         className={`flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs transition ${
           disabled
             ? "border-slate-200 bg-slate-50 text-slate-400"
@@ -112,17 +124,22 @@ export function TimePicker({
       >
         <Clock className="h-3.5 w-3.5 shrink-0 text-slate-400" />
         <input
+          ref={inputRef}
           type="text"
           disabled={disabled}
           value={focused || !is12 ? text : formatTime(value, "12h")}
           placeholder={placeholder}
           onFocus={() => {
             setFocused(true);
-            if (!disabled) setOpen(true);
+            // Only auto-open on keyboard Tab focus; pointer clicks open on `onClick`
+            // after pointerup so `popover="auto"` light-dismiss doesn't close it in a flash.
+            if (!disabled && !pointerDownRef.current) setOpen(true);
+            pointerDownRef.current = false;
           }}
           onChange={(e) => setText(e.target.value)}
           onBlur={() => {
             setFocused(false);
+            pointerDownRef.current = false;
             commitText();
           }}
           onKeyDown={(e) => {
@@ -140,8 +157,10 @@ export function TimePicker({
         {allowClear && value && !disabled && (
           <button
             type="button"
+            data-clear="true"
             title="清除时间"
-            onClick={() => {
+            onClick={(e) => {
+              e.stopPropagation();
               setText("");
               onChange(null);
             }}
