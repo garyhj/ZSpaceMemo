@@ -1,36 +1,26 @@
 import { listen } from "@tauri-apps/api/event";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import {
-  AlertCircle,
   Calendar,
   CheckCircle2,
   ChevronRight,
-  Download,
-  Inbox,
-  Layers,
-  List as ListIcon,
   PanelLeftClose,
   PanelLeftOpen,
-  PanelRightOpen,
-  Plus,
   RefreshCw,
-  Repeat,
   Search,
-  Settings,
-  Sparkles,
-  Tag,
   X,
 } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "./api";
+import { AppSidebar } from "./components/AppSidebar";
 import { AuthScreen } from "./components/AuthScreen";
 import { ConfirmDialogHost, confirmAction } from "./components/ConfirmDialog";
 import { QuickAddBar } from "./components/QuickAddBar";
 import { TaskContextMenu, type ContextMenuState } from "./components/TaskContextMenu";
 import { TaskDetail } from "./components/TaskDetail";
 import { TaskListItem } from "./components/TaskListItem";
+import { ToolRail } from "./components/ToolRail";
+import { UpdateBanner } from "./components/UpdateBanner";
 import { TOOLBOX_MODULES, type WorkspaceId } from "./modules/registry";
-import { groupByKey } from "./utils/format";
 
 const FloatingWindow = lazy(() =>
   import("./components/FloatingWindow").then((m) => ({ default: m.FloatingWindow }))
@@ -61,7 +51,6 @@ const StickyFloatingCard = lazy(() =>
 );
 import {
   checkLatestRelease,
-  formatBytesCompact,
   startInAppUpdate,
   type ReleaseUpdateInfo,
   type UpdateProgressEvent,
@@ -79,63 +68,20 @@ import type {
   TaskView,
   UpdateTaskInput,
 } from "./types";
-import { dateLabel, effectiveDue, formatDate, isTaskOverdue, listColorHex, todayStr } from "./utils/date";
+import { dateLabel, todayStr } from "./utils/date";
 import { setPrefs, usePrefs } from "./utils/prefs";
-
-function DayBadgeIcon({ label }: { label: string | number }) {
-  return (
-    <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border border-current text-[9.5px] font-semibold leading-none tracking-tighter tabular-nums">
-      {label}
-    </span>
-  );
-}
-
-const PRIMARY_VIEW_ITEMS: { key: TaskView; label: string; icon: (todayDay: number, days: number) => React.ReactNode }[] = [
-  { key: "all", label: "所有", icon: () => <Layers className="h-4 w-4" strokeWidth={1.75} /> },
-  { key: "today", label: "今天", icon: (day) => <DayBadgeIcon label={day} /> },
-  { key: "upcoming", label: "最近7天", icon: (_day, days) => <DayBadgeIcon label={days} /> },
-  { key: "inbox", label: "收集箱", icon: () => <Inbox className="h-4 w-4" strokeWidth={1.75} /> },
-];
-
-const SECONDARY_VIEW_ITEMS: { key: TaskView; label: string; icon: React.ReactNode }[] = [
-  { key: "overdue", label: "已逾期", icon: <AlertCircle className="h-4 w-4" strokeWidth={1.75} /> },
-  { key: "repeating", label: "重复任务", icon: <Repeat className="h-4 w-4" strokeWidth={1.75} /> },
-  { key: "completed", label: "已完成", icon: <CheckCircle2 className="h-4 w-4" strokeWidth={1.75} /> },
-];
-
-const ALL_VIEW_LABELS: Record<TaskView, string> = {
-  all: "所有",
-  today: "今天",
-  upcoming: "最近7天",
-  inbox: "收集箱",
-  overdue: "已逾期",
-  repeating: "重复任务",
-  completed: "已完成",
-};
+import {
+  ALL_VIEW_LABELS,
+  computeSidebarStats,
+  computeViewTasks,
+  customListsStorageKey,
+  loadSavedCustomLists,
+} from "./utils/taskFilters";
 
 interface ToastState {
   message: string;
   undoLabel?: string;
   onUndo?: () => Promise<void>;
-}
-
-function customListsStorageKey(authStatus: AuthStatus | null): string {
-  const acct = authStatus?.nas_id || authStatus?.profile || "default";
-  return `zsm_custom_lists_v1:${acct}`;
-}
-
-function loadSavedCustomLists(authStatus: AuthStatus | null): string[] {
-  try {
-    const raw = localStorage.getItem(customListsStorageKey(authStatus));
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return Array.from(
-      new Set(parsed.filter((x): x is string => typeof x === "string" && x.trim().length > 0))
-    );
-  } catch {
-    return [];
-  }
 }
 
 function WorkspaceLoadingShell({ compact = false }: { compact?: boolean }) {
@@ -232,8 +178,6 @@ function MainWindow() {
   const [activeLabel, setActiveLabel] = useState<string | null>(null);
   const [customLists, setCustomLists] = useState<string[]>([]);
   const customListsAccountRef = useRef<string | null>(null);
-  const [addingList, setAddingList] = useState(false);
-  const [newListName, setNewListName] = useState("");
 
   const [sort, setSort] = useState<TaskSort>("date");
   const [query, setQuery] = useState("");
@@ -282,7 +226,6 @@ function MainWindow() {
   const [completedTasks, setCompletedTasks] = useState<Task[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
-  const [dragOverList, setDragOverList] = useState<string | null>(null);
   const prefs = usePrefs();
 
   const lastFocusSyncRef = useRef<number>(0);
@@ -307,67 +250,18 @@ function MainWindow() {
     [tasks, allActive, completedTasks, selectedId]
   );
 
-  const lists = useMemo(() => {
-    const set = new Set<string>(customLists);
-    for (const t of allActive) {
-      if (t.list) set.add(t.list);
-    }
-    for (const t of completedTasks) {
-      if (t.list) set.add(t.list);
-    }
-    return Array.from(set).sort();
-  }, [allActive, completedTasks, customLists]);
-
-  // Sidebar live counts
   const upcomingDays = settings?.upcoming_days ?? 7;
-  const viewCounts = useMemo(() => {
-    const today = todayStr();
-    const upcomingEnd = formatDate(new Date(Date.now() + upcomingDays * 86_400_000));
-    let inbox = 0;
-    let todayCount = 0;
-    let upcoming = 0;
-    let overdue = 0;
-    let repeating = 0;
-    for (const t of allActive) {
-      if (t.repeat) repeating++;
-      const due = effectiveDue(t);
-      const od = isTaskOverdue(t);
-      if (od) overdue++;
-      if (!t.repeat && !due) inbox++;
-      if (due?.date === today || (settings?.show_overdue_in_today !== false && od)) {
-        todayCount++;
-      }
-      if (due && due.date > today && due.date <= upcomingEnd) {
-        upcoming++;
-      }
-    }
-    return {
-      inbox,
-      today: todayCount,
-      upcoming,
-      overdue,
-      repeating,
-      all: allActive.length,
-    };
-  }, [allActive, settings?.show_overdue_in_today, upcomingDays]);
-
-  const listCounts = useMemo(() => {
-    const m: Record<string, number> = {};
-    for (const t of allActive) {
-      if (t.list) m[t.list] = (m[t.list] ?? 0) + 1;
-    }
-    return m;
-  }, [allActive]);
-
-  const { allLabels, labelCounts } = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const t of allActive) {
-      for (const lb of t.labels) {
-        counts[lb] = (counts[lb] ?? 0) + 1;
-      }
-    }
-    return { allLabels: Object.keys(counts).sort(), labelCounts: counts };
-  }, [allActive]);
+  const { lists, listCounts, allLabels, labelCounts, viewCounts } = useMemo(
+    () =>
+      computeSidebarStats(
+        allActive,
+        completedTasks,
+        customLists,
+        upcomingDays,
+        settings?.show_overdue_in_today !== false
+      ),
+    [allActive, completedTasks, customLists, upcomingDays, settings?.show_overdue_in_today]
+  );
 
   function showToast(message: string, onUndo?: () => Promise<void>) {
     const next: ToastState = { message, undoLabel: onUndo ? "撤销" : undefined, onUndo };
@@ -887,48 +781,23 @@ function MainWindow() {
     }
   }
 
-  const displayedTasks = activeList
-    ? tasks.filter((t) => t.list === activeList)
-    : activeLabel
-    ? tasks.filter((t) => t.labels.includes(activeLabel))
-    : tasks;
-  const noSubFilter = !activeList && !activeLabel;
-  const overdueToday =
-    noSubFilter && view === "today" ? displayedTasks.filter(isTaskOverdue) : [];
-  const normalToday =
-    noSubFilter && view === "today"
-      ? displayedTasks.filter((t) => !isTaskOverdue(t))
-      : displayedTasks;
-
-  const upcomingGroups =
-    noSubFilter && view === "upcoming"
-      ? Object.entries(
-          groupByKey(displayedTasks, (t) => effectiveDue(t)?.date ?? "未安排")
-        ).sort(([a], [b]) => (a === "未安排" ? 1 : b === "未安排" ? -1 : a.localeCompare(b)))
-      : [];
-
-  // Dida365-style collapsible "已完成" group at the bottom of the current view.
-  const todayKey = todayStr();
-  const completedDay = (t: Task) => (t.completed_at ? formatDate(new Date(t.completed_at)) : null);
-  const completedForView =
-    view === "completed"
-      ? []
-      : completedTasks
-          .filter((t) => {
-            if (t.repeat || t.status !== "completed") return false;
-            if (activeList) return t.list === activeList;
-            if (activeLabel) return t.labels.includes(activeLabel);
-            const due = t.schedule.due?.date ?? null;
-            if (view === "today") return due === todayKey || completedDay(t) === todayKey;
-            if (view === "inbox") return !due;
-            if (view === "all") {
-              const d = completedDay(t);
-              return d !== null && d >= formatDate(new Date(Date.now() - 7 * 86_400_000));
-            }
-            return false;
-          })
-          .sort((a, b) => (b.completed_at ?? "").localeCompare(a.completed_at ?? ""))
-          .slice(0, 50);
+  const {
+    displayedTasks,
+    overdueToday,
+    normalToday,
+    upcomingGroups,
+    completedForView,
+  } = useMemo(
+    () =>
+      computeViewTasks({
+        tasks,
+        completedTasks,
+        view,
+        activeList,
+        activeLabel,
+      }),
+    [tasks, completedTasks, view, activeList, activeLabel]
+  );
 
   const selectTask = (item: Task) => {
     setSelectedId(item.id);
@@ -1181,70 +1050,14 @@ function MainWindow() {
 
   return (
     <div className="flex h-screen bg-slate-50">
-      {/* ZSpace Kit Modular Toolbox Navigation Rail */}
-      <nav className="flex w-14 shrink-0 flex-col items-center border-r border-slate-200 bg-slate-100 py-3 gap-2">
-        <div
-          title={`ZSpace Kit · 极空工具箱 (${auth.nas_id ?? ""}) · 连接：${
-            settings?.connection_mode === "lan"
-              ? `LAN 直连 (${settings.lan_host ?? ""})`
-              : settings?.connection_mode === "cloud"
-              ? "云代理"
-              : auth.mode ?? "auto"
-          }`}
-          className="relative mb-2 flex h-8 w-8 items-center justify-center rounded-xl bg-blue-600 text-[11px] font-bold tracking-tight text-white shadow-xs"
-        >
-          ZK
-          {settings?.connection_mode === "lan" && (
-            <span
-              title="LAN 内网直连已开启"
-              className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-slate-100"
-            />
-          )}
-        </div>
-
-        {TOOLBOX_MODULES.map((mod) => (
-          <button
-            key={mod.id}
-            type="button"
-            title={`${mod.label}（${mod.shortcut}）· ${mod.description}`}
-            onClick={() => setWorkspace(mod.id)}
-            className={`flex h-10 w-10 flex-col items-center justify-center rounded-xl transition ${
-              workspace === mod.id
-                ? "bg-white text-blue-600 shadow-xs"
-                : "text-slate-500 hover:bg-slate-200/70"
-            }`}
-          >
-            {mod.icon}
-          </button>
-        ))}
-
-        <div className="mt-auto flex flex-col items-center gap-2">
-          <button
-            type="button"
-            title={`待办悬浮窗（${settings?.global_shortcut ?? "Ctrl/Cmd+Shift+M"}）`}
-            onClick={() => void api.toggleFloatingWindow()}
-            className="flex h-9 w-9 items-center justify-center rounded-xl text-slate-500 hover:bg-slate-200/70"
-          >
-            <PanelRightOpen className="h-4.5 w-4.5" />
-          </button>
-
-          <button
-            type="button"
-            title={
-              updateInfo?.has_update
-                ? `设置 · 发现新版本 v${updateInfo.latest_version}`
-                : "设置"
-            }
-            onClick={() => setShowSettings(true)}
-            className="relative flex h-9 w-9 items-center justify-center rounded-xl text-slate-500 hover:bg-slate-200/70"
-          >
-            <Settings className="h-4.5 w-4.5" />
-            {updateInfo?.has_update && (
-              <span className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-blue-600 ring-2 ring-slate-100" />
-            )}
-          </button>
-        </div>
-      </nav>
+      <ToolRail
+        auth={auth}
+        settings={settings}
+        workspace={workspace}
+        setWorkspace={setWorkspace}
+        updateInfo={updateInfo}
+        onOpenSettings={() => setShowSettings(true)}
+      />
 
       {/* Main Content Area: Toolbox Modules */}
       {workspace !== "tasks" ? (
@@ -1325,298 +1138,46 @@ function MainWindow() {
         </Suspense>
       ) : (
         <div className="flex min-w-0 flex-1">
-          {/* Task Views & Custom Lists Sidebar */}
-          {!prefs.sidebarCollapsed && (
-            <aside className="flex w-[212px] shrink-0 flex-col overflow-y-auto border-r border-slate-200/80 bg-[#fbfbfd] px-2.5 py-3">
-              {/* Primary Smart Views: 所有 / 今天 / 最近7天 / 收集箱 */}
-              <div className="space-y-0.5">
-                {PRIMARY_VIEW_ITEMS.map((item) => {
-                  const active = noSubFilter && view === item.key;
-                  const count =
-                    item.key === "all"
-                      ? viewCounts.all
-                      : item.key === "today"
-                      ? viewCounts.today
-                      : item.key === "upcoming"
-                      ? viewCounts.upcoming
-                      : item.key === "inbox"
-                      ? viewCounts.inbox
-                      : 0;
-                  const label = item.key === "upcoming" ? `最近${upcomingDays}天` : item.label;
-                  const todayDay = Number(todayStr().slice(8, 10));
-                  return (
-                    <button
-                      key={item.key}
-                      type="button"
-                      onDragOver={(e) => {
-                        if (item.key !== "inbox") return;
-                        e.preventDefault();
-                        if (dragOverList !== "__inbox__") setDragOverList("__inbox__");
-                      }}
-                      onDragLeave={() => {
-                        if (dragOverList === "__inbox__") setDragOverList(null);
-                      }}
-                      onDrop={(e) => {
-                        if (item.key !== "inbox") return;
-                        e.preventDefault();
-                        setDragOverList(null);
-                        const id = Number(e.dataTransfer.getData("text/x-zsm-task-id"));
-                        const t = allActive.find((x) => x.id === id);
-                        if (t && t.list) {
-                          void handleUpdate(t.id, { list: null, etag: t.etag });
-                          showToast(`已将「${t.title}」移出清单`);
-                        }
-                      }}
-                      onClick={() => {
-                        setActiveList(null);
-                        setActiveLabel(null);
-                        setView(item.key);
-                      }}
-                      className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-[6px] text-[13.5px] transition ${
-                        item.key === "inbox" && dragOverList === "__inbox__"
-                          ? "bg-blue-100 ring-1 ring-blue-400"
-                          : active
-                          ? "bg-[#eef3ff] font-medium text-[#191919]"
-                          : "text-[#333333] hover:bg-slate-200/50"
-                      }`}
-                    >
-                      <span className={active ? "text-blue-600" : "text-slate-400"}>
-                        {item.icon(todayDay, upcomingDays)}
-                      </span>
-                      <span className="flex-1 text-left">{label}</span>
-                      {count > 0 && (
-                        <span className="text-[11.5px] tabular-nums text-slate-400">{count}</span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="my-2.5 border-t border-slate-100" />
-
-              {/* Collapsible Lists */}
-              <div>
-                <div className="mb-1 flex items-center justify-between px-1.5 text-[11.5px] font-medium text-slate-400">
-                  <button
-                    type="button"
-                    onClick={() => setPrefs({ listsCollapsed: !prefs.listsCollapsed })}
-                    className="flex flex-1 items-center gap-1 rounded px-1 py-0.5 text-left transition hover:bg-slate-200/50 hover:text-slate-600"
-                  >
-                    <ChevronRight
-                      className={`h-3 w-3 shrink-0 transition-transform ${
-                        prefs.listsCollapsed ? "" : "rotate-90"
-                      }`}
-                    />
-                    <span>清单</span>
-                  </button>
-                  <button
-                    type="button"
-                    title="新建清单"
-                    onClick={() => {
-                      if (prefs.listsCollapsed) setPrefs({ listsCollapsed: false });
-                      setAddingList((v) => !v);
-                    }}
-                    className="rounded p-0.5 transition hover:bg-slate-200/70 hover:text-slate-700"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-
-                {addingList && !prefs.listsCollapsed && (
-                  <input
-                    autoFocus
-                    value={newListName}
-                    onChange={(e) => setNewListName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && newListName.trim()) {
-                        const n = newListName.trim();
-                        setCustomLists((prev) => (prev.includes(n) ? prev : [...prev, n]));
-                        setActiveList(n);
-                        setActiveLabel(null);
-                        setView("all");
-                        setNewListName("");
-                        setAddingList(false);
-                      }
-                      if (e.key === "Escape") {
-                        setAddingList(false);
-                        setNewListName("");
-                      }
-                    }}
-                    onBlur={() => {
-                      setAddingList(false);
-                      setNewListName("");
-                    }}
-                    placeholder="清单名称，回车确认"
-                    className="mb-1.5 w-full rounded-lg border border-blue-400 bg-white px-2.5 py-1 text-xs outline-none"
-                  />
-                )}
-
-                {!prefs.listsCollapsed && (
-                  <div className="space-y-0.5">
-                    {lists.map((l) => {
-                      const active = activeList === l;
-                      return (
-                        <button
-                          key={l}
-                          type="button"
-                          onDragOver={(e) => {
-                            e.preventDefault();
-                            if (dragOverList !== l) setDragOverList(l);
-                          }}
-                          onDragLeave={() => {
-                            if (dragOverList === l) setDragOverList(null);
-                          }}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            setDragOverList(null);
-                            const id = Number(e.dataTransfer.getData("text/x-zsm-task-id"));
-                            const t = allActive.find((x) => x.id === id);
-                            if (t && t.list !== l) {
-                              void handleUpdate(t.id, { list: l, etag: t.etag });
-                              showToast(`已移动到清单「${l}」`);
-                            }
-                          }}
-                          onClick={() => {
-                            setActiveList(l);
-                            setActiveLabel(null);
-                            setView("all");
-                          }}
-                          className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-[5.5px] text-[13px] transition ${
-                            dragOverList === l
-                              ? "bg-blue-100 ring-1 ring-blue-400"
-                              : active
-                              ? "bg-[#eef3ff] font-medium text-[#191919]"
-                              : "text-[#333333] hover:bg-slate-200/50"
-                          }`}
-                        >
-                          <ListIcon
-                            className={`h-3.5 w-3.5 shrink-0 ${active ? "text-blue-600" : "text-slate-400"}`}
-                            strokeWidth={1.75}
-                          />
-                          <span className="flex-1 truncate text-left">{l}</span>
-                          <span
-                            className="h-2 w-2 shrink-0 rounded-full"
-                            style={{ backgroundColor: listColorHex(l) ?? "#4772FA" }}
-                          />
-                          {(listCounts[l] ?? 0) > 0 && (
-                            <span className="min-w-[14px] text-right text-[11.5px] tabular-nums text-slate-400">
-                              {listCounts[l]}
-                            </span>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              {/* Collapsible Labels */}
-              {allLabels.length > 0 && (
-                <>
-                  <div className="my-2.5 border-t border-slate-100" />
-                  <div>
-                    <button
-                      type="button"
-                      onClick={() => setPrefs({ labelsCollapsed: !prefs.labelsCollapsed })}
-                      className="mb-1 flex w-full items-center gap-1 rounded px-2.5 py-0.5 text-left text-[11.5px] font-medium text-slate-400 transition hover:bg-slate-200/50 hover:text-slate-600"
-                    >
-                      <ChevronRight
-                        className={`h-3 w-3 shrink-0 transition-transform ${
-                          prefs.labelsCollapsed ? "" : "rotate-90"
-                        }`}
-                      />
-                      <span>标签</span>
-                    </button>
-                    {!prefs.labelsCollapsed && (
-                      <div className="space-y-0.5">
-                        {allLabels.map((lb) => {
-                          const active = activeLabel === lb;
-                          return (
-                            <button
-                              key={lb}
-                              type="button"
-                              onClick={() => {
-                                setActiveLabel(lb);
-                                setActiveList(null);
-                                setView("all");
-                              }}
-                              className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-[5.5px] text-[13px] transition ${
-                                active
-                                  ? "bg-[#eef3ff] font-medium text-[#191919]"
-                                  : "text-[#333333] hover:bg-slate-200/50"
-                              }`}
-                            >
-                              <Tag
-                                className={`h-3.5 w-3.5 shrink-0 ${active ? "text-blue-600" : "text-slate-400"}`}
-                                strokeWidth={1.75}
-                              />
-                              <span className="flex-1 truncate text-left">{lb}</span>
-                              <span className="text-[11.5px] tabular-nums text-slate-400">
-                                {labelCounts[lb]}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                </>
-              )}
-
-              {/* Bottom Secondary Utility Views: 已逾期 / 重复任务 / 已完成 */}
-              <div className="mt-auto space-y-0.5 border-t border-slate-100 pt-2.5">
-                {SECONDARY_VIEW_ITEMS.map((item) => {
-                  const active = noSubFilter && view === item.key;
-                  const count =
-                    item.key === "overdue"
-                      ? viewCounts.overdue
-                      : item.key === "repeating"
-                      ? viewCounts.repeating
-                      : 0;
-                  return (
-                    <button
-                      key={item.key}
-                      type="button"
-                      onClick={() => {
-                        setActiveList(null);
-                        setActiveLabel(null);
-                        setView(item.key);
-                      }}
-                      className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-[6px] text-[13px] transition ${
-                        active
-                          ? "bg-[#eef3ff] font-medium text-[#191919]"
-                          : "text-[#475569] hover:bg-slate-200/50"
-                      }`}
-                    >
-                      <span
-                        className={
-                          active
-                            ? item.key === "overdue"
-                              ? "text-red-500"
-                              : "text-blue-600"
-                            : item.key === "overdue" && count > 0
-                            ? "text-red-400"
-                            : "text-slate-400"
-                        }
-                      >
-                        {item.icon}
-                      </span>
-                      <span className="flex-1 text-left">{item.label}</span>
-                      {count > 0 && (
-                        <span
-                          className={`text-[11.5px] tabular-nums ${
-                            item.key === "overdue" ? "font-medium text-red-500" : "text-slate-400"
-                          }`}
-                        >
-                          {count}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            </aside>
-          )}
+          <AppSidebar
+            view={view}
+            activeList={activeList}
+            activeLabel={activeLabel}
+            upcomingDays={upcomingDays}
+            lists={lists}
+            listCounts={listCounts}
+            allLabels={allLabels}
+            labelCounts={labelCounts}
+            viewCounts={viewCounts}
+            allActive={allActive}
+            prefs={prefs}
+            onSelectView={(nextView) => {
+              setActiveList(null);
+              setActiveLabel(null);
+              setView(nextView);
+            }}
+            onSelectList={(listName) => {
+              setActiveList(listName);
+              setActiveLabel(null);
+              setView("all");
+            }}
+            onSelectLabel={(labelName) => {
+              setActiveLabel(labelName);
+              setActiveList(null);
+              setView("all");
+            }}
+            onCreateList={(name) => {
+              setCustomLists((prev) => (prev.includes(name) ? prev : [...prev, name]));
+              setActiveList(name);
+              setActiveLabel(null);
+              setView("all");
+            }}
+            onDropTaskToList={(taskItem, targetList) => {
+              void handleUpdate(taskItem.id, { list: targetList, etag: taskItem.etag });
+              showToast(
+                targetList ? `已移动到清单「${targetList}」` : `已将「${taskItem.title}」移出清单`
+              );
+            }}
+          />
 
           {/* Middle Task List */}
           <main className="flex min-w-0 flex-1 flex-col border-r border-slate-200/80 bg-white">
@@ -1843,77 +1404,14 @@ function MainWindow() {
       )}
 
       {updateInfo?.has_update && !updateDismissed && !showSettings && (
-        <div className="fixed bottom-5 right-5 z-40 w-80 rounded-2xl border border-slate-200 bg-white p-3.5 shadow-xl space-y-2.5">
-          <div className="flex items-start gap-2">
-            <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
-              <Sparkles className="h-4 w-4" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="text-xs font-semibold text-slate-900">
-                发现新版本 v{updateInfo.latest_version}
-              </div>
-              <div className="text-[11px] text-slate-400">
-                当前 v{updateInfo.current_version}
-                {(updateInfo.asset_size ?? 0) > 0
-                  ? ` · 包体积 ${formatBytesCompact(updateInfo.asset_size)}`
-                  : ""}
-              </div>
-            </div>
-            {!installingUpdate && (
-              <button
-                type="button"
-                title="稍后提醒"
-                onClick={() => setUpdateDismissed(true)}
-                className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            )}
-          </div>
-
-          {updateProgress && installingUpdate ? (
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-[11px] text-blue-700">
-                <span className="truncate">{updateProgress.message}</span>
-                <span className="shrink-0 tabular-nums">
-                  {updateProgress.total
-                    ? `${updateProgress.percent}%`
-                    : formatBytesCompact(updateProgress.downloaded)}
-                </span>
-              </div>
-              <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
-                <div
-                  className="h-full rounded-full bg-blue-600 transition-all duration-150"
-                  style={{ width: `${Math.max(4, updateProgress.percent)}%` }}
-                />
-              </div>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 text-xs">
-              {updateInfo.auto_install_supported && (
-                <button
-                  type="button"
-                  onClick={() => void handleInstallUpdate(updateInfo)}
-                  className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 font-medium text-white hover:bg-blue-700"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  立即应用内更新
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => void openUrl(updateInfo.release_url)}
-                className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-slate-600 hover:bg-slate-50"
-              >
-                发布页
-              </button>
-            </div>
-          )}
-
-          {updateError && (
-            <div className="text-[11px] text-red-500">{updateError}</div>
-          )}
-        </div>
+        <UpdateBanner
+          updateInfo={updateInfo}
+          updateProgress={updateProgress}
+          installingUpdate={installingUpdate}
+          updateError={updateError}
+          onDismiss={() => setUpdateDismissed(true)}
+          onInstallUpdate={handleInstallUpdate}
+        />
       )}
 
       {ctxMenu && (

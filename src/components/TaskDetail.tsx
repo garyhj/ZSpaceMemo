@@ -1,4 +1,3 @@
-import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -7,25 +6,18 @@ import {
   Check,
   ChevronRight,
   Copy,
-  Download,
   FileCode2,
   Flag,
   Folder,
   Hash,
-  ListChecks,
-  Loader2,
   MoreHorizontal,
-  Paperclip,
   Pin,
-  Plus,
   Repeat,
   Trash2,
   X,
 } from "lucide-react";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import { AnchoredPopover } from "./AnchoredPopover";
-import { confirmAction } from "./ConfirmDialog";
 import type {
   OccurrenceView,
   Priority,
@@ -47,7 +39,12 @@ import {
   todayStr,
 } from "../utils/date";
 import { formatTime, usePrefs } from "../utils/prefs";
-import { formatBytesCompact } from "../utils/updater";
+import { AnchoredPopover } from "./AnchoredPopover";
+import { confirmAction } from "./ConfirmDialog";
+import { TaskAttachmentsSection } from "./task-detail/TaskAttachmentsSection";
+import { TaskChecklistEditor } from "./task-detail/TaskChecklistEditor";
+import { TaskNotePreview } from "./task-detail/TaskNotePreview";
+import { TaskOccurrenceTimeline } from "./task-detail/TaskOccurrenceTimeline";
 
 const DatePickerModal = lazy(() =>
   import("./DatePickerModal").then((m) => ({ default: m.DatePickerModal }))
@@ -443,11 +440,9 @@ export function TaskDetail({
     setSaving("saving");
     try {
       const updated = await onUpdateRef.current(task.id, { ...pendingPatch, force: true });
-      if (updated) {
-        etagByTaskRef.current.set(task.id, updated.etag);
-      }
-      setPendingPatch(null);
+      if (updated) etagByTaskRef.current.set(task.id, updated.etag);
       onClearConflict?.();
+      setPendingPatch(null);
       setSaving("saved");
       if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current);
       savedTimerRef.current = window.setTimeout(() => {
@@ -487,38 +482,36 @@ export function TaskDetail({
           <button
             type="button"
             onClick={() => setTab("detail")}
-            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50"
+            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-slate-600 hover:bg-slate-100"
           >
             <ArrowLeft className="h-3.5 w-3.5" />
-            返回任务详情
+            返回编辑
           </button>
         ) : (
           <>
             <button
               type="button"
-              title={done ? (task.repeat ? "恢复系列" : "重新打开") : task.repeat ? "完成本次" : "标记完成"}
+              title={task.repeat ? "完成本次" : done ? "重新打开" : "标记完成"}
               onClick={() => void onToggle(task)}
               style={done ? undefined : { borderColor: pri.hex }}
               className={`flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-[5px] border-[1.5px] transition ${
-                done ? "border-slate-300 bg-slate-300 text-white" : "hover:bg-slate-100"
+                done ? "border-slate-300 bg-slate-300 text-white" : "hover:bg-slate-50"
               }`}
             >
               {done && <Check className="h-3 w-3 stroke-[3]" />}
             </button>
 
-            <span className="h-4 w-px bg-slate-200" />
-
             <button
               type="button"
               onClick={() => setModal("date")}
-              className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition ${
+              className={`inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs transition hover:bg-slate-100 ${
                 overdue
-                  ? "bg-red-50 font-medium text-red-600 hover:bg-red-100"
+                  ? "text-red-500 font-medium"
                   : isToday
-                  ? "bg-blue-50 font-medium text-blue-600 hover:bg-blue-100"
+                  ? "text-blue-600 font-medium"
                   : due
-                  ? "text-slate-700 hover:bg-slate-100"
-                  : "text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                  ? "text-slate-700"
+                  : "text-slate-400"
               }`}
             >
               <Calendar className="h-3.5 w-3.5" />
@@ -660,28 +653,29 @@ export function TaskDetail({
       </div>
 
       {conflictMessage && (
-        <div className="mx-4 mt-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 space-y-2">
-          <div className="flex items-center gap-1.5 font-medium">
-            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" />
+        <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800 space-y-1.5">
+          <div className="flex items-start gap-1.5">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>{conflictMessage}</span>
           </div>
           <div className="flex gap-2">
             {pendingPatch && (
               <button
                 type="button"
-                onClick={() => void handleForceOverwrite()}
-                className="rounded-lg bg-amber-600 px-2.5 py-1 text-white hover:bg-amber-700"
+                onClick={handleForceOverwrite}
+                className="rounded bg-amber-600 px-2 py-0.5 text-white hover:bg-amber-700"
               >
-                用我的修改覆盖
+                用我的修改覆盖云端
               </button>
             )}
             <button
               type="button"
-              onClick={() => {
+              onClick={async () => {
+                await onReloadTask(task.id);
                 onClearConflict?.();
-                void onReloadTask(task.id);
+                setPendingPatch(null);
               }}
-              className="rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-amber-800 hover:bg-amber-100"
+              className="rounded border border-amber-400 px-2 py-0.5 hover:bg-amber-100"
             >
               放弃修改并刷新
             </button>
@@ -690,61 +684,7 @@ export function TaskDetail({
       )}
 
       {tab === "note" ? (
-        <div className="flex-1 overscroll-contain overflow-y-auto p-4 space-y-3">
-          <p className="text-xs text-slate-500">
-            以下是该任务保存在极空间原生记事本（<code>location="2"</code>）中的可读摘要与末尾数据块结构：
-          </p>
-          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm space-y-2">
-            <h1 className="text-lg font-bold">{task.title}</h1>
-            {due && (
-              <p className="text-slate-700">
-                📅 截止 {due.date}{" "}
-                {!due.all_day && due.time ? formatTime(due.time, prefs.timeFormat) : "（全天）"}
-              </p>
-            )}
-            <p className="text-slate-700">
-              {[
-                task.repeat ? `🔁 ${describeRepeatZh(task.repeat)}` : null,
-                task.reminders.length > 0
-                  ? `⏰ ${task.reminders.map(reminderLabel).join("、")}`
-                  : null,
-                `优先级：${pri.label}`,
-                task.list ? `清单：${task.list}` : null,
-                (task.attachments?.length ?? 0) > 0
-                  ? `📎 附件 ${task.attachments!.length} 个（${task.attachments!
-                      .slice(0, 3)
-                      .map((a) => a.name)
-                      .join("、")}${task.attachments!.length > 3 ? "…" : ""}）`
-                  : null,
-              ]
-                .filter(Boolean)
-                .join(" · ")}
-            </p>
-            <p className="text-slate-700">
-              状态：{done ? (task.repeat ? "已结束" : "已完成") : "待办"}
-              {task.series && !done ? ` · 本次 ${task.series.cursor}` : ""}
-            </p>
-            <hr className="border-slate-200" />
-            <div className="whitespace-pre-wrap text-slate-800">
-              {task.description || <span className="text-slate-400">（无备注）</span>}
-            </div>
-            <hr className="border-slate-200" />
-            <p className="text-xs text-slate-400">⚙ ZSpace Memo 数据（请勿手动修改）</p>
-            <p className="break-all rounded-lg bg-slate-200/70 p-2 font-mono text-[11px] text-slate-600">
-              ZSM1:
-              {JSON.stringify({
-                v: 1,
-                rev: task.rev,
-                status: task.status,
-                priority: task.priority,
-                list: task.list ?? undefined,
-                schedule: task.schedule,
-                reminders: task.reminders,
-                repeat: task.repeat ?? undefined,
-              })}
-            </p>
-          </div>
-        </div>
+        <TaskNotePreview task={task} due={due} done={done} prefs={prefs} />
       ) : (
         <div className="flex-1 overscroll-contain overflow-y-auto px-4 pb-5 pt-3.5 space-y-4">
           {/* Borderless large title */}
@@ -776,118 +716,28 @@ export function TaskDetail({
             }`}
           />
 
-          {/* Description / Dida365-style lightweight Checklist */}
-          <div>
-            <div className="mb-1.5 flex items-center justify-between text-xs text-slate-400">
-              <span>{checklistMode ? "检查清单（保存在笔记正文中）" : "描述 / 备注"}</span>
-              {task.rich_body_protected ? (
-                <span className="text-amber-600">包含官方富文本，已保护只读</span>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setChecklistMode((v) => !v)}
-                  className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] transition ${
-                    checklistMode
-                      ? "bg-blue-50 text-blue-600 font-medium"
-                      : "text-slate-400 hover:bg-slate-100 hover:text-slate-600"
-                  }`}
-                >
-                  <ListChecks className="h-3.5 w-3.5" />
-                  {checklistMode ? "切回文本" : "检查清单"}
-                </button>
-              )}
-            </div>
-
-            {checklistMode && !task.rich_body_protected ? (
-              <div className="rounded-xl border border-slate-200 p-2.5 space-y-1.5">
-                {description
-                  .split("\n")
-                  .filter((l) => l.trim().length > 0)
-                  .map((line, idx, allLines) => {
-                    const checked = /^\s*-\s*\[[xX]\]\s+/.test(line);
-                    const text = line.replace(/^\s*-\s*\[[ xX]\]\s+/, "").replace(/^\s*-\s+/, "");
-                    return (
-                      <div key={idx} className="flex items-center gap-2 text-sm">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => {
-                            const nextLines = [...allLines];
-                            nextLines[idx] = `${checked ? "- [ ]" : "- [x]"} ${text}`;
-                            const nextDesc = nextLines.join("\n");
-                            clearDebounceTimer();
-                            setDescription(nextDesc);
-                            draftRef.current.description = nextDesc;
-                            dirtyFieldsRef.current.description = true;
-                            void savePatch({ description: nextDesc });
-                          }}
-                          className="h-3.5 w-3.5 accent-blue-600"
-                        />
-                        <span className={`flex-1 ${checked ? "line-through text-slate-400" : "text-slate-800"}`}>
-                          {text}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const nextDesc = allLines.filter((_, i) => i !== idx).join("\n");
-                            clearDebounceTimer();
-                            setDescription(nextDesc);
-                            draftRef.current.description = nextDesc;
-                            dirtyFieldsRef.current.description = true;
-                            void savePatch({ description: nextDesc });
-                          }}
-                          className="text-xs text-slate-300 hover:text-red-500"
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    );
-                  })}
-                <div className="flex items-center gap-1.5 pt-1">
-                  <Plus className="h-3.5 w-3.5 text-slate-400" />
-                  <input
-                    value={newCheckItem}
-                    onChange={(e) => setNewCheckItem(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && newCheckItem.trim()) {
-                        const existing = description
-                          .split("\n")
-                          .filter((l) => l.trim().length > 0);
-                        existing.push(`- [ ] ${newCheckItem.trim()}`);
-                        const nextDesc = existing.join("\n");
-                        clearDebounceTimer();
-                        setDescription(nextDesc);
-                        draftRef.current.description = nextDesc;
-                        dirtyFieldsRef.current.description = true;
-                        setNewCheckItem("");
-                        void savePatch({ description: nextDesc });
-                      }
-                    }}
-                    placeholder="添加检查项，回车保存"
-                    className="flex-1 bg-transparent text-xs outline-none placeholder:text-slate-400"
-                  />
-                </div>
-              </div>
-            ) : (
-              <textarea
-                rows={4}
-                readOnly={task.rich_body_protected}
-                value={description}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setDescription(val);
-                  draftRef.current.description = val;
-                  dirtyFieldsRef.current.description = true;
-                  scheduleDraftFlush();
-                }}
-                onBlur={() => {
-                  flushDraftSnapshot(task.id);
-                }}
-                placeholder="添加描述、链接或补充信息…"
-                className="w-full resize-y rounded-lg border border-transparent bg-slate-50/60 p-2.5 text-sm outline-none transition focus:border-blue-300 focus:bg-white read-only:bg-slate-50"
-              />
-            )}
-          </div>
+          <TaskChecklistEditor
+            checklistMode={checklistMode}
+            onToggleChecklistMode={() => setChecklistMode((v) => !v)}
+            richProtected={task.rich_body_protected}
+            description={description}
+            newCheckItem={newCheckItem}
+            setNewCheckItem={setNewCheckItem}
+            onDescriptionDraftChange={(val) => {
+              setDescription(val);
+              draftRef.current.description = val;
+              dirtyFieldsRef.current.description = true;
+              scheduleDraftFlush();
+            }}
+            onDescriptionCommit={(nextDesc) => {
+              clearDebounceTimer();
+              setDescription(nextDesc);
+              draftRef.current.description = nextDesc;
+              dirtyFieldsRef.current.description = true;
+              void savePatch({ description: nextDesc });
+            }}
+            onBlurFlush={() => flushDraftSnapshot(task.id)}
+          />
 
           {/* Structured property rows */}
           <div className="divide-y divide-slate-100 border-y border-slate-100 text-sm">
@@ -977,235 +827,27 @@ export function TaskDetail({
             </div>
           </div>
 
-          {/* Task Attachments (official file notes attachment_upload / attachment_download) */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between text-xs">
-              <span className="inline-flex items-center gap-1 font-semibold text-slate-700">
-                <Paperclip className="h-3.5 w-3.5 text-slate-400" />
-                附件
-                {(task.attachments?.length ?? 0) > 0 && (
-                  <span className="font-normal text-slate-400">
-                    ({task.attachments!.length})
-                  </span>
-                )}
-              </span>
-              {onUploadAttachment && (
-                <button
-                  type="button"
-                  disabled={attBusy}
-                  onClick={async () => {
-                    try {
-                      const picked = await open({
-                        multiple: true,
-                        title: "选择要上传到当前待办的附件",
-                      });
-                      if (!picked) return;
-                      const paths = Array.isArray(picked) ? picked : [picked];
-                      if (paths.length === 0) return;
-                      setAttBusy(true);
-                      for (const p of paths) {
-                        await onUploadAttachment(task, p);
-                      }
-                    } catch (e) {
-                      console.error("Upload attachment dialog failed:", e);
-                    } finally {
-                      setAttBusy(false);
-                    }
-                  }}
-                  className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-blue-600 hover:bg-blue-50 disabled:opacity-50"
-                >
-                  {attBusy ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <Plus className="h-3 w-3" />
-                  )}
-                  {attBusy ? "上传中…" : "上传附件"}
-                </button>
-              )}
-            </div>
+          <TaskAttachmentsSection
+            task={task}
+            attBusy={attBusy}
+            setAttBusy={setAttBusy}
+            onUploadAttachment={onUploadAttachment}
+            onDownloadAttachment={onDownloadAttachment}
+            onRemoveAttachment={onRemoveAttachment}
+          />
 
-            {(task.attachments?.length ?? 0) > 0 && (
-              <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-1.5 divide-y divide-slate-100">
-                {task.attachments!.map((att) => (
-                  <div key={att.file_id} className="flex items-center gap-2 py-1.5 text-xs">
-                    <Paperclip className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                    <span className="min-w-0 flex-1 truncate text-slate-700" title={att.name}>
-                      {att.name}
-                    </span>
-                    {att.size != null && att.size > 0 && (
-                      <span className="shrink-0 text-[10px] text-slate-400 tabular-nums">
-                        {formatBytesCompact(att.size)}
-                      </span>
-                    )}
-                    {onDownloadAttachment && (
-                      <button
-                        type="button"
-                        disabled={attBusy}
-                        onClick={async () => {
-                          try {
-                            const dest = await save({
-                              defaultPath: att.name,
-                              title: `保存附件「${att.name}」`,
-                            });
-                            if (!dest) return;
-                            setAttBusy(true);
-                            await onDownloadAttachment(task, att, dest);
-                          } catch (e) {
-                            console.error("Download attachment dialog failed:", e);
-                          } finally {
-                            setAttBusy(false);
-                          }
-                        }}
-                        className="inline-flex shrink-0 items-center gap-0.5 text-blue-600 hover:underline disabled:opacity-40"
-                      >
-                        <Download className="h-3 w-3" />
-                        下载
-                      </button>
-                    )}
-                    {onRemoveAttachment && (
-                      <button
-                        type="button"
-                        disabled={attBusy}
-                        onClick={() => {
-                          void (async () => {
-                            if (
-                              await confirmAction({
-                                title: "解除附件关联",
-                                message: `确定从待办中解除附件「${att.name}」的关联吗？\n\n受极空间 CLI 接口限制，解除后不会物理删除 NAS 云端原始附件文件。`,
-                                confirmText: "解除关联",
-                                danger: true,
-                              })
-                            ) {
-                              await onRemoveAttachment(task, att.file_id);
-                            }
-                          })();
-                        }}
-                        className="shrink-0 text-slate-400 hover:text-red-500 disabled:opacity-40"
-                      >
-                        移除
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Repeating series occurrence timeline */}
-          {task.repeat && (
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-semibold text-slate-700">
-                  重复实例 · 原生笔记 #{task.id}
-                </span>
-                {task.status !== "ended" && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void (async () => {
-                        if (
-                          await confirmAction({
-                            title: "终止重复系列",
-                            message: "确定终止整个重复系列？历史记录会保留，之后不再生成新实例。",
-                            confirmText: "终止系列",
-                            danger: true,
-                          })
-                        ) {
-                          await onEndSeries(task);
-                        }
-                      })();
-                    }}
-                    className="text-red-600 hover:underline"
-                  >
-                    终止系列
-                  </button>
-                )}
-              </div>
-              <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-1.5 divide-y divide-slate-100">
-                {timeline.map((occ) => {
-                  const badge = {
-                    completed: ["✓", "text-emerald-600", "已完成"],
-                    skipped: ["↷", "text-slate-400", "已跳过"],
-                    missed: ["✕", "text-red-500", "错过"],
-                    pending: ["●", "text-blue-600", "待办"],
-                    future: ["○", "text-slate-400", "未来"],
-                  }[occ.state];
-                  const occDate = occ.schedule.due?.date ?? occ.key;
-                  const occTime =
-                    !occ.schedule.all_day && occ.schedule.due?.time
-                      ? ` ${formatTime(occ.schedule.due.time, prefs.timeFormat)}`
-                      : "";
-                  const canEditOcc =
-                    occ.state === "pending" || occ.state === "future" || occ.state === "missed";
-                  return (
-                    <div key={occ.key} className="flex items-center gap-2 py-1.5 text-xs">
-                      <span className={`w-3.5 shrink-0 text-center ${badge[1]}`}>{badge[0]}</span>
-                      <span className="min-w-0 truncate text-slate-700">
-                        {dateLabel(occDate)}
-                        {occTime}
-                      </span>
-                      <span className={`shrink-0 ${badge[1]}`}>{badge[2]}</span>
-                      {occ.overridden && (
-                        <span
-                          title={`原计划：${occ.key}`}
-                          className="shrink-0 rounded bg-amber-100/80 px-1 py-0.5 text-[10px] text-amber-700"
-                        >
-                          已改期
-                        </span>
-                      )}
-                      <div className="ml-auto flex shrink-0 items-center gap-2">
-                        {occ.state === "pending" && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => void onToggle(task)}
-                              className="text-blue-600 hover:underline"
-                            >
-                              完成
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void onSkip(task, occ.key)}
-                              className="text-slate-500 hover:underline"
-                            >
-                              跳过
-                            </button>
-                          </>
-                        )}
-                        {canEditOcc && onOverrideOccurrence && (
-                          <button
-                            type="button"
-                            onClick={() => setEditingOcc(occ)}
-                            className="text-slate-600 hover:text-blue-600 hover:underline"
-                          >
-                            改期
-                          </button>
-                        )}
-                        {canEditOcc && occ.overridden && onClearOccurrenceOverride && (
-                          <button
-                            type="button"
-                            onClick={() => void onClearOccurrenceOverride(task, occ.key)}
-                            className="text-amber-600 hover:underline"
-                          >
-                            恢复
-                          </button>
-                        )}
-                        {(occ.state === "completed" || occ.state === "skipped") && (
-                          <button
-                            type="button"
-                            onClick={() => void onReopenOccurrence(task, occ.key)}
-                            className="text-blue-600 hover:underline"
-                          >
-                            撤销
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
+          <TaskOccurrenceTimeline
+            task={task}
+            timeline={timeline}
+            prefs={prefs}
+            onToggle={onToggle}
+            onSkip={onSkip}
+            onReopenOccurrence={onReopenOccurrence}
+            onOverrideOccurrence={onOverrideOccurrence}
+            onClearOccurrenceOverride={onClearOccurrenceOverride}
+            onEndSeries={onEndSeries}
+            onEditOccurrence={setEditingOcc}
+          />
 
           {/* Footer metadata */}
           <div className="pt-1 text-[11px] text-slate-400">

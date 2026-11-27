@@ -17,8 +17,19 @@ All notable changes to **ZSpace Kit（极空工具箱）** (repository `ZSpaceMe
   - 自定义清单按 NAS 账户持久化至 `localStorage` 并纳入已完成任务清单；登出完整清理内存状态且保留已存清单；修复添加清单失焦残留草稿。
   - `TaskDetail`、`StickyBoard`、`StickyFloatingCard` 增加 600–800ms 防抖保存、脏草稿防同步覆写保护与切换/卸载/关窗前 flush；`TaskDetail` 与 `SettingsModal` 均改串行队列并追踪最新 ETag/配置。
 - **前端包体积瘦身与事件监听优化（`C1`）**：
-  - 抽离轻量 `lunar-names.ts` 使 `date.ts` 脱离 `lunar-javascript`，`React.lazy` 懒加载 9 大窗口/模块与 3 个弹窗，配合 Vite `manualChunks` 将主入口 JS 由 `>806 kB` 降至 `~309 kB` 且 `vendor-lunar` 仅按需加载。
+  - `React.lazy` 懒加载 9 大窗口/模块与 3 个弹窗，配合 Vite `manualChunks` 将主入口 JS 拆包瘦身。
   - `usePrefs` 升级为 `useSyncExternalStore` 全局单监听器实现。
+- **P1 体验稳定性、安全硬化与需求收口（`B1`–`B5` / `C2`–`C5` / `D1`–`D3`）**：
+  - **秒开离线缓存 & 调度避让（`B1`）**：启动先读本地 SQLite 缓存秒开主界面，云端同步改后台异步并发执行，并增加 20 秒同步避让窗口防止前后台同时全量同步。
+  - **重复任务顺延与单期改期统合（`B2`）**：后端计算多时区 DST `is_overdue` 与 `effective_current_key`；修复手动/有限次已结束系列重新打开恢复；一键顺延与详情/右键/悬浮窗统一走 `overrideOccurrence`。
+  - **子模块稳健性与错误可读化（`B4`–`B5`）**：统一解析后端 `ErrorPayload` 与鉴权失效重登引导；月视图防重提与全操作失败回滚；快传箱抽离全局 `transferStore` 与重名去重；下载器递归定时防叠罗汉；收窄全局快捷键至 `tasks` 工作区与无弹窗/无输入框上下文。
+  - **CSP 启用、最小 Capability 与日志安全（`C2`–`C4`）**：配置严格 Tauri 2 CSP、按主窗/浮窗最小权限拆分 `capabilities`、移除未使用通知插件；`SanitizedTeeWriter` 统一脱敏 `stderr`；补齐前后端核心自动化单元测试与 CI `fmt` / `clippy` / `--frozen-lockfile` 门禁。
+  - **大文件模块化拆解（`C5`）**：将 `SettingsModal`、`TaskDetail`、`App` 工具栏/侧边栏/筛选逻辑与核心库 `crates/core/src/service` 拆分为职责清晰的子模块并补全纯逻辑单测。
+  - **重复截至日期、附件语义与快捷键自定义（`D1`–`D3`）**：`RepeatModal` 补全 `until` 截至日期选择器；移除附件/删含附件任务弹窗明确不物理删 NAS 文件边界；设置页新增全局呼出热键录制器、常用预设与系统级冲突回滚。
+- **Modern Web 架构现代化迁移（`macOS 14.0+` / `WebView2` 基线）**：
+  - 移除 ~308 kB 第三方 `lunar-javascript`，替换为零依赖离线查表引擎（1901–2099 年农历与节气全量 0 误差校验）；构建目标收敛为 `["chrome114", "safari17.0"]` 与 macOS `minimumSystemVersion: "14.0"`。
+  - 全量模态框与 9 处阻塞式 `window.confirm()` 迁移至原生 HTML `<dialog>.showModal()` 与 `ConfirmDialogHost`。
+  - 5 处下拉菜单、右键菜单、月视图溢出/快编浮层迁移至原生 Popover API（`popover="auto"`），移除手写全局外部点击及 Escape 监听；列表已完成折叠改用 `<details>`/`<summary>`，任务勾选改用 `onAnimationEnd` + `prefers-reduced-motion`，补齐 `structuredClone`、`crypto.randomUUID`、`overscroll-contain` 与共享 `groupByKey`/`formatBytes`。
 
 ## [0.7.1] - 2026-11-26
 
