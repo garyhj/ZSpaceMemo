@@ -2,6 +2,11 @@
 
 All notable changes to **ZSpace Kit（极空工具箱）** (repository `ZSpaceMemo`) are documented in this file.
 
+## [0.8.2] - 2026-11-27
+
+### Added & Fixed
+- **跨更新凭据持久化（`R2-AUTH`）**：新增 `credential_store` 设置项并在调用 `zspace-cli` 时透传 `--credential-store <file|auto|keyring>`，默认使用 `file`（本地应用数据目录），避免 Windows / macOS 覆盖更新后因系统钥匙串身份变化导致频繁重新扫码授权；设置页「极空间连接」同步开放策略切换。
+
 ## [0.8.1] - 2026-11-27
 
 ### Added
