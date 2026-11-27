@@ -47,7 +47,7 @@ export function SettingsModal({
   const settingsRef = useRef<AppSettings | null>(null);
   const saveQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const [notifPerm, setNotifPerm] = useState<"granted" | "denied" | "prompt" | "unknown">("unknown");
-  const [appVersion, setAppVersion] = useState("0.8.0");
+  const [appVersion, setAppVersion] = useState("0.8.1");
   const [localUpdate, setLocalUpdate] = useState<ReleaseUpdateInfo | null>(updateInfo ?? null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
 

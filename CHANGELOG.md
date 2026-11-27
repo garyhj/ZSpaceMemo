@@ -2,6 +2,11 @@
 
 All notable changes to **ZSpace Kit（极空工具箱）** (repository `ZSpaceMemo`) are documented in this file.
 
+## [0.8.1] - 2026-11-27
+
+### Added
+- **Kubai 分层动态图标体系**：参照 `kubai087/kubai-icons` 规范绘制 8 枚功能动态图标（`待办`、`月视图`、`便签`、`快传箱`、`NAS状态`、`Docker`、`下载器`、`设置`），支持外描边遮罩、投影与顶部内发光及 460ms `cubic-bezier(0.22, 1, 0.36, 1)` 悬停动画，并集成至左侧导航栏 `ToolRail`（附 `kubai-icons/` 展示页与自检工作区）。
+
 ## [0.8.0] - 2026-11-27
 
 ### Added
