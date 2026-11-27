@@ -1,8 +1,8 @@
 use crate::state::{now_ms, AppState, DockEdge, FloatingDockPayload};
 use std::time::Duration;
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder,
 };
 use zspace_memo_core::storage::WindowGeometryRecord;
 
