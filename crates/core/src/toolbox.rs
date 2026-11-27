@@ -24,6 +24,8 @@ pub struct SystemOverview {
     pub system: Option<Value>,
     pub storage: Option<Value>,
     pub disk: Option<Value>,
+    pub smart: Option<Value>,
+    pub backup: Option<Value>,
     pub errors: Vec<String>,
 }
 
@@ -535,10 +537,14 @@ impl ToolboxService {
         let a_sys = ["system", "info", "--params", p_sys.as_str()];
         let a_stg = ["storage", "info", "--params", "{}"];
         let a_disk = ["system", "disk", "--params", p_disk.as_str()];
-        let (sys_res, stg_res, disk_res) = tokio::join!(
+        let a_smart = ["storage", "smart", "--params", "{}"];
+        let a_backup = ["backup", "status", "--params", "{}"];
+        let (sys_res, stg_res, disk_res, smart_res, backup_res) = tokio::join!(
             self.provider.run_cli(&a_sys, None),
             self.provider.run_cli(&a_stg, None),
             self.provider.run_cli(&a_disk, None),
+            self.provider.run_cli(&a_smart, None),
+            self.provider.run_cli(&a_backup, None),
         );
 
         let mut errors = Vec::new();
@@ -563,6 +569,20 @@ impl ToolboxService {
                 None
             }
         };
+        let smart = match smart_res {
+            Ok(v) => Some(v),
+            Err(e) => {
+                errors.push(format!("SMART: {e}"));
+                None
+            }
+        };
+        let backup = match backup_res {
+            Ok(v) => Some(v),
+            Err(e) => {
+                errors.push(format!("Backup: {e}"));
+                None
+            }
+        };
 
         if system.is_none() && storage.is_none() && disk.is_none() {
             return Err(AppError::NasUnavailable(errors.join("; ")));
@@ -572,6 +592,8 @@ impl ToolboxService {
             system,
             storage,
             disk,
+            smart,
+            backup,
             errors,
         })
     }
@@ -707,6 +729,20 @@ impl ToolboxService {
         }))?;
         self.provider
             .run_cli(&["docker", "containers", "--params", &params], None)
+            .await
+    }
+
+    pub async fn docker_images_list(&self) -> AppResult<Value> {
+        let params = serde_json::to_string(&json!({ "action": "list" }))?;
+        self.provider
+            .run_cli(&["docker", "images", "--params", &params], None)
+            .await
+    }
+
+    pub async fn docker_compose_list(&self) -> AppResult<Value> {
+        let params = serde_json::to_string(&json!({ "action": "list" }))?;
+        self.provider
+            .run_cli(&["docker", "compose", "--params", &params], None)
             .await
     }
 

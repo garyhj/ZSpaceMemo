@@ -2,6 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   Calendar,
   CheckCircle2,
+  CheckSquare,
   ChevronRight,
   PanelLeftClose,
   PanelLeftOpen,
@@ -198,6 +199,11 @@ function MainWindow() {
   const [updateDismissed, setUpdateDismissed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [postponing, setPostponing] = useState(false);
+  const [batchMode, setBatchMode] = useState(false);
+  const [batchIds, setBatchIds] = useState<number[]>([]);
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [batchTagInput, setBatchTagInput] = useState("");
+  const [batchTargetList, setBatchTargetList] = useState<string>("");
 
   async function handleInstallUpdate(info: ReleaseUpdateInfo) {
     installingUpdateRef.current = true;
@@ -807,16 +813,45 @@ function MainWindow() {
   const openMenu = (task: Task, x: number, y: number, mode: "full" | "date" = "full") => {
     setCtxMenu({ task, x, y, mode });
   };
-  const renderTask = (t: Task) => (
-    <TaskListItem
-      key={t.id}
-      task={t}
-      selected={selectedId === t.id}
-      onSelect={selectTask}
-      onToggle={toggleTask}
-      onOpenMenu={openMenu}
-    />
-  );
+  const renderTask = (t: Task) => {
+    const row = (
+      <TaskListItem
+        key={t.id}
+        task={t}
+        selected={selectedId === t.id}
+        onSelect={(taskItem) => {
+          if (batchMode) {
+            setBatchIds((prev) =>
+              prev.includes(taskItem.id)
+                ? prev.filter((x) => x !== taskItem.id)
+                : [...prev, taskItem.id]
+            );
+          } else {
+            selectTask(taskItem);
+          }
+        }}
+        onToggle={toggleTask}
+        onOpenMenu={openMenu}
+      />
+    );
+    if (!batchMode) return row;
+    const checked = batchIds.includes(t.id);
+    return (
+      <div key={t.id} className="flex items-center gap-1.5 pl-1">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={() =>
+            setBatchIds((prev) =>
+              prev.includes(t.id) ? prev.filter((x) => x !== t.id) : [...prev, t.id]
+            )
+          }
+          className="h-3.5 w-3.5 shrink-0 accent-blue-600"
+        />
+        <div className="min-w-0 flex-1">{row}</div>
+      </div>
+    );
+  };
 
   // Ordered visible task list for ArrowUp / ArrowDown keyboard navigation
   const visibleTaskOrder = useMemo(() => {
@@ -1177,6 +1212,26 @@ function MainWindow() {
                 targetList ? `已移动到清单「${targetList}」` : `已将「${taskItem.title}」移出清单`
               );
             }}
+            onRenameLabel={async (oldLabel, newLabel) => {
+              try {
+                const count = await api.renameLabel(oldLabel, newLabel);
+                await refreshAll();
+                if (activeLabel === oldLabel) setActiveLabel(newLabel);
+                showToast(`已将 ${count} 条待办的标签更新为「#${newLabel}」`);
+              } catch (e) {
+                showToast(`重命名标签失败：${String(e)}`);
+              }
+            }}
+            onRemoveLabel={async (label) => {
+              try {
+                const count = await api.removeLabel(label);
+                await refreshAll();
+                if (activeLabel === label) setActiveLabel(null);
+                showToast(`已从 ${count} 条待办移除标签「#${label}」`);
+              } catch (e) {
+                showToast(`移除标签失败：${String(e)}`);
+              }
+            }}
           />
 
           {/* Middle Task List */}
@@ -1242,6 +1297,24 @@ function MainWindow() {
                   <option value="priority">按优先级</option>
                   <option value="created">按创建时间</option>
                 </select>
+                <button
+                  type="button"
+                  title="批量选择（批量打标、迁移清单、完成）"
+                  onClick={() => {
+                    setBatchMode((prev) => {
+                      if (prev) setBatchIds([]);
+                      return !prev;
+                    });
+                  }}
+                  className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs transition ${
+                    batchMode
+                      ? "bg-blue-50 font-medium text-blue-700 ring-1 ring-blue-200"
+                      : "text-slate-500 hover:bg-slate-100"
+                  }`}
+                >
+                  <CheckSquare className="h-3.5 w-3.5" />
+                  多选
+                </button>
               </div>
 
               <QuickAddBar inputRef={quickAddRef} lists={lists} onCreate={handleCreate} />
@@ -1328,6 +1401,115 @@ function MainWindow() {
                 </details>
               )}
             </div>
+            {batchMode && (
+              <div className="border-t border-slate-200 bg-slate-50 px-3 py-2 text-xs space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium text-slate-700">
+                    已选 <span className="text-blue-600">{batchIds.length}</span> 项
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setBatchIds(visibleTaskOrder.map((t) => t.id))}
+                      className="text-blue-600 hover:underline"
+                    >
+                      全选当前
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBatchMode(false);
+                        setBatchIds([]);
+                      }}
+                      className="text-slate-500 hover:text-slate-800"
+                    >
+                      退出多选
+                    </button>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <select
+                    value={batchTargetList}
+                    disabled={batchBusy || batchIds.length === 0}
+                    onChange={(e) => setBatchTargetList(e.target.value)}
+                    className="rounded border border-slate-200 bg-white px-2 py-1 text-xs outline-none"
+                  >
+                    <option value="">移至：收集箱</option>
+                    {lists.map((l) => (
+                      <option key={l} value={l}>
+                        移至：{l}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={batchBusy || batchIds.length === 0}
+                    onClick={async () => {
+                      setBatchBusy(true);
+                      try {
+                        const n = await api.batchMoveList(batchIds, batchTargetList || null);
+                        await refreshAll();
+                        showToast(`已迁移 ${n} 条待办`);
+                      } catch (e) {
+                        showToast(`批量迁移失败：${String(e)}`);
+                      } finally {
+                        setBatchBusy(false);
+                      }
+                    }}
+                    className="rounded border border-slate-200 bg-white px-2 py-1 font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                  >
+                    移动
+                  </button>
+                  <input
+                    value={batchTagInput}
+                    disabled={batchBusy || batchIds.length === 0}
+                    onChange={(e) => setBatchTagInput(e.target.value)}
+                    placeholder="批量添加标签"
+                    className="w-24 rounded border border-slate-200 bg-white px-2 py-1 text-xs outline-none focus:border-blue-400"
+                  />
+                  <button
+                    type="button"
+                    disabled={batchBusy || batchIds.length === 0 || !batchTagInput.trim()}
+                    onClick={async () => {
+                      setBatchBusy(true);
+                      try {
+                        const n = await api.batchAddLabel(batchIds, batchTagInput.trim());
+                        setBatchTagInput("");
+                        await refreshAll();
+                        showToast(`已为 ${n} 条待办添加标签`);
+                      } catch (e) {
+                        showToast(`批量打标失败：${String(e)}`);
+                      } finally {
+                        setBatchBusy(false);
+                      }
+                    }}
+                    className="rounded border border-slate-200 bg-white px-2 py-1 font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                  >
+                    打标
+                  </button>
+                  <button
+                    type="button"
+                    disabled={batchBusy || batchIds.length === 0}
+                    onClick={async () => {
+                      setBatchBusy(true);
+                      try {
+                        const n = await api.batchCompleteTasks(batchIds);
+                        setBatchIds([]);
+                        await refreshAll();
+                        showToast(`已完成 ${n} 条待办`);
+                      } catch (e) {
+                        showToast(`批量完成失败：${String(e)}`);
+                      } finally {
+                        setBatchBusy(false);
+                      }
+                    }}
+                    className="ml-auto rounded bg-blue-600 px-2.5 py-1 font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    批量完成
+                  </button>
+                </div>
+              </div>
+            )}
           </main>
 
           {/* Right Detail Panel */}

@@ -421,3 +421,73 @@ async fn reopen_ended_series_handles_manual_and_count_end_and_computes_effective
     assert_eq!(reopened_limited.status, TaskStatus::Active);
     assert!(reopened_limited.series.unwrap().history.is_empty());
 }
+
+#[tokio::test]
+async fn batch_label_and_task_mutations_work_and_deduplicate() {
+    let (svc, _p) = setup().await;
+    let t1 = svc
+        .create_task(CreateTaskInput {
+            title: "Task 1".into(),
+            description: String::new(),
+            priority: Priority::Normal,
+            list: None,
+            labels: vec!["old".into(), "target".into()],
+            pinned: false,
+            schedule: Schedule::default(),
+            reminders: vec![],
+            repeat: None,
+        })
+        .await
+        .unwrap();
+    let t2 = svc
+        .create_task(CreateTaskInput {
+            title: "Task 2".into(),
+            description: String::new(),
+            priority: Priority::Normal,
+            list: Some("Work".into()),
+            labels: vec!["old".into()],
+            pinned: false,
+            schedule: Schedule::default(),
+            reminders: vec![],
+            repeat: None,
+        })
+        .await
+        .unwrap();
+
+    // Rename "old" -> "target" (merges without duplicates)
+    let count = svc.rename_label("old", "target").await.unwrap();
+    assert_eq!(count, 2);
+    let r1 = svc.get_task(t1.id, false).await.unwrap();
+    let r2 = svc.get_task(t2.id, false).await.unwrap();
+    assert_eq!(r1.labels, vec!["target"]);
+    assert_eq!(r2.labels, vec!["target"]);
+
+    // Batch add label & move list
+    assert_eq!(
+        svc.batch_add_label(&[t1.id, t2.id], "urgent")
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        svc.batch_move_list(&[t1.id, t2.id], Some("Projects".into()))
+            .await
+            .unwrap(),
+        2
+    );
+    let r1 = svc.get_task(t1.id, false).await.unwrap();
+    assert_eq!(r1.list.as_deref(), Some("Projects"));
+    assert_eq!(r1.labels, vec!["target", "urgent"]);
+
+    // Remove label globally
+    assert_eq!(svc.remove_label("target").await.unwrap(), 2);
+    let r2 = svc.get_task(t2.id, false).await.unwrap();
+    assert_eq!(r2.labels, vec!["urgent"]);
+
+    // Batch complete
+    assert_eq!(svc.batch_complete_tasks(&[t1.id, t2.id]).await.unwrap(), 2);
+    assert_eq!(
+        svc.get_task(t1.id, false).await.unwrap().status,
+        TaskStatus::Completed
+    );
+}

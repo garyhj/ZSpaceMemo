@@ -1,18 +1,23 @@
 import {
   AlertCircle,
+  Check,
   CheckCircle2,
   ChevronRight,
   Inbox,
   Layers,
   List as ListIcon,
+  Pencil,
   Plus,
   Repeat,
   Tag,
+  Trash2,
+  X,
 } from "lucide-react";
 import { useState } from "react";
 import type { Task, TaskView } from "../types";
 import { listColorHex, todayStr } from "../utils/date";
 import { setPrefs, type UiPrefs } from "../utils/prefs";
+import { confirmAction } from "./ConfirmDialog";
 
 function DayBadgeIcon({ label }: { label: string | number }) {
   return (
@@ -63,6 +68,8 @@ interface Props {
   onSelectLabel: (labelName: string) => void;
   onCreateList: (listName: string) => void;
   onDropTaskToList: (task: Task, targetList: string | null) => void;
+  onRenameLabel?: (oldLabel: string, newLabel: string) => Promise<void>;
+  onRemoveLabel?: (label: string) => Promise<void>;
 }
 
 export function AppSidebar({
@@ -82,10 +89,15 @@ export function AppSidebar({
   onSelectLabel,
   onCreateList,
   onDropTaskToList,
+  onRenameLabel,
+  onRemoveLabel,
 }: Props) {
   const [addingList, setAddingList] = useState(false);
   const [newListName, setNewListName] = useState("");
   const [dragOverList, setDragOverList] = useState<string | null>(null);
+  const [editingLabel, setEditingLabel] = useState<string | null>(null);
+  const [editLabelVal, setEditLabelVal] = useState("");
+  const [labelBusy, setLabelBusy] = useState(false);
 
   if (prefs.sidebarCollapsed) return null;
 
@@ -282,26 +294,126 @@ export function AppSidebar({
               <div className="space-y-0.5">
                 {allLabels.map((lb) => {
                   const active = activeLabel === lb;
+                  const isEditing = editingLabel === lb;
+                  if (isEditing) {
+                    const submitRename = async () => {
+                      const next = editLabelVal.trim().replace(/^#+/, "").trim();
+                      if (!next || next === lb || !onRenameLabel) {
+                        setEditingLabel(null);
+                        return;
+                      }
+                      setLabelBusy(true);
+                      try {
+                        await onRenameLabel(lb, next);
+                        setEditingLabel(null);
+                      } finally {
+                        setLabelBusy(false);
+                      }
+                    };
+                    return (
+                      <div
+                        key={lb}
+                        className="flex items-center gap-1 rounded-lg bg-white px-2 py-1 ring-1 ring-blue-300"
+                      >
+                        <input
+                          autoFocus
+                          disabled={labelBusy}
+                          value={editLabelVal}
+                          onChange={(e) => setEditLabelVal(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") void submitRename();
+                            if (e.key === "Escape") setEditingLabel(null);
+                          }}
+                          placeholder="输入新名称（同名自动合并）"
+                          className="min-w-0 flex-1 bg-transparent text-xs text-slate-800 outline-none"
+                        />
+                        <button
+                          type="button"
+                          disabled={labelBusy}
+                          title="确认重命名/合并"
+                          onClick={() => void submitRename()}
+                          className="rounded p-0.5 text-blue-600 hover:bg-blue-50"
+                        >
+                          <Check className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={labelBusy}
+                          title="取消"
+                          onClick={() => setEditingLabel(null)}
+                          className="rounded p-0.5 text-slate-400 hover:bg-slate-100"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    );
+                  }
                   return (
-                    <button
+                    <div
                       key={lb}
-                      type="button"
-                      onClick={() => onSelectLabel(lb)}
-                      className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-[5.5px] text-[13px] transition ${
+                      className={`group flex w-full items-center gap-1 rounded-lg px-2.5 py-[5.5px] text-[13px] transition ${
                         active
                           ? "bg-[#eef3ff] font-medium text-[#191919]"
                           : "text-[#333333] hover:bg-slate-200/50"
                       }`}
                     >
-                      <Tag
-                        className={`h-3.5 w-3.5 shrink-0 ${active ? "text-blue-600" : "text-slate-400"}`}
-                        strokeWidth={1.75}
-                      />
-                      <span className="flex-1 truncate text-left">{lb}</span>
-                      <span className="text-[11.5px] tabular-nums text-slate-400">
+                      <button
+                        type="button"
+                        onClick={() => onSelectLabel(lb)}
+                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                      >
+                        <Tag
+                          className={`h-3.5 w-3.5 shrink-0 ${active ? "text-blue-600" : "text-slate-400"}`}
+                          strokeWidth={1.75}
+                        />
+                        <span className="flex-1 truncate">{lb}</span>
+                      </button>
+                      {(onRenameLabel || onRemoveLabel) && (
+                        <div className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
+                          {onRenameLabel && (
+                            <button
+                              type="button"
+                              title="重命名或合并标签"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setEditingLabel(lb);
+                                setEditLabelVal(lb);
+                              }}
+                              className="rounded p-0.5 text-slate-400 hover:bg-slate-200 hover:text-slate-700"
+                            >
+                              <Pencil className="h-3 w-3" />
+                            </button>
+                          )}
+                          {onRemoveLabel && (
+                            <button
+                              type="button"
+                              title="从所有任务移除该标签"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void (async () => {
+                                  if (
+                                    await confirmAction({
+                                      title: "移除标签",
+                                      message: `确定从全部任务中移除标签「#${lb}」吗？（不会删除任务本身）`,
+                                      confirmText: "移除",
+                                      danger: true,
+                                    })
+                                  ) {
+                                    await onRemoveLabel(lb);
+                                  }
+                                })();
+                              }}
+                              className="rounded p-0.5 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      <span className="text-[11.5px] tabular-nums text-slate-400 group-hover:hidden">
                         {labelCounts[lb]}
                       </span>
-                    </button>
+                    </div>
                   );
                 })}
               </div>

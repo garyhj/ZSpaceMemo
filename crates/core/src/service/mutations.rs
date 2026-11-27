@@ -570,4 +570,135 @@ impl<P: NotebookProvider> TaskService<P> {
         }
         Ok(self.enrich_task_view(task))
     }
+
+    /// Rename (or merge into an existing label) across all cached tasks and sync each update.
+    pub async fn rename_label(&self, old_label: &str, new_label: &str) -> AppResult<usize> {
+        let old_clean = old_label.trim().trim_start_matches('#').trim();
+        let new_clean = new_label.trim().trim_start_matches('#').trim();
+        if old_clean.is_empty() || new_clean.is_empty() {
+            return Err(AppError::Validation("标签名称不能为空".into()));
+        }
+        if old_clean == new_clean {
+            return Ok(0);
+        }
+        let tasks = self.storage.list_cached_tasks()?;
+        let mut updated = 0usize;
+        for t in tasks {
+            if !t.labels.iter().any(|l| l == old_clean) {
+                continue;
+            }
+            let mut next_labels = Vec::with_capacity(t.labels.len());
+            for l in &t.labels {
+                let candidate = if l == old_clean {
+                    new_clean
+                } else {
+                    l.as_str()
+                };
+                if !next_labels.iter().any(|x: &String| x == candidate) {
+                    next_labels.push(candidate.to_string());
+                }
+            }
+            self.update_task(
+                t.id,
+                UpdateTaskInput {
+                    labels: Some(next_labels),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            updated += 1;
+        }
+        Ok(updated)
+    }
+
+    /// Remove a label from all tasks that reference it.
+    pub async fn remove_label(&self, label: &str) -> AppResult<usize> {
+        let clean = label.trim().trim_start_matches('#').trim();
+        if clean.is_empty() {
+            return Err(AppError::Validation("标签名称不能为空".into()));
+        }
+        let tasks = self.storage.list_cached_tasks()?;
+        let mut updated = 0usize;
+        for t in tasks {
+            if !t.labels.iter().any(|l| l == clean) {
+                continue;
+            }
+            let next_labels: Vec<String> = t.labels.into_iter().filter(|l| l != clean).collect();
+            self.update_task(
+                t.id,
+                UpdateTaskInput {
+                    labels: Some(next_labels),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            updated += 1;
+        }
+        Ok(updated)
+    }
+
+    /// Move multiple tasks to a target list (or Inbox when `list` is `None`).
+    pub async fn batch_move_list(&self, ids: &[i64], list: Option<String>) -> AppResult<usize> {
+        let target = list.and_then(|s| {
+            let trimmed = s.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+        let mut updated = 0usize;
+        for &id in ids {
+            self.update_task(
+                id,
+                UpdateTaskInput {
+                    list: Some(target.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            updated += 1;
+        }
+        Ok(updated)
+    }
+
+    /// Add a label to multiple tasks (preserving existing labels without duplicates).
+    pub async fn batch_add_label(&self, ids: &[i64], label: &str) -> AppResult<usize> {
+        let clean = label.trim().trim_start_matches('#').trim().to_string();
+        if clean.is_empty() {
+            return Err(AppError::Validation("标签名称不能为空".into()));
+        }
+        let mut updated = 0usize;
+        for &id in ids {
+            let Some(row) = self.storage.get_cached_task(id)? else {
+                continue;
+            };
+            if row.task.labels.iter().any(|l| l == &clean) {
+                continue;
+            }
+            let mut next = row.task.labels;
+            next.push(clean.clone());
+            self.update_task(
+                id,
+                UpdateTaskInput {
+                    labels: Some(next),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            updated += 1;
+        }
+        Ok(updated)
+    }
+
+    /// Mark multiple tasks complete.
+    pub async fn batch_complete_tasks(&self, ids: &[i64]) -> AppResult<usize> {
+        let mut updated = 0usize;
+        for &id in ids {
+            self.act_on_occurrence(id, None, OccurrenceActionStatus::Completed)
+                .await?;
+            updated += 1;
+        }
+        Ok(updated)
+    }
 }

@@ -119,6 +119,15 @@ export const api = {
     invoke<Task>("reopen_task", { id, occurrenceKey: occurrenceKey ?? null }),
   endSeries: (id: number) => invoke<Task>("end_series", { id }),
   deleteTask: (id: number) => invoke<void>("delete_task", { id }),
+  renameLabel: (oldLabel: string, newLabel: string) =>
+    invoke<number>("rename_label", { oldLabel, newLabel }),
+  removeLabel: (label: string) => invoke<number>("remove_label", { label }),
+  batchMoveList: (ids: number[], list: string | null) =>
+    invoke<number>("batch_move_list", { ids, list }),
+  batchAddLabel: (ids: number[], label: string) =>
+    invoke<number>("batch_add_label", { ids, label }),
+  batchCompleteTasks: (ids: number[]) =>
+    invoke<number>("batch_complete_tasks", { ids }),
   uploadTaskAttachment: (id: number, localPath: string) =>
     invoke<Task>("upload_task_attachment", { id, localPath }),
   downloadTaskAttachment: (id: number, fileId: string, localDest: string) =>
@@ -203,6 +212,8 @@ export const api = {
     invoke<Record<string, unknown>>("nas_docker_action", { action, containerId }),
   nasDockerLogs: (containerId: string) =>
     invoke<Record<string, unknown>>("nas_docker_logs", { containerId }),
+  nasDockerImagesList: () => invoke<Record<string, unknown>>("nas_docker_images_list"),
+  nasDockerComposeList: () => invoke<Record<string, unknown>>("nas_docker_compose_list"),
   nasDownloadTasks: (taskType: "all" | "loading" | "complete" = "all", start = 0, size = 100) =>
     invoke<Record<string, unknown>>("nas_download_tasks", { taskType, start, size }),
   nasDownloadDirs: () => invoke<Record<string, unknown>>("nas_download_dirs"),

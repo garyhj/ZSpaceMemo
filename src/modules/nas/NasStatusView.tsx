@@ -487,6 +487,22 @@ export function NasStatusView({ settings, onSettingsChanged, onToast }: Props) {
   ]);
   const nestedPoolDisks = pools.flatMap((p) => asArr(p, ["disk_list", "disks"]));
   const disks = rawDisks.length > 0 ? rawDisks : nestedPoolDisks;
+  const smartItems = asArr(overview?.smart, [
+    "disks",
+    "disk_list",
+    "smart_list",
+    "list",
+    "items",
+    "data",
+  ]);
+  const smartRows = smartItems.length > 0 ? smartItems : disks;
+  const backupItems = asArr(overview?.backup, [
+    "tasks",
+    "list",
+    "jobs",
+    "items",
+    "data",
+  ]);
 
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-white">
@@ -602,6 +618,105 @@ export function NasStatusView({ settings, onSettingsChanged, onToast }: Props) {
                 );
               })}
             </div>
+          </div>
+        )}
+
+        {/* Disk SMART Health */}
+        {smartRows.length > 0 && (
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+            <div className="flex items-center justify-between text-sm font-semibold text-slate-800">
+              <span className="inline-flex items-center gap-2">
+                <Thermometer className="h-4 w-4 text-amber-600" />
+                磁盘 SMART 健康巡检
+              </span>
+              <span className="text-[11px] font-normal text-slate-400">
+                共 {smartRows.length} 块磁盘
+              </span>
+            </div>
+            <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2">
+              {smartRows.map((d, idx) => {
+                const name = pick(d, ["name", "disk_name", "model", "device", "slot", "id"]);
+                const health = pick(d, ["health", "smart_status", "status", "state"]);
+                const temp = pickNum(d, ["temp", "temperature", "smart_temp"]);
+                const hours = pickNum(d, ["power_on_hours", "hours", "poh"]);
+                const bad = pickNum(d, ["reallocated_sectors", "bad_sectors", "uncorrectable"]);
+                const warn =
+                  (bad !== null && bad > 0) ||
+                  (temp !== null && temp >= 55) ||
+                  /warn|fail|error|bad|异常|告警/i.test(health);
+                return (
+                  <div
+                    key={idx}
+                    className={`rounded-xl border p-3 text-xs space-y-1 ${
+                      warn
+                        ? "border-amber-200 bg-amber-50/70"
+                        : "border-slate-100 bg-slate-50/70"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate font-semibold text-slate-800">{name}</span>
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                          warn
+                            ? "bg-amber-100 text-amber-800"
+                            : "bg-emerald-50 text-emerald-700"
+                        }`}
+                      >
+                        {health !== "-" ? health : warn ? "关注" : "健康"}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-3 text-[11px] text-slate-500">
+                      {temp !== null && <span>温度：{temp}°C</span>}
+                      {hours !== null && <span>通电：{hours} 小时</span>}
+                      {bad !== null && <span>坏道/重映射：{bad}</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Backup & Sync Status */}
+        {overview?.backup && (
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-2.5">
+            <div className="flex items-center justify-between text-sm font-semibold text-slate-800">
+              <span className="inline-flex items-center gap-2">
+                <Activity className="h-4 w-4 text-emerald-600" />
+                备份与同步状态
+              </span>
+              {backupItems.length > 0 && (
+                <span className="text-[11px] font-normal text-slate-400">
+                  {backupItems.length} 项任务
+                </span>
+              )}
+            </div>
+            {backupItems.length > 0 ? (
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                {backupItems.map((b, idx) => (
+                  <div
+                    key={idx}
+                    className="flex items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2 text-xs"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-medium text-slate-800">
+                        {pick(b, ["name", "task_name", "title", "id"])}
+                      </div>
+                      <div className="truncate text-[11px] text-slate-400">
+                        {pick(b, ["last_run", "updated_at", "time", "dest", "target"])}
+                      </div>
+                    </div>
+                    <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-600">
+                      {pick(b, ["status", "state", "result"])}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-xs text-slate-500">
+                状态：{pick(asObj(overview.backup) ?? {}, ["status", "state", "summary"])}
+              </div>
+            )}
           </div>
         )}
 

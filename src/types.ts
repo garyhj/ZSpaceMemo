@@ -217,6 +217,8 @@ export interface SystemOverview {
   system: Record<string, unknown> | null;
   storage: Record<string, unknown> | null;
   disk: Record<string, unknown> | null;
+  smart?: Record<string, unknown> | null;
+  backup?: Record<string, unknown> | null;
   errors: string[];
 }
 

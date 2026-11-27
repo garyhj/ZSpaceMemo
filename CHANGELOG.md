@@ -2,6 +2,25 @@
 
 All notable changes to **ZSpace Kit（极空工具箱）** (repository `ZSpaceMemo`) are documented in this file.
 
+## [0.8.0] - 2026-11-27
+
+### Added
+- **标签批量管理与任务多选操作（`D5-1`）**：
+  - 左侧标签区支持行内重命名、同名合并及确认后全局移除；
+  - 任务列表新增「多选」模式与底部悬浮操作栏，支持全选、批量迁移清单、批量打标与批量完成。
+- **Docker 镜像与 Compose 看板扩展（`D5-2`）**：
+  - Docker 看板新增「镜像」与「Compose」标签页（支持搜索、镜像体积展示与项目状态浏览）。
+- **NAS SMART 健康与备份状态只读巡检（`D5-3`）**：
+  - NAS 状态页并发拉取 `storage smart` 与 `backup status`（不支持时优雅降级），新增磁盘 SMART 健康告警卡与备份同步任务状态卡。
+- **任务备注安全 Markdown 预览（`D7-1`）**：
+  - 详情页备注预览新增零依赖 XSS 安全 Markdown 渲染切换（标题、粗斜体、行内/围栏代码块、清单及安全 HTTP/HTTPS 链接点击打开），保持与 `ZSM1` 原文双向兼容。
+
+### Changed & Fixed
+- **Tauri 宿主机入口模块化（`C5-Tauri`）**：将 `src-tauri/src/lib.rs` 中的状态与窗口停靠几何逻辑拆出至 `state.rs` 与 `window_dock.rs`。
+- **交互与上传校验修复**：
+  - 修复 `TimePicker` 在 Windows WebView2 / macOS WKWebView 下因 `onFocus` 早于 `pointerup` 触发原生 `popover="auto"` light-dismiss 导致一闪而过或再次点击无法弹出的问题；
+  - 上传任务附件前预校验极空间 16 MB（16,777,216 字节）官方上限并引导大文件改用「文件快传」。
+
 ## [0.7.2] - 2026-11-26
 
 ### Fixed & Hardened

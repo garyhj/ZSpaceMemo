@@ -1,8 +1,9 @@
-import { Box, Check, Copy, Play, RefreshCw, RotateCw, Search, Square, Terminal, X } from "lucide-react";
+import { Box, Check, Copy, Layers, Play, RefreshCw, RotateCw, Search, Square, Terminal, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../../api";
 import { confirmAction } from "../../components/ConfirmDialog";
 import { ModalDialog } from "../../components/Modal";
+import { formatBytes } from "../../utils/format";
 
 interface Props {
   onToast: (msg: string) => void;
@@ -57,8 +58,62 @@ function parseStatsMap(data: Record<string, unknown>): Record<string, { cpu?: st
   return map;
 }
 
+interface ImageItem {
+  id: string;
+  repoTag: string;
+  size: number | null;
+  created: string;
+}
+
+interface ComposeItem {
+  name: string;
+  status: string;
+  services: string;
+  path: string;
+}
+
+function parseImages(data: Record<string, unknown>): ImageItem[] {
+  const arr =
+    (Array.isArray(data) ? data : data.list ?? data.images ?? data.data ?? data.items) as
+      | Record<string, unknown>[]
+      | undefined;
+  if (!Array.isArray(arr)) return [];
+  return arr.map((r) => {
+    const id = String(r.id ?? r.Id ?? r.image_id ?? "").replace(/^sha256:/, "").slice(0, 12);
+    const tags = Array.isArray(r.RepoTags)
+      ? String(r.RepoTags[0] ?? "")
+      : Array.isArray(r.tags)
+      ? String(r.tags[0] ?? "")
+      : "";
+    const repoTag = String(r.name ?? r.repo_tag ?? r.repository ?? (tags || "<none>"));
+    const rawSize = Number(r.size ?? r.Size ?? r.virtual_size ?? NaN);
+    const size = Number.isFinite(rawSize) && rawSize > 0 ? rawSize : null;
+    const created = String(r.created ?? r.Created ?? r.created_at ?? "");
+    return { id, repoTag, size, created };
+  });
+}
+
+function parseCompose(data: Record<string, unknown>): ComposeItem[] {
+  const arr =
+    (Array.isArray(data)
+      ? data
+      : data.list ?? data.projects ?? data.stacks ?? data.compose ?? data.data ?? data.items) as
+      | Record<string, unknown>[]
+      | undefined;
+  if (!Array.isArray(arr)) return [];
+  return arr.map((r) => ({
+    name: String(r.name ?? r.project_name ?? r.Name ?? "未命名项目"),
+    status: String(r.status ?? r.Status ?? r.state ?? "未知"),
+    services: String(r.services ?? r.Services ?? r.container_count ?? ""),
+    path: String(r.path ?? r.config_files ?? r.ConfigFiles ?? r.dir ?? ""),
+  }));
+}
+
 export function DockerBoardView({ onToast }: Props) {
+  const [tab, setTab] = useState<"containers" | "images" | "compose">("containers");
   const [containers, setContainers] = useState<ContainerItem[]>([]);
+  const [images, setImages] = useState<ImageItem[]>([]);
+  const [composes, setComposes] = useState<ComposeItem[]>([]);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | "running" | "stopped">("all");
   const [loading, setLoading] = useState(false);
@@ -78,34 +133,44 @@ export function DockerBoardView({ onToast }: Props) {
     }
   }
 
-  async function refresh() {
+  async function refresh(targetTab = tab) {
     setLoading(true);
     try {
-      const [listRes, statsRes] = await Promise.allSettled([
-        api.nasDockerList(),
-        api.nasDockerStats(),
-      ]);
-      if (listRes.status === "fulfilled") {
-        const list = parseContainers(listRes.value);
-        const stats = statsRes.status === "fulfilled" ? parseStatsMap(statsRes.value) : {};
-        setContainers(
-          list.map((c) => ({
-            ...c,
-            cpu: stats[c.id]?.cpu ?? stats[c.name]?.cpu,
-            mem: stats[c.id]?.mem ?? stats[c.name]?.mem,
-          }))
-        );
+      if (targetTab === "containers") {
+        const [listRes, statsRes] = await Promise.allSettled([
+          api.nasDockerList(),
+          api.nasDockerStats(),
+        ]);
+        if (listRes.status === "fulfilled") {
+          const list = parseContainers(listRes.value);
+          const stats = statsRes.status === "fulfilled" ? parseStatsMap(statsRes.value) : {};
+          setContainers(
+            list.map((c) => ({
+              ...c,
+              cpu: stats[c.id]?.cpu ?? stats[c.name]?.cpu,
+              mem: stats[c.id]?.mem ?? stats[c.name]?.mem,
+            }))
+          );
+        } else {
+          onToast(`获取容器列表失败：${String(listRes.reason)}`);
+        }
+      } else if (targetTab === "images") {
+        const res = await api.nasDockerImagesList();
+        setImages(parseImages(res));
       } else {
-        onToast(`获取容器列表失败：${String(listRes.reason)}`);
+        const res = await api.nasDockerComposeList();
+        setComposes(parseCompose(res));
       }
+    } catch (e) {
+      onToast(`加载失败：${String(e)}`);
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    void refresh();
-  }, []);
+    void refresh(tab);
+  }, [tab]);
 
   async function runAction(c: ContainerItem, action: "start" | "stop" | "restart") {
     const zh = action === "start" ? "启动" : action === "stop" ? "停止" : "重启";
@@ -162,44 +227,85 @@ export function DockerBoardView({ onToast }: Props) {
 
   const runningCount = containers.filter((c) => c.running).length;
 
+  const filteredImages = useMemo(() => {
+    const kw = query.trim().toLowerCase();
+    return !kw
+      ? images
+      : images.filter((i) => i.repoTag.toLowerCase().includes(kw) || i.id.toLowerCase().includes(kw));
+  }, [images, query]);
+
+  const filteredComposes = useMemo(() => {
+    const kw = query.trim().toLowerCase();
+    return !kw
+      ? composes
+      : composes.filter((p) => p.name.toLowerCase().includes(kw) || p.path.toLowerCase().includes(kw));
+  }, [composes, query]);
+
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-white">
       <div className="flex flex-wrap items-center gap-3 border-b border-slate-200 px-5 py-3">
         <div>
-          <h1 className="text-lg font-semibold tracking-tight text-slate-900">Docker 容器</h1>
+          <h1 className="text-lg font-semibold tracking-tight text-slate-900">Docker 看板</h1>
           <p className="text-[11px] text-slate-400">
-            共 {containers.length} 个容器 · {runningCount} 个运行中
+            {tab === "containers"
+              ? `共 ${containers.length} 个容器 · ${runningCount} 个运行中`
+              : tab === "images"
+              ? `共 ${images.length} 个本地镜像`
+              : `共 ${composes.length} 个 Compose 项目`}
           </p>
         </div>
 
+        <div className="flex rounded-lg bg-slate-100 p-0.5 text-xs">
+          {(
+            [
+              ["containers", "容器"],
+              ["images", "镜像"],
+              ["compose", "Compose"],
+            ] as const
+          ).map(([k, lbl]) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setTab(k)}
+              className={`rounded-md px-2.5 py-1 ${
+                tab === k ? "bg-white font-medium text-blue-600 shadow-2xs" : "text-slate-500"
+              }`}
+            >
+              {lbl}
+            </button>
+          ))}
+        </div>
+
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          <div className="flex rounded-lg bg-slate-100 p-0.5 text-xs">
-            {(
-              [
-                ["all", "全部"],
-                ["running", "运行中"],
-                ["stopped", "已停止"],
-              ] as const
-            ).map(([k, lbl]) => (
-              <button
-                key={k}
-                type="button"
-                onClick={() => setFilter(k)}
-                className={`rounded-md px-2.5 py-1 ${
-                  filter === k ? "bg-white font-medium text-blue-600 shadow-2xs" : "text-slate-500"
-                }`}
-              >
-                {lbl}
-              </button>
-            ))}
-          </div>
+          {tab === "containers" && (
+            <div className="flex rounded-lg bg-slate-100 p-0.5 text-xs">
+              {(
+                [
+                  ["all", "全部"],
+                  ["running", "运行中"],
+                  ["stopped", "已停止"],
+                ] as const
+              ).map(([k, lbl]) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setFilter(k)}
+                  className={`rounded-md px-2.5 py-1 ${
+                    filter === k ? "bg-white font-medium text-blue-600 shadow-2xs" : "text-slate-500"
+                  }`}
+                >
+                  {lbl}
+                </button>
+              ))}
+            </div>
+          )}
 
           <div className="flex items-center gap-1.5 rounded-lg bg-slate-100/90 px-2.5 py-1 focus-within:bg-white focus-within:ring-1 focus-within:ring-blue-400">
             <Search className="h-3.5 w-3.5 text-slate-400" />
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="搜索容器或镜像"
+              placeholder={tab === "compose" ? "搜索 Compose 项目" : "搜索容器或镜像"}
               className="w-36 bg-transparent text-xs outline-none placeholder:text-slate-400"
             />
             {query && (
@@ -211,7 +317,7 @@ export function DockerBoardView({ onToast }: Props) {
 
           <button
             type="button"
-            onClick={() => void refresh()}
+            onClick={() => void refresh(tab)}
             className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
@@ -221,7 +327,61 @@ export function DockerBoardView({ onToast }: Props) {
       </div>
 
       <div className="flex-1 overflow-y-auto bg-slate-50/50 p-5">
-        {filtered.length === 0 ? (
+        {tab === "images" ? (
+          filteredImages.length === 0 ? (
+            <div className="flex h-full flex-col items-center justify-center gap-2 text-slate-400">
+              <Layers className="h-10 w-10 text-slate-200" strokeWidth={1.5} />
+              <span className="text-sm">{loading ? "正在加载本地镜像…" : "暂无匹配的 Docker 镜像"}</span>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
+              {filteredImages.map((img, i) => (
+                <div
+                  key={`${img.id}-${i}`}
+                  className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-semibold text-slate-800">{img.repoTag}</div>
+                    <div className="mt-0.5 font-mono text-[11px] text-slate-400">
+                      ID: {img.id || "-"}
+                      {img.created ? ` · ${img.created}` : ""}
+                    </div>
+                  </div>
+                  {img.size !== null && (
+                    <span className="shrink-0 rounded-md bg-slate-100 px-2 py-0.5 font-mono text-[11px] text-slate-600">
+                      {formatBytes(img.size)}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )
+        ) : tab === "compose" ? (
+          filteredComposes.length === 0 ? (
+            <div className="flex h-full flex-col items-center justify-center gap-2 text-slate-400">
+              <Layers className="h-10 w-10 text-slate-200" strokeWidth={1.5} />
+              <span className="text-sm">{loading ? "正在加载 Compose 项目…" : "暂无 Compose 项目"}</span>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+              {filteredComposes.map((p, i) => (
+                <div
+                  key={`${p.name}-${i}`}
+                  className="rounded-xl border border-slate-200 bg-white p-4 text-xs space-y-1.5"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-sm font-semibold text-slate-900">{p.name}</span>
+                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
+                      {p.status}
+                    </span>
+                  </div>
+                  {p.services && <div className="text-slate-500">服务：{p.services}</div>}
+                  {p.path && <div className="truncate font-mono text-[11px] text-slate-400">{p.path}</div>}
+                </div>
+              ))}
+            </div>
+          )
+        ) : filtered.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-slate-400">
             <Box className="h-10 w-10 text-slate-200" strokeWidth={1.5} />
             <span className="text-sm">{loading ? "正在加载容器…" : "没有匹配的 Docker 容器"}</span>
