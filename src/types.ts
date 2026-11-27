@@ -149,6 +149,7 @@ export interface OAuthStartInfo {
 }
 
 export type ConnectionMode = "auto" | "cloud" | "lan";
+export type CredentialStorePolicy = "file" | "auto" | "keyring";
 
 export interface AppSettings {
   todo_category_name: string;
@@ -171,6 +172,7 @@ export interface AppSettings {
   allow_insecure_http: boolean;
   cli_timeout_secs: number;
   global_shortcut?: string;
+  credential_store?: CredentialStorePolicy;
 }
 
 export interface NasDoctorReport {

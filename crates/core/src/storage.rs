@@ -40,6 +40,8 @@ pub struct AppSettings {
     pub cli_timeout_secs: u64,
     #[serde(default = "default_global_shortcut")]
     pub global_shortcut: String,
+    #[serde(default = "default_credential_store")]
+    pub credential_store: String,
 }
 
 fn default_true() -> bool {
@@ -60,6 +62,10 @@ fn default_cli_timeout() -> u64 {
 
 fn default_global_shortcut() -> String {
     "CommandOrControl+Shift+M".into()
+}
+
+fn default_credential_store() -> String {
+    "file".into()
 }
 
 impl AppSettings {
@@ -152,6 +158,13 @@ impl AppSettings {
         }
 
         next.cli_timeout_secs = next.cli_timeout_secs.clamp(10, 600);
+        let cs = next.credential_store.trim().to_ascii_lowercase();
+        if !matches!(cs.as_str(), "file" | "auto" | "keyring") {
+            return Err(crate::error::AppError::Validation(format!(
+                "不支持的凭据存储策略：{cs}（仅支持 file / auto / keyring）"
+            )));
+        }
+        next.credential_store = cs;
         Ok(next)
     }
 }
@@ -179,6 +192,7 @@ impl Default for AppSettings {
             allow_insecure_http: false,
             cli_timeout_secs: default_cli_timeout(),
             global_shortcut: default_global_shortcut(),
+            credential_store: default_credential_store(),
         }
     }
 }

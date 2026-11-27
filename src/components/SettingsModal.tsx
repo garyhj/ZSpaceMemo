@@ -55,6 +55,7 @@ export function SettingsModal({
   const [lanHost, setLanHost] = useState("");
   const [allowHttp, setAllowHttp] = useState(false);
   const [cliTimeout, setCliTimeout] = useState(30);
+  const [credentialStore, setCredentialStore] = useState<"file" | "auto" | "keyring">("file");
   const [shortcutDraft, setShortcutDraft] = useState(DEFAULT_GLOBAL_SHORTCUT);
   const [recordingShortcut, setRecordingShortcut] = useState(false);
   const [diagnosing, setDiagnosing] = useState(false);
@@ -72,6 +73,7 @@ export function SettingsModal({
     setLanHost(cfg.lan_host ?? "");
     setAllowHttp(Boolean(cfg.allow_insecure_http));
     setCliTimeout(cfg.cli_timeout_secs ?? 30);
+    setCredentialStore(cfg.credential_store ?? "file");
     setShortcutDraft(cfg.global_shortcut ?? DEFAULT_GLOBAL_SHORTCUT);
   }, []);
 
@@ -185,7 +187,8 @@ export function SettingsModal({
     connMode !== (settings.connection_mode ?? "auto") ||
     lanHost.trim().replace(/\/+$/, "") !== (settings.lan_host ?? "") ||
     allowHttp !== Boolean(settings.allow_insecure_http) ||
-    cliTimeout !== (settings.cli_timeout_secs ?? 30);
+    cliTimeout !== (settings.cli_timeout_secs ?? 30) ||
+    credentialStore !== (settings.credential_store ?? "file");
 
   async function saveConnectionSettings(): Promise<boolean> {
     if (!settingsRef.current) return false;
@@ -201,12 +204,13 @@ export function SettingsModal({
         lan_host: trimmedHost || null,
         allow_insecure_http: allowHttp,
         cli_timeout_secs: cliTimeout,
+        credential_store: credentialStore,
       }),
       connMode === "lan"
         ? `已启用 LAN 内网直连：${trimmedHost}`
         : connMode === "cloud"
         ? "已切换为云代理模式 (cloud)"
-        : "已切换为自动连接模式 (auto)"
+        : "已保存连接与凭据策略"
     );
     return Boolean(saved);
   }
@@ -340,6 +344,8 @@ export function SettingsModal({
             setAllowHttp={setAllowHttp}
             cliTimeout={cliTimeout}
             setCliTimeout={setCliTimeout}
+            credentialStore={credentialStore}
+            setCredentialStore={setCredentialStore}
             connDirty={connDirty}
             isInsecureHttp={isInsecureHttp}
             busy={busy}

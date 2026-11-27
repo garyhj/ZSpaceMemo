@@ -24,6 +24,7 @@ pub struct CliConnectionConfig {
     pub host: Option<String>,
     pub allow_insecure_http: bool,
     pub timeout_secs: u64,
+    pub credential_store: String, // "file" | "auto" | "keyring"
 }
 
 impl Default for CliConnectionConfig {
@@ -33,6 +34,7 @@ impl Default for CliConnectionConfig {
             host: None,
             allow_insecure_http: false,
             timeout_secs: 30,
+            credential_store: "file".into(),
         }
     }
 }
@@ -44,6 +46,7 @@ impl From<&AppSettings> for CliConnectionConfig {
             host: s.lan_host.clone(),
             allow_insecure_http: s.allow_insecure_http,
             timeout_secs: s.cli_timeout_secs,
+            credential_store: s.credential_store.clone(),
         }
     }
 }
@@ -69,6 +72,13 @@ pub fn build_global_cli_args(
     local_root: Option<&Path>,
 ) -> Vec<OsString> {
     let mut args = vec![OsString::from("--profile"), OsString::from(profile)];
+
+    let cred_store = match cfg.credential_store.as_str() {
+        "auto" | "keyring" | "file" => cfg.credential_store.as_str(),
+        _ => "file",
+    };
+    args.push(OsString::from("--credential-store"));
+    args.push(OsString::from(cred_store));
 
     let mode = match cfg.mode.as_str() {
         "lan" | "cloud" | "auto" => cfg.mode.as_str(),
@@ -958,6 +968,8 @@ mod tests {
             vec![
                 "--profile",
                 "zspace-memo",
+                "--credential-store",
+                "file",
                 "--mode",
                 "auto",
                 "--timeout",
@@ -970,6 +982,7 @@ mod tests {
             host: Some("http://192.168.1.2:5055".into()),
             allow_insecure_http: true,
             timeout_secs: 45,
+            credential_store: "auto".into(),
         };
         assert_eq!(
             to_strings(build_global_cli_args(
@@ -982,6 +995,8 @@ mod tests {
             vec![
                 "--profile",
                 "zspace-memo",
+                "--credential-store",
+                "auto",
                 "--mode",
                 "lan",
                 "--timeout",
@@ -999,6 +1014,7 @@ mod tests {
             host: Some("http://192.168.1.2:5055".into()),
             allow_insecure_http: false,
             timeout_secs: 20,
+            credential_store: "keyring".into(),
         };
         assert_eq!(
             to_strings(build_global_cli_args(
@@ -1011,6 +1027,8 @@ mod tests {
             vec![
                 "--profile",
                 "p",
+                "--credential-store",
+                "keyring",
                 "--mode",
                 "lan",
                 "--timeout",
@@ -1026,6 +1044,8 @@ mod tests {
             vec![
                 "--profile",
                 "p",
+                "--credential-store",
+                "file",
                 "--mode",
                 "auto",
                 "--timeout",

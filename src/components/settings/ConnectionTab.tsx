@@ -33,6 +33,8 @@ interface Props {
   setAllowHttp: (v: boolean) => void;
   cliTimeout: number;
   setCliTimeout: (v: number) => void;
+  credentialStore: "file" | "auto" | "keyring";
+  setCredentialStore: (v: "file" | "auto" | "keyring") => void;
   connDirty: boolean;
   isInsecureHttp: boolean;
   busy: boolean;
@@ -66,6 +68,8 @@ export function ConnectionTab({
   setAllowHttp,
   cliTimeout,
   setCliTimeout,
+  credentialStore,
+  setCredentialStore,
   connDirty,
   isInsecureHttp,
   busy,
@@ -164,6 +168,26 @@ export function ConnectionTab({
               <option value={60}>60 秒</option>
               <option value={120}>120 秒</option>
             </select>
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-slate-700">凭据存储策略</span>
+              <select
+                value={credentialStore}
+                onChange={(e) =>
+                  setCredentialStore(e.target.value as "file" | "auto" | "keyring")
+                }
+                className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs"
+              >
+                <option value="file">本地应用目录（推荐 · 更新不掉登录）</option>
+                <option value="auto">自动（优先系统钥匙串）</option>
+                <option value={ "keyring" }>仅系统钥匙串</option>
+              </select>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              使用「本地应用目录」可避免覆盖更新后系统凭据权限变化导致重新扫码（切换策略后需重新登录一次生效）。
+            </p>
           </div>
         </div>
 
